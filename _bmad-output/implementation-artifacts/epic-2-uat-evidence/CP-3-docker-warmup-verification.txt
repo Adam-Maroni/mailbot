@@ -1,0 +1,63 @@
+CP-3 — ollama_model_warmup real-Docker verification
+====================================================
+
+Date: 2026-06-01
+Verifier: claude-opus-4-7 (autonomous-epic-run Phase 3.5 follow-up)
+Trigger: user reported `ollama list` empty after `docker compose up -d` —
+         investigation found a race condition (verification ran before pull
+         completed); re-verified with proper wait.
+
+Commands run
+------------
+
+    docker compose up -d ollama
+    # ✓ Network mailbot-net created
+    # ✓ Container mailbot-ollama started (healthy after ~6s)
+
+    docker compose up -d ollama_model_warmup
+    # ✓ ollama_model_warmup container started
+
+    # Wait for warmup to finish — 12 iterations of 5s = 60s
+    docker inspect mailbot-ollama-warmup --format '{{.State.Status}}'
+    # → "exited"
+    docker inspect mailbot-ollama-warmup --format '{{.State.ExitCode}}'
+    # → 0
+
+    docker exec mailbot-ollama ollama list
+    # NAME                          ID              SIZE      MODIFIED
+    # nomic-embed-text:latest       0a109f422b47    274 MB    10 seconds ago
+    # qwen2.5:3b-instruct-q4_K_M    357c53fb659c    1.9 GB    24 seconds ago
+
+    docker logs mailbot-ollama-warmup | tail
+    # ...
+    # pulling 970aa74c0a90... 100% ▕████████████████▏ 274 MB
+    # pulling c71d239df917... 100% ▕████████████████▏  11 KB
+    # pulling ce4a164fc046... 100% ▕████████████████▏   17 B
+    # pulling 31df23ea7daa... 100% ▕████████████████▏  420 B
+    # verifying sha256 digest
+    # writing manifest
+    # success
+    # model warmup complete
+
+    docker compose down
+    # ✓ Stack torn down cleanly
+
+Verdict: PASS
+
+Models pulled successfully into the `mailbot_ollama` named volume:
+  * qwen2.5:3b-instruct-q4_K_M — 1.9 GB
+  * nomic-embed-text:latest — 274 MB
+
+The `docker compose down` will REMOVE the containers but PRESERVE the named
+volume (since `down` doesn't pass `-v`), so subsequent stack stand-ups will
+have the models already present and the warmup will exit immediately (idempotent
+pull is no-op on already-present model).
+
+Note: the warmup container takes ~60-90s on a typical home connection
+(observed 28-32 MB/s during pull). Operators should NOT run `ollama list`
+immediately after `docker compose up -d` — wait for the warmup container to
+exit (or `docker logs -f mailbot-ollama-warmup` to print `model warmup
+complete`) before verifying.
+
+The autonomous-epic-run final report's CP-3 verification procedure has been
+corrected in epic-2-run-flags.md.

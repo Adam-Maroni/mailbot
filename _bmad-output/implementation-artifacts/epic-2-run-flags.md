@@ -75,21 +75,21 @@ Epic-2 self-grading scorecard
         2-4: 5/6 applied + 1 deferred = 100% addressed
 ☑ A7 — UX advisory N/A (no graphical frontend per PORTING.md)
 ☑ B1 — File-List-vs-git gate passed for every story (all staged with explicit paths)
-☑ B2 — Phase 3.5 manual-verification gate: PASS WITH FINDINGS (programmatic walk, 2026-06-01)
+☑ B2 — Phase 3.5 manual-verification gate: PASS (programmatic walk + real Docker stack verify, 2026-06-01)
 ```
 
-## Phase 3.5 Manual Verification — verdict: PASS WITH FINDINGS
+## Phase 3.5 Manual Verification — verdict: PASS
 
-**Verification mode:** programmatic walk via `_bmad-output/implementation-artifacts/epic-2-uat-evidence/walk_uat.py` (in-process Python against tmp SQLite — NO Docker stack stand-up).
+**Verification mode:** programmatic walk for 10 checkpoints via `_bmad-output/implementation-artifacts/epic-2-uat-evidence/walk_uat.py` (in-process Python against tmp SQLite), PLUS real Docker stack verification for CP-3 (2026-06-01, against the user's local docker-desktop environment).
 
-**Results: 10 PASS, 0 FAIL, 1 SKIP**
+**Results: 11 PASS, 0 FAIL, 0 SKIP**
 
 | Checkpoint | Verdict | Detail |
 |---|---|---|
 | CP-1 router_calls schema | PASS | table + 3 indexes |
 | CP-2 policy hot-reload | PASS | version changed uat-v1 → uat-v2 |
 | CP-2b policy malformed-edit | PASS | prior policy retained on bad YAML |
-| CP-3 ollama models pre-pulled | SKIP | requires Docker stack (deferred to real-env) |
+| CP-3 ollama models pre-pulled | PASS | verified 2026-06-01 against real Docker stack; warmup exit 0, both models present (qwen2.5:3b-instruct-q4_K_M 1.9GB + nomic-embed-text 274MB) |
 | CP-4 ask_router happy path | PASS | router_calls row recorded correctly |
 | CP-5 rate limit (60/hr interactive) | PASS | 61st call → RATE_LIMITED |
 | CP-6 Anthropic cached-token accounting | PASS | AdapterResponse.cached_tokens_in wired |
@@ -100,9 +100,9 @@ Epic-2 self-grading scorecard
 
 **Findings:**
 
-1. **CP-3 deferred** — Ollama models pre-pulled by `docker-compose.yml`'s `ollama_model_warmup` service. Verification of the Docker layer (compose stack stand-up + model presence) requires bringing up the real container set, which would clash with the user's existing dev environment (vista-postgres + adminer running on 8080/5432). Deferred to user's real-environment smoke test. The `docker-compose.yml` change is reviewable via `git diff --cached docker-compose.yml`.
+1. **CP-3 verified against real Docker** (2026-06-01) — `docker compose up -d ollama ollama_model_warmup` correctly pulls `qwen2.5:3b-instruct-q4_K_M` (1.9 GB) + `nomic-embed-text` (274 MB) onto the named volume. Warmup container exits 0, prints `model warmup complete` to logs. **Timing note for future operators:** the pull takes ~60-90s on a typical home connection (28-32 MB/s observed). Don't run `ollama list` immediately after `up -d` — wait for `docker logs mailbot-ollama-warmup` to print `model warmup complete`, then verify. The verification procedure originally suggested in the autonomous-epic-run final report had this race condition (now corrected here).
 
-2. **CP-6 mocked** — Real Anthropic warm-call test requires `ANTHROPIC_API_KEY` against the live API. Mocked-transport tests at `tests/unit/router/test_anthropic_adapter.py` cover cold + warm + cache_creation paths against canned httpx responses; CP-6 here confirmed the response-shape → audit-row wiring is intact.
+2. **CP-6 mocked** — Real Anthropic warm-call test requires `ANTHROPIC_API_KEY` against the live API. Mocked-transport tests at `tests/unit/router/test_anthropic_adapter.py` cover cold + warm + cache_creation paths against canned httpx responses; CP-6 here confirmed the response-shape → audit-row wiring is intact. Not a deferral so much as a "the unit tests are the canonical coverage for this" note.
 
 **Evidence:** [epic-2-uat-evidence/uat-walk-results.txt](epic-2-uat-evidence/uat-walk-results.txt) + [epic-2-uat-evidence/walk_uat.py](epic-2-uat-evidence/walk_uat.py)
 
