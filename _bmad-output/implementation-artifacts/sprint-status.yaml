@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-05-31
-last_updated: 2026-06-01  # retrospective for epic-1 completed
+last_updated: 2026-06-01  # story 1-9 code-review complete; 12 patches applied; status done
 project: MailBot
 project_key: NOKEY
 tracking_system: file-system
@@ -52,7 +52,7 @@ development_status:
   1-6-oauth-state-table-and-token-rotation-persistence: done  # 2026-06-01 — 002_oauth_state.sql migration + sync/oauth.py (load/seed/exchange/get_access_token) + db/queries.py Rule-C consolidation + docs/auth-recovery.md + 9 integration tests (real SQLite + httpx.MockTransport). Boundary checker tightened to reduce docstring false positives. 62 tests pass total, all gates green.
   1-7-delta-sync-worker-and-idempotent-upserts: done  # 2026-06-01 — sync_worker.run_once with full FR-1.x coverage (delta_link, pagination via @odata.nextLink, @removed soft-delete, 429 + Retry-After honoring, exponential backoff, delta_link-advance-only-on-success); db/queries.py expanded with 7 new SQL constants; scripts/mailbot.py CLI with sync-now subcommand; 8 integration tests via real SQLite + httpx.MockTransport. 70 tests pass total, all gates green.
   1-8-two-process-container-entrypoint-and-continuous-sync-health-alarm: done  # 2026-06-01 — 004_worker_health.sql migration + notifications.send_urgent JSONL writer + worker.sync_loop cron loop w/ alarm debounce + /health enriched with sync_* fields; 14 integration tests cover alarm debounce + recovery + silent-when-no-heartbeat-yet. Docker stack stand-up deferred to Phase 3.5. 84 tests pass total, all gates green. EPIC 1 COMPLETE.
-  1-9-one-time-refresh-token-bootstrap-and-entra-app-registration-recipe: backlog  # 2026-06-01 — added post-retro after Azure-docs review surfaced bootstrap gap. CRITICAL for any real Outlook sync; blocks Phase 3.5 CP-6/CP-7. Owner: Amelia. See story file.
+  1-9-one-time-refresh-token-bootstrap-and-entra-app-registration-recipe: done  # 2026-06-01 — scripts/mint_refresh_token.py (auth-code OAuth flow, 8765 loopback, exit-code contract) + docs/entra-app-registration.md (9-step recipe + failure-mode table) + sanitizer publication + auth-recovery.md/​.env.example updates. Code-review applied 12 patches across 3 layers (Blind Hunter, Edge Case Hunter, Acceptance Auditor): callback-path/payload guard, loopback bind constraint, tenant-regex validation, headless-WSL fallback, distinct TimeoutError message, 2xx-body shape check, AC-3 verbatim revert, etc. 1 deferred. 93 tests pass; all 4 gates green.
   1-10-immutable-ids-and-changekey-rename-plus-removed-reason-plus-full-resync-recovery: backlog  # 2026-06-01 — added post-retro after Azure-docs review. Bundles 4 sync-correctness patches: ImmutableId Prefer header, changeKey semantics, @removed.reason, 410+syncStateNotFound full-resync recovery. Plus 6 architecture document patches in-scope. Owner: Amelia. Depends on 1-9 for real-tenant verification. See story file.
   epic-1-retrospective: done  # 2026-06-01 — retrospective completed; see epic-1-retro-2026-06-01.md. 7 action items, 6 prep tasks, 3 critical-path items. Post-retro: Azure-docs review added 2 backlog stories (1-9, 1-10) + 6 architecture patches. Key takeaway: formalize gate-coverage-only + Phase 3.5 checkpoint cadence + docs-archiver runs DURING brainstorming, not after epic completion.
 

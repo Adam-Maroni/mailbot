@@ -37,20 +37,24 @@ and `.env` is never re-read.
 To recover from a revoked refresh token, you must re-seed the row from a
 freshly-obtained refresh token. The high-level sequence:
 
-### Step 1 — Generate a new refresh token on your dev box
+### Step 1 — Mint a new refresh token on your dev box
 
-The dev-box auth flow is the only path that can grant a new refresh token
-interactively (the VPS is headless). The exact mechanics depend on your Azure
-app registration:
+On your local dev machine (the same one with a browser):
 
-- If you set up the app with the `offline_access` scope (you did — required for
-  the sync to work), the consent screen for the dev box's auth flow will produce
-  a refresh token automatically.
-- The dev-box auth script lives in your local workspace (not committed; the app
-  registration's redirect URI is `http://localhost:<port>/callback`).
+```bash
+python scripts/mint_refresh_token.py
+```
 
-Walk the consent flow. Capture the `refresh_token` value from the response (it
-typically starts with `M.C5...` or similar).
+The script reads `OUTLOOK_CLIENT_ID`, `OUTLOOK_TENANT_ID`, `OUTLOOK_CLIENT_SECRET`
+from env (or your local `.env`), opens the consent flow in your browser,
+captures the callback on `localhost:8765`, exchanges the code for tokens, and
+prints the refresh token between two `===== ... =====` marker lines.
+
+For first-time setup (not just recovery), follow the prerequisites in
+[docs/entra-app-registration.md](./entra-app-registration.md) first — you need a
+registered app and its client ID/secret before this script can run.
+
+Copy the printed refresh token (the value between the marker lines). Continue to Step 2.
 
 ### Step 2 — Hand-copy the new refresh token into the VPS `.env`
 

@@ -28,11 +28,12 @@ _URL_TOKEN_QUERY_RE = re.compile(
 _SECRET_FILE_RE = re.compile(r"[/\\]?[\w/.\\-]+\.(?:env|key|pem)\b", flags=re.IGNORECASE)
 
 
-def _sanitize(value: Any) -> Any:
+def sanitize(value: Any) -> Any:
     """Recursively sanitize a value for log output.
 
     Strings get pattern replacements; dicts/lists/tuples recurse; other types pass
-    through unchanged (but JSON-encoded later).
+    through unchanged (but JSON-encoded later). Public so one-shot scripts in
+    ``scripts/`` can reuse the same redaction rules before printing to stderr.
     """
     if isinstance(value, str):
         v = _BEARER_TOKEN_RE.sub("[REDACTED_BEARER]", value)
@@ -41,9 +42,9 @@ def _sanitize(value: Any) -> Any:
         v = _SECRET_FILE_RE.sub("[REDACTED_PATH]", v)
         return v
     if isinstance(value, dict):
-        return {k: _sanitize(v) for k, v in value.items()}
+        return {k: sanitize(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_sanitize(v) for v in value]
+        return [sanitize(v) for v in value]
     return value
 
 
@@ -124,7 +125,7 @@ class JsonFormatter(logging.Formatter):
             # Do NOT include the exc traceback — NFR-SEC-4 mandates no stack frames
             # leak via the logging surface. Sanitized error message only.
 
-        sanitized = _sanitize(payload)
+        sanitized = sanitize(payload)
         return json.dumps(sanitized, separators=(",", ":"), ensure_ascii=False)
 
 
