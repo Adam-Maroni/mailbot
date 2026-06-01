@@ -35,7 +35,11 @@ CREATE INDEX IF NOT EXISTS ix_senders_domain ON senders (domain);
 CREATE TABLE IF NOT EXISTS emails (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     graph_id TEXT NOT NULL UNIQUE,             -- Microsoft Graph message id
-    change_marker TEXT,                        -- @odata.etag equivalent per AR-SCHEMA-2
+    -- Story 1-10 AC-2: change_marker stores Graph's `changeKey` field (NOT
+    -- @odata.etag — that field does not exist on the message resource). The
+    -- column name is a Rule-A naming choice retained to avoid destructive
+    -- migration churn; see mailbot_api/db/queries.py::EMAIL_UPSERT docstring.
+    change_marker TEXT,                        -- Graph `changeKey` (see AC-2 above)
     thread_id TEXT,
     sender_id TEXT,
     received_at TEXT NOT NULL,                 -- UTC ISO-8601 Z

@@ -53,10 +53,15 @@ def _make_message(
     has_attachments: bool = False,
     change_marker: str = "etag-v1",
     removed: bool = False,
+    removed_reason: str = "deleted",
 ) -> dict:
+    # Story 1-10: production Graph messages carry `changeKey` (not @odata.etag,
+    # which doesn't exist on the message resource). Tests emit changeKey by
+    # default; specific fallback tests can mutate the dict to remove changeKey
+    # and add @odata.etag.
     msg: dict = {
         "id": graph_id,
-        "@odata.etag": change_marker,
+        "changeKey": change_marker,
         "subject": subject,
         "bodyPreview": body_preview,
         "hasAttachments": has_attachments,
@@ -65,7 +70,7 @@ def _make_message(
         "from": {"emailAddress": {"address": sender_email, "name": sender_name}},
     }
     if removed:
-        msg["@removed"] = {"reason": "deleted"}
+        msg["@removed"] = {"reason": removed_reason}
     return msg
 
 
@@ -231,9 +236,15 @@ async def test_removed_annotation_soft_deletes_email(
     r = await run_once(db_path, transport=transport2)
     assert r.messages_soft_deleted == 1
 
-    row = await fetchone(db_path, "SELECT deleted_at FROM emails WHERE graph_id = ?", ("g-1",))
+    # Story 1-10 AC-3: removed_reason captured alongside deleted_at.
+    row = await fetchone(
+        db_path,
+        "SELECT deleted_at, removed_reason FROM emails WHERE graph_id = ?",
+        ("g-1",),
+    )
     assert row is not None
     assert row[0] is not None  # deleted_at set
+    assert row[1] == "deleted"  # removed_reason captured from @removed.reason
 
 
 async def test_multi_page_pagination_via_next_link(
@@ -318,3 +329,329 @@ async def test_malformed_message_skipped_without_raising(
     result = await run_once(db_path, transport=transport)
     assert result.messages_seen == 2
     assert result.messages_upserted == 1  # only the well-formed one
+
+
+# --- Story 1-10: delta-token invalidation + duplicate-replay tests ---
+
+
+def _transport_with_status(
+    status: int,
+    body: dict | None = None,
+    token_response: dict | None = None,
+) -> tuple[httpx.MockTransport, list[str]]:
+    """Build a MockTransport that returns the given (status, body) for every
+    Graph data-plane request. Token endpoint still returns 200 OK.
+
+    Used by Story 1-10 tests for the 410 Gone and 404 syncStateNotFound branches.
+    """
+    token_response = token_response or {
+        "access_token": "at-test",
+        "refresh_token": "rt-rotated",
+        "expires_in": 3600,
+    }
+    request_log: list[str] = []
+    body = body or {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        request_log.append(url)
+        if "login.microsoftonline.com" in request.url.host:
+            return httpx.Response(200, json=token_response)
+        if "graph.microsoft.com" in request.url.host:
+            return httpx.Response(status, json=body)
+        return httpx.Response(404, json={"error": "unhandled"})
+
+    return httpx.MockTransport(handler), request_log
+
+
+async def test_handles_410_gone_clears_delta_link_and_notifies_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-4: HTTP 410 from the delta endpoint clears sync_state.delta_link,
+    fires one urgent notification, and returns without raising."""
+    import mailbot_api.sync.sync_worker as sync_worker
+
+    db_path = await _prepare_db(tmp_path)
+    _set_creds(monkeypatch)
+    # Logs land in a tmp dir so the assertion is sandboxed.
+    monkeypatch.setenv("MAILBOT_LOGS_PATH", str(tmp_path / "logs"))
+    # Reset the module-level debounce flag (test isolation).
+    sync_worker._resync_notification_fired = False
+
+    # Seed sync_state with a stored delta_link, so the worker would otherwise
+    # follow it.
+    from mailbot_api.db.connection import execute_write
+    await execute_write(
+        db_path,
+        "INSERT INTO sync_state (provider, delta_link, last_sync_at, last_sync_messages_seen) "
+        "VALUES (?, ?, ?, ?)",
+        ("microsoft_graph", "https://graph.microsoft.com/v1.0/delta?$deltatoken=OLD", "2026-06-01T00:00:00Z", 0),
+    )
+
+    transport, _ = _transport_with_status(410, {"code": "syncStateInvalid"})
+    result = await run_once(db_path, transport=transport)
+
+    # Worker returned cleanly without raising.
+    assert result.new_delta_link is None
+    assert result.messages_seen == 0
+
+    # sync_state.delta_link cleared.
+    state = await fetchone(
+        db_path, "SELECT delta_link FROM sync_state WHERE provider = ?", ("microsoft_graph",)
+    )
+    assert state is not None
+    assert state[0] is None  # NULL — fresh resync on next tick
+
+    # Notification fired exactly once.
+    notifications_log = tmp_path / "logs" / "notifications_pending.jsonl"
+    assert notifications_log.exists()
+    lines = notifications_log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert "delta token reset" in lines[0]
+
+    # Second 410 in the same episode does NOT re-notify (debounced).
+    transport2, _ = _transport_with_status(410, {"code": "syncStateInvalid"})
+    await run_once(db_path, transport=transport2)
+    lines_after = notifications_log.read_text(encoding="utf-8").splitlines()
+    assert len(lines_after) == 1  # still just the one notification
+
+
+async def test_handles_404_sync_state_not_found_same_recovery_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-5: HTTP 404 with body code 'syncStateNotFound' triggers the same
+    recovery as 410 — clears delta_link, notifies, returns cleanly."""
+    import mailbot_api.sync.sync_worker as sync_worker
+
+    db_path = await _prepare_db(tmp_path)
+    _set_creds(monkeypatch)
+    monkeypatch.setenv("MAILBOT_LOGS_PATH", str(tmp_path / "logs"))
+    sync_worker._resync_notification_fired = False
+
+    from mailbot_api.db.connection import execute_write
+    await execute_write(
+        db_path,
+        "INSERT INTO sync_state (provider, delta_link, last_sync_at, last_sync_messages_seen) "
+        "VALUES (?, ?, ?, ?)",
+        ("microsoft_graph", "https://graph.microsoft.com/v1.0/delta?$deltatoken=OLD", "2026-06-01T00:00:00Z", 0),
+    )
+
+    # Case-insensitive match per AC-5: docs don't pin casing. Body uses the
+    # real Graph nested OData error envelope shape.
+    transport, _ = _transport_with_status(
+        404,
+        {"error": {"code": "SyncStateNotFound", "message": "Token expired"}},
+    )
+    result = await run_once(db_path, transport=transport)
+    assert result.new_delta_link is None
+
+    state = await fetchone(
+        db_path, "SELECT delta_link FROM sync_state WHERE provider = ?", ("microsoft_graph",)
+    )
+    assert state is not None
+    assert state[0] is None
+
+    notifications_log = tmp_path / "logs" / "notifications_pending.jsonl"
+    assert notifications_log.exists()
+    assert len(notifications_log.read_text(encoding="utf-8").splitlines()) == 1
+
+
+async def test_404_without_sync_state_not_found_does_not_clear_delta_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-5 negative: a generic 404 (no syncStateNotFound code) is treated as
+    a regular failure — delta_link is NOT cleared, no notification fires."""
+    import mailbot_api.sync.sync_worker as sync_worker
+
+    db_path = await _prepare_db(tmp_path)
+    _set_creds(monkeypatch)
+    monkeypatch.setenv("MAILBOT_LOGS_PATH", str(tmp_path / "logs"))
+    sync_worker._resync_notification_fired = False
+
+    from mailbot_api.db.connection import execute_write
+    await execute_write(
+        db_path,
+        "INSERT INTO sync_state (provider, delta_link, last_sync_at, last_sync_messages_seen) "
+        "VALUES (?, ?, ?, ?)",
+        ("microsoft_graph", "https://graph.microsoft.com/v1.0/delta?$deltatoken=KEEP", "2026-06-01T00:00:00Z", 5),
+    )
+
+    transport, _ = _transport_with_status(
+        404,
+        {"error": {"code": "MailboxNotFound", "message": "wrong endpoint"}},
+    )
+    await run_once(db_path, transport=transport)
+
+    # delta_link preserved.
+    state = await fetchone(
+        db_path, "SELECT delta_link FROM sync_state WHERE provider = ?", ("microsoft_graph",)
+    )
+    assert state is not None
+    assert state[0] is not None
+    assert "KEEP" in state[0]
+
+    # No notification.
+    notifications_log = tmp_path / "logs" / "notifications_pending.jsonl"
+    assert not notifications_log.exists() or notifications_log.read_text(encoding="utf-8").strip() == ""
+
+
+async def test_resync_notification_clears_after_successful_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-4 debounce reset: after a successful sync, the next 410 re-notifies."""
+    import mailbot_api.sync.sync_worker as sync_worker
+
+    db_path = await _prepare_db(tmp_path)
+    _set_creds(monkeypatch)
+    monkeypatch.setenv("MAILBOT_LOGS_PATH", str(tmp_path / "logs"))
+    sync_worker._resync_notification_fired = False
+
+    # Episode 1: 410 → notification fires.
+    transport1, _ = _transport_with_status(410, {"code": "syncStateInvalid"})
+    await run_once(db_path, transport=transport1)
+
+    # Successful sync (clean delta page, advances delta_link, clears flag).
+    page = {
+        "value": [_make_message("g-after-recovery")],
+        "@odata.deltaLink": "https://graph.microsoft.com/v1.0/delta?$deltatoken=FRESH",
+    }
+    transport2, _ = _transport([page])
+    result = await run_once(db_path, transport=transport2)
+    assert result.new_delta_link is not None  # success advances delta_link
+
+    # Episode 2: another 410 → notification fires AGAIN (debounce cleared).
+    transport3, _ = _transport_with_status(410, {"code": "syncStateInvalid"})
+    await run_once(db_path, transport=transport3)
+
+    notifications_log = tmp_path / "logs" / "notifications_pending.jsonl"
+    lines = notifications_log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2  # one per episode
+
+
+async def test_handles_duplicate_message_in_single_delta_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-6: the same graph_id appearing twice in one delta page with different
+    changeKey values produces exactly one row whose change_marker is the
+    last-seen value. Replays in a single page are explicitly permitted by the
+    Graph delta-query docs."""
+    db_path = await _prepare_db(tmp_path)
+    _set_creds(monkeypatch)
+
+    page = {
+        "value": [
+            _make_message("dup-1", change_marker="ck-v1", subject="first-seen"),
+            _make_message("dup-1", change_marker="ck-v2", subject="last-seen"),
+        ],
+        "@odata.deltaLink": "https://graph.microsoft.com/v1.0/delta?$deltatoken=D1",
+    }
+    transport, _ = _transport([page])
+    result = await run_once(db_path, transport=transport)
+
+    # messages_upserted counts writes attempted (per AC-6 logging contract).
+    assert result.messages_seen == 2
+    assert result.messages_upserted == 2  # AC-6: both writes counted
+
+    # Exactly one row, with the LAST-SEEN change_marker.
+    rows = await fetchall(
+        db_path,
+        "SELECT graph_id, change_marker, subject FROM emails WHERE graph_id = ?",
+        ("dup-1",),
+    )
+    assert len(rows) == 1
+    assert rows[0] == ("dup-1", "ck-v2", "last-seen")
+
+
+async def test_change_key_fallback_to_odata_etag_when_change_key_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-2 defensive path: if a Graph response lacks `changeKey` but carries
+    `@odata.etag`, the worker uses the fallback and logs a structured warning.
+    Production Graph responses on the message resource should never hit this."""
+    db_path = await _prepare_db(tmp_path)
+    _set_creds(monkeypatch)
+
+    # Hand-build a message that does NOT have changeKey but does have @odata.etag.
+    msg = _make_message("g-fallback")
+    del msg["changeKey"]
+    msg["@odata.etag"] = "etag-fallback-v1"
+
+    page = {
+        "value": [msg],
+        "@odata.deltaLink": "https://graph.microsoft.com/v1.0/delta?$deltatoken=D1",
+    }
+    transport, _ = _transport([page])
+    result = await run_once(db_path, transport=transport)
+    assert result.messages_upserted == 1
+
+    row = await fetchone(
+        db_path, "SELECT change_marker FROM emails WHERE graph_id = ?", ("g-fallback",)
+    )
+    assert row is not None
+    assert row[0] == "etag-fallback-v1"
+
+
+async def test_sync_worker_delta_request_carries_prefer_immutable_id_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-1: the delta-endpoint GET from sync_worker._fetch_page_with_retry
+    carries the same `Prefer: IdType="ImmutableId"` header that graph_client
+    applies to /me. Without this header, message IDs rotate on folder move."""
+    db_path = await _prepare_db(tmp_path)
+    _set_creds(monkeypatch)
+
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "login.microsoftonline.com" in request.url.host:
+            return httpx.Response(
+                200,
+                json={"access_token": "at", "refresh_token": "rt", "expires_in": 3600},
+            )
+        if "graph.microsoft.com" in request.url.host:
+            captured["Prefer"] = request.headers.get("Prefer", "")
+            return httpx.Response(
+                200,
+                json={
+                    "value": [],
+                    "@odata.deltaLink": "https://graph.microsoft.com/v1.0/delta?$deltatoken=D1",
+                },
+            )
+        return httpx.Response(404)
+
+    await run_once(db_path, transport=httpx.MockTransport(handler))
+    assert captured["Prefer"] == 'IdType="ImmutableId"'
+
+
+async def test_removed_reason_changed_vs_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC-3: `removed_reason` distinguishes 'changed' (recoverable) from
+    'deleted' (permanent). Both land as soft-delete with the verbatim reason."""
+    db_path = await _prepare_db(tmp_path)
+    _set_creds(monkeypatch)
+
+    page1 = {
+        "value": [_make_message("g-changed"), _make_message("g-deleted")],
+        "@odata.deltaLink": "https://graph.microsoft.com/v1.0/delta?$deltatoken=D1",
+    }
+    transport1, _ = _transport([page1])
+    await run_once(db_path, transport=transport1)
+
+    page2 = {
+        "value": [
+            _make_message("g-changed", removed=True, removed_reason="changed"),
+            _make_message("g-deleted", removed=True, removed_reason="deleted"),
+        ],
+        "@odata.deltaLink": "https://graph.microsoft.com/v1.0/delta?$deltatoken=D2",
+    }
+    transport2, _ = _transport([page2])
+    result = await run_once(db_path, transport=transport2)
+    assert result.messages_soft_deleted == 2
+
+    rows = await fetchall(
+        db_path,
+        "SELECT graph_id, removed_reason FROM emails WHERE graph_id IN (?, ?) ORDER BY graph_id",
+        ("g-changed", "g-deleted"),
+    )
+    assert rows == [("g-changed", "changed"), ("g-deleted", "deleted")]

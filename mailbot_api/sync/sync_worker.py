@@ -28,6 +28,7 @@ from typing import Any
 
 import httpx
 
+from mailbot_api import notifications
 from mailbot_api.db.connection import execute_write, fetchone
 from mailbot_api.db.queries import (
     EMAIL_SOFT_DELETE,
@@ -35,8 +36,10 @@ from mailbot_api.db.queries import (
     SENDER_UPSERT,
     SYNC_STATE_SELECT,
     SYNC_STATE_UPSERT,
+    SYNC_STATE_UPSERT_NULL_LINK,
     THREAD_UPSERT,
 )
+from mailbot_api.sync.graph_client import PREFER_IMMUTABLE_ID
 from mailbot_api.sync.oauth import get_access_token
 
 logger = logging.getLogger(__name__)
@@ -49,10 +52,38 @@ _DEFAULT_DELTA_URL = f"{_GRAPH_BASE_URL}/me/mailFolders/inbox/messages/delta"
 _MAX_RETRIES = 3
 _BACKOFF_SECONDS = (1, 4, 16)
 
+# Module-level debounce flag for the "delta token reset" urgent notification
+# (AC-4/5). Set when _handle_delta_token_invalidation fires; cleared when the
+# next sync completes successfully (i.e., a fresh delta page is received with
+# at least a deltaLink or nextLink). One notification per reset episode.
+#
+# Ownership note: TWO functions touch this flag via `global` declarations.
+# `_handle_delta_token_invalidation` SETS it (after firing the notification);
+# `run_once` CLEARS it (only after a clean delta-page success at the end of
+# the cron iteration). The two `global` declarations are NOT redundant — both
+# are required by Python scope rules for writes to a module-level name. The
+# split intent: setting lives with the action that decides to notify; clearing
+# lives with the success path that authoritatively knows the reset episode
+# has ended. Future refactor target: wrap the flag in a small `_SyncState`
+# dataclass if the two-process model later adds a second writer.
+_resync_notification_fired = False
+
 
 def _utc_iso8601() -> str:
     """Return the current UTC time as ISO-8601 with Z suffix (AR-PAT-3)."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _safe_json(response: httpx.Response) -> Any:
+    """Parse JSON or return {} — tolerant of malformed Graph responses.
+
+    Used by the 404+syncStateNotFound branch to inspect the error body without
+    risking an exception that would mask the underlying HTTP signal.
+    """
+    try:
+        return response.json()
+    except ValueError:
+        return {}
 
 
 @dataclass
@@ -102,12 +133,53 @@ def _is_removed(message: dict[str, Any]) -> bool:
     return "@removed" in message
 
 
+def _extract_removed_reason(message: dict[str, Any]) -> str | None:
+    """Return Graph's @removed.reason ('changed' | 'deleted') or None if absent.
+
+    Story 1-10 AC-3: distinguishes recoverable removals ('changed' — item moved
+    out of synced folder set) from permanent ones ('deleted'). Tolerant of
+    schema drift: if `@removed` is present but `reason` is missing or malformed,
+    returns None — the column accepts NULL and Epic 4's reverter treats NULL
+    as "unknown → confirm via Graph before restoring."
+    """
+    removed = message.get("@removed")
+    if not isinstance(removed, dict):
+        return None
+    reason = removed.get("reason")
+    return str(reason) if reason else None
+
+
+def _extract_change_marker(message: dict[str, Any]) -> str | None:
+    """Return Graph's `changeKey` for the message, with @odata.etag fallback.
+
+    Story 1-10 AC-2: production Graph responses for the message resource ALWAYS
+    carry `changeKey` (`@odata.etag` does not exist on that resource per the
+    Graph API docs). The fallback to `@odata.etag` is purely defensive — if it
+    ever fires, that's a schema drift worth logging.
+    """
+    change_key = message.get("changeKey")
+    if change_key is not None:
+        return str(change_key)
+    fallback = message.get("@odata.etag")
+    if fallback is not None:
+        logger.warning(
+            "sync change_marker fallback to @odata.etag",
+            extra={
+                "event": "sync.change_key_fallback",
+                "graph_id": message.get("id"),
+            },
+        )
+        return str(fallback)
+    return None
+
+
 async def _upsert_message(db_path: str, message: dict[str, Any]) -> bool:
     """Upsert one email + its sender/thread. Returns True if a write occurred.
 
     Soft-delete branch: if the message is annotated `@removed`, we UPDATE the
-    `emails.deleted_at` (no sender/thread upsert — the row may not exist yet on
-    first sync, in which case the UPDATE is a no-op and that's fine).
+    `emails.deleted_at` + `emails.removed_reason` (no sender/thread upsert —
+    the row may not exist yet on first sync, in which case the UPDATE is a
+    no-op and that's fine).
     """
     graph_id = message.get("id")
     if not graph_id:
@@ -119,15 +191,24 @@ async def _upsert_message(db_path: str, message: dict[str, Any]) -> bool:
         return False
 
     if _is_removed(message):
-        rowcount = await execute_write(db_path, EMAIL_SOFT_DELETE, (_utc_iso8601(), graph_id))
+        removed_reason = _extract_removed_reason(message)
+        rowcount = await execute_write(
+            db_path,
+            EMAIL_SOFT_DELETE,
+            (_utc_iso8601(), removed_reason, graph_id),
+        )
         if rowcount:
             logger.info(
                 "sync soft-deleted email",
-                extra={"event": "sync.email.soft_deleted", "graph_id": graph_id},
+                extra={
+                    "event": "sync.email.soft_deleted",
+                    "graph_id": graph_id,
+                    "removed_reason": removed_reason,
+                },
             )
         return bool(rowcount)
 
-    change_marker = message.get("@odata.etag") or message.get("changeKey")
+    change_marker = _extract_change_marker(message)
     sender_id, sender_display, sender_domain = _extract_sender(message)
     thread_id = message.get("conversationId")
     received_at = message.get("receivedDateTime") or _utc_iso8601()
@@ -187,7 +268,10 @@ async def _fetch_page_with_retry(
     http: httpx.AsyncClient, url: str, token: str
 ) -> httpx.Response:
     """GET one delta page, retrying on 429 / 5xx per the retry chain."""
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Prefer": PREFER_IMMUTABLE_ID,
+    }
     last_response: httpx.Response | None = None
     for attempt in range(_MAX_RETRIES + 1):
         response = await http.get(url, headers=headers)
@@ -218,6 +302,58 @@ async def _fetch_page_with_retry(
     return last_response
 
 
+def _is_sync_state_not_found(body: Any) -> bool:
+    """Return True if the response body's `code` field contains 'syncStateNotFound'.
+
+    Story 1-10 AC-5: case-insensitive substring match — the Graph docs don't pin
+    the exact casing. Real Graph error responses nest the code under
+    `body["error"]["code"]` (the documented OData error envelope); some test
+    fixtures and earlier docs use a flat `body["code"]` shape. We check the
+    nested path first, fall back to the flat path. Tolerant of malformed
+    bodies (non-dict, missing `code`).
+    """
+    if not isinstance(body, dict):
+        return False
+    error_block = body.get("error")
+    code: Any = None
+    if isinstance(error_block, dict):
+        code = error_block.get("code")
+    if not isinstance(code, str):
+        code = body.get("code")
+    if not isinstance(code, str):
+        return False
+    return "syncstatenotfound" in code.lower()
+
+
+async def _handle_delta_token_invalidation(db_path: str, reason: str) -> None:
+    """Clear sync_state.delta_link and fire a debounced urgent notification.
+
+    Story 1-10 AC-4/5: shared recovery path for HTTP 410 Gone and HTTP 404 with
+    `syncStateNotFound`. The two surfaces are distinct in Microsoft's docs but
+    the recovery is identical — restart delta from scratch. Centralizing here
+    keeps observability separable (different `reason` strings in the log line)
+    while keeping the action one-place-to-change-if-Microsoft-adds-a-third.
+
+    Notification debounce: the module-level `_resync_notification_fired` flag
+    prevents notification spam when delta endpoint 410s persistently. Cleared
+    on the next successful delta page (see run_once after final_delta_link
+    assignment).
+    """
+    global _resync_notification_fired
+    logger.warning(
+        "sync delta token invalidated",
+        extra={"event": "sync.delta_token_invalidated", "reason": reason},
+    )
+    await execute_write(
+        db_path,
+        SYNC_STATE_UPSERT_NULL_LINK,
+        (_PROVIDER, _utc_iso8601()),
+    )
+    if not _resync_notification_fired:
+        notifications.send_urgent("delta token reset — full resync in progress")
+        _resync_notification_fired = True
+
+
 async def run_once(
     db_path: str,
     *,
@@ -228,6 +364,7 @@ async def run_once(
     The transport param is for tests (httpx.MockTransport); production callers
     leave it None.
     """
+    global _resync_notification_fired
     start = time.monotonic()
 
     stored_delta = await _load_sync_state_delta_link(db_path)
@@ -243,6 +380,35 @@ async def run_once(
         while url is not None:
             response = await _fetch_page_with_retry(http, url, token)
             if response.status_code >= 400:
+                # Story 1-10 AC-4/5: detect delta-token invalidation BEFORE the
+                # generic failure return. Both 410 (token expired/cache evicted)
+                # and 404+syncStateNotFound (token refers to deleted state)
+                # share the same recovery path: clear delta_link, notify once,
+                # return cleanly so the next worker tick performs a fresh delta.
+                if response.status_code == 410:
+                    await _handle_delta_token_invalidation(db_path, reason="410_gone")
+                    duration_ms = int((time.monotonic() - start) * 1000)
+                    return SyncResult(
+                        messages_seen=messages_seen,
+                        messages_upserted=messages_upserted,
+                        messages_soft_deleted=messages_soft_deleted,
+                        duration_ms=duration_ms,
+                        new_delta_link=None,
+                    )
+                if response.status_code == 404:
+                    body = _safe_json(response)
+                    if _is_sync_state_not_found(body):
+                        await _handle_delta_token_invalidation(
+                            db_path, reason="syncStateNotFound"
+                        )
+                        duration_ms = int((time.monotonic() - start) * 1000)
+                        return SyncResult(
+                            messages_seen=messages_seen,
+                            messages_upserted=messages_upserted,
+                            messages_soft_deleted=messages_soft_deleted,
+                            duration_ms=duration_ms,
+                            new_delta_link=None,
+                        )
                 duration_ms = int((time.monotonic() - start) * 1000)
                 logger.error(
                     "sync page fetch failed",
@@ -261,7 +427,19 @@ async def run_once(
                     new_delta_link=None,
                 )
 
-            body = response.json()
+            body = _safe_json(response)
+            if not isinstance(body, dict):
+                # Non-JSON or non-object body on a 2xx response — gateway-injected
+                # HTML page or similar. Treat as malformed; do not advance delta_link.
+                logger.error(
+                    "sync malformed delta page body",
+                    extra={
+                        "event": "sync.page.malformed",
+                        "reason": "non_dict_body",
+                    },
+                )
+                url = None
+                break
             messages = body.get("value", []) or []
             for message in messages:
                 messages_seen += 1
@@ -300,6 +478,10 @@ async def run_once(
     # Persist new delta_link ONLY after full batch completes.
     if final_delta_link is not None:
         await _persist_sync_state(db_path, final_delta_link, messages_seen)
+        # Story 1-10: clear the resync-notification debounce flag on a clean
+        # sync — the next 410/syncStateNotFound episode is allowed to notify
+        # again. This is the only place the flag resets to False.
+        _resync_notification_fired = False
 
     duration_ms = int((time.monotonic() - start) * 1000)
     logger.info(

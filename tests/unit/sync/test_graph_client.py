@@ -167,6 +167,42 @@ def test_sanitizer_redacts_code_in_logged_url() -> None:
     assert "[REDACTED_QUERY_TOKEN]" in payload["url"]
 
 
+def test_prefer_immutable_id_header_on_graph_requests() -> None:
+    """Story 1-10 AC-1: every Graph data-plane request carries the header
+    `Prefer: IdType="ImmutableId"` so message IDs don't rotate on folder moves.
+
+    The `Prefer` header is NOT applied to the identity endpoint (token
+    exchange against login.microsoftonline.com) — only to graph.microsoft.com
+    requests. We assert both: present on /me, absent on /token.
+    """
+    captured_headers: dict[str, dict[str, str]] = {"token": {}, "graph": {}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        # Snapshot the Prefer header value (or absence) for both endpoints.
+        prefer = request.headers.get("Prefer", "")
+        if "login.microsoftonline.com" in host:
+            captured_headers["token"]["Prefer"] = prefer
+            return httpx.Response(
+                200,
+                json={"access_token": "at", "refresh_token": "rt", "expires_in": 3600},
+            )
+        if "graph.microsoft.com" in host:
+            captured_headers["graph"]["Prefer"] = prefer
+            return httpx.Response(200, json={"displayName": "x", "userPrincipalName": "y"})
+        return httpx.Response(404)
+
+    client = GraphClient(transport=httpx.MockTransport(handler), **_FAKE_CREDS)
+    client.me()
+
+    # AC-1 hard assertion: Prefer header present on Graph request, with the
+    # documented IdType="ImmutableId" payload.
+    assert captured_headers["graph"]["Prefer"] == 'IdType="ImmutableId"'
+    # Token endpoint did NOT receive the Prefer header (would be a no-op but
+    # we keep the surface clean).
+    assert captured_headers["token"].get("Prefer", "") == ""
+
+
 def test_authorization_header_never_logged() -> None:
     """The me() call sends `Authorization: Bearer <token>` but does NOT log the
     Authorization header. Heuristic: scan the source for the substring

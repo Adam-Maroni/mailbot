@@ -28,6 +28,14 @@ _DEFAULT_SCOPE = "https://graph.microsoft.com/.default offline_access"
 # Token validity buffer: refresh proactively this many seconds before expiry.
 _REFRESH_LEEWAY_SECONDS = 60
 
+# Header applied to every Graph data-plane request (NOT the identity endpoint).
+# Without this header, Graph returns the default `id` which rotates on folder
+# move; with it, IDs stay stable across moves (per message.md). See Story 1-10.
+# Exported publicly so sync_worker._fetch_page_with_retry can reuse the same
+# value without duplicating the constant — one source of truth across both
+# Graph touchpoints.
+PREFER_IMMUTABLE_ID = 'IdType="ImmutableId"'
+
 
 class GraphAuthError(RuntimeError):
     """Raised when the refresh-token exchange fails.
@@ -199,7 +207,13 @@ class GraphClient:
         # We log the URL but rely on the observability sanitizer to redact any
         # accidentally-leaked tokens. Authorization header is NOT logged.
         with self._build_http() as http:
-            response = http.get(url, headers={"Authorization": f"Bearer {token}"})
+            response = http.get(
+                url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Prefer": PREFER_IMMUTABLE_ID,
+                },
+            )
         if response.status_code != 200:
             logger.error(
                 "graph /me call failed",

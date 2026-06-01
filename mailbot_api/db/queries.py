@@ -52,6 +52,23 @@ SYNC_STATE_UPSERT = (
     "last_sync_messages_seen = excluded.last_sync_messages_seen"
 )
 
+# Story 1-10 AC-4/5: clear the stored delta_link when Graph signals the token
+# is dead (410 Gone | 404 syncStateNotFound). The next worker iteration sees
+# NULL and starts a fresh delta from the default URL. `last_sync_at` is
+# touched so the worker-health monitoring observes recent activity (the reset
+# is itself a sync event).
+SYNC_STATE_UPSERT_NULL_LINK = (
+    "INSERT INTO sync_state (provider, delta_link, last_sync_at, last_sync_messages_seen) "
+    "VALUES (?, NULL, ?, 0) "
+    "ON CONFLICT(provider) DO UPDATE SET "
+    "delta_link = NULL, "
+    "last_sync_at = excluded.last_sync_at, "
+    # Zero messages_seen on the reset iteration so Story 1-8's sync-health
+    # alarm doesn't treat a delta-token reset as a normal successful sync —
+    # the previous iteration's count would otherwise persist misleadingly.
+    "last_sync_messages_seen = 0"
+)
+
 
 # --- senders (Story 1-7) ---
 
@@ -77,7 +94,16 @@ THREAD_UPSERT = (
 )
 
 
-# --- emails (Story 1-7) ---
+# --- emails (Story 1-7; Story 1-10 patches docstring + EMAIL_SOFT_DELETE) ---
+#
+# `change_marker` semantics (Story 1-10 AC-2): the value stored here is Graph's
+# `changeKey` field on the message resource — NOT `@odata.etag` (which does not
+# exist on the message resource per the Graph API docs). The column name retains
+# its Rule-A naming choice (PRD terminology) to avoid a destructive schema
+# migration; the docstring documents the protocol-detail mapping. The sync
+# worker reads `message["changeKey"]` first and falls back to `@odata.etag` ONLY
+# if the field is absent (defensive — production Graph responses always carry
+# `changeKey`; the fallback emits a structured warning when it fires).
 
 EMAIL_UPSERT = (
     "INSERT INTO emails ("
@@ -98,7 +124,11 @@ EMAIL_UPSERT = (
 )
 
 EMAIL_SOFT_DELETE = (
-    "UPDATE emails SET deleted_at = ? WHERE graph_id = ? AND deleted_at IS NULL"
+    # Story 1-10 AC-3: also capture the @removed.reason ('changed' | 'deleted'
+    # | NULL) so Epic 4's Tier-1 reverter can distinguish recoverable removals
+    # from permanent ones. The column was added by migration 005.
+    "UPDATE emails SET deleted_at = ?, removed_reason = ? "
+    "WHERE graph_id = ? AND deleted_at IS NULL"
 )
 
 EMAIL_EXISTS_WITH_MARKER = (
