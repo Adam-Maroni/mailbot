@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-05-31
-last_updated: 2026-06-01  # epic-3 COMPLETE — all 8 stories done; autonomous-epic-run finished. Retrospective remains optional (manual interactive in a future session).
+last_updated: 2026-06-01  # epic-3 retrospective completed (yolo mode) — see epic-3-retro-2026-06-01.md. 11 action items, prep tasks split across 3 critical milestones (pre-4.1, pre-4.4, pre-4.7). No HARD blockers for Epic 4. 2 HIGH-priority recommendations: retroactive CR on Stories 3-3 + 3-5, sub-second ts micro-fix (third-epic carryover).
 project: MailBot
 project_key: NOKEY
 tracking_system: file-system
@@ -80,7 +80,7 @@ development_status:
   3-6-backpressure-ceiling-and-batched-processing-bulk-pipeline-drain: done  # 2026-06-01 — backpressure module (count_unprocessed, should_throttle, run_drain_loop, ingest_pipeline_interval_task stub) + pipeline.run_batch() + worker_health heartbeats per batch + 100-batch drain with 500-threshold sleep-5s backpressure. 8 e2e tests. 442 tests pass total. Gate-coverage-only. See story file Completion Notes.
   3-7-senders-and-threads-upsert-and-cached-sender-reputation-summary: done  # 2026-06-01 — sender_reputation_summary + thread_continuity AR-PAT-5 prompts (Qwen-locked) + sender_enrichment.py (enrich_sender/enrich_thread with cross-email sensitivity-aware digest filtering + Rule A cache) + migration 014 (thread_continuity_note columns; senders side N/A — already in 001_init) + 2 policy.yaml entries. 7 e2e tests. 449 tests pass total. Gate-coverage-only. See story file Completion Notes.
   3-8-targeted-re-derivation-cli: done  # 2026-06-01 — `mailbot rederive --task=<task> --since=<date>` CLI subcommand + rederive.py orchestrator (plan_rederive + execute_rederive + RederivePlan + RederiveResult) + 7 per-task selection queries + EMAIL_CLEAR_DOWNSTREAM_DERIVATIONS for sensitivity case + 30s confirmation prompt + cli-rederive caller_origin + pipeline.py public API rename. 9 e2e tests. 458 tests pass total. Gate-coverage-only. EPIC 3 COMPLETE.
-  epic-3-retrospective: optional
+  epic-3-retrospective: done  # 2026-06-01 — retrospective completed (yolo mode); see epic-3-retro-2026-06-01.md. 11 action items, prep tasks across 3 critical milestones (pre-4.1, pre-4.4, pre-4.7). Key takeaways: CR cadence v2 needs to add privacy-invariant + load-bearing-orchestrator surfaces (Stories 3-3 + 3-5 should not have been gate-only); Phase 3.5 carries forward to a THIRD epic — escalate from process re-commitment to structural skill amendment; W-5 + W-1 fully resolved; sub-second ts overdue across three epics now (HIGH priority before Story 4.1).
 
   # Epic 4: Authorized Actions
   epic-4: backlog
