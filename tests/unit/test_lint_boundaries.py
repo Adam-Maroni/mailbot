@@ -129,6 +129,26 @@ def test_utcnow_triggers_dtz003(tmp_path: Path) -> None:
             "mailbot_api/verbs",
             "raw SQL literal",
         ),
+        # Story 2-1 AC-6: `INSERT INTO router_calls` outside audit.py /
+        # queries.py / migrations_runner.py must fail with a dedicated message
+        # pointing at the router_calls boundary.
+        (
+            "violates_router_calls_insert_outside_audit.py.fixture",
+            "mailbot_api/verbs",
+            "INSERT INTO router_calls",
+        ),
+        # Story 2-2 AC-12: yaml.safe_load outside the policy loader.
+        (
+            "violates_yaml_load_outside_policy.py.fixture",
+            "mailbot_api/verbs",
+            "yaml.safe_load",
+        ),
+        # Story 2-2 review fix LOW: `from yaml import safe_load` bypass.
+        (
+            "violates_yaml_from_import_bypass.py.fixture",
+            "mailbot_api/verbs",
+            "from yaml import safe_load",
+        ),
     ],
 )
 def test_boundary_violations_caught_by_check_boundaries(
@@ -144,4 +164,65 @@ def test_boundary_violations_caught_by_check_boundaries(
     assert "BOUNDARY:" in output, f"Expected 'BOUNDARY:' in output: {output}"
     assert expected_substring in output, (
         f"Expected '{expected_substring}' in boundary output: {output}"
+    )
+
+
+def test_router_calls_insert_in_allowlisted_audit_path_passes(tmp_path: Path) -> None:
+    """Story 2-1 AC-8 + review fix R8: the same fixture content placed AT the
+    allowlisted audit-writer path must produce a clean check (exit 0)."""
+    target_dir = tmp_path / "mailbot_api" / "observability"
+    _copy_fixture(
+        "violates_router_calls_insert_outside_audit.py.fixture",
+        target_dir,
+        "audit.py",  # the allowlisted filename
+    )
+    code, output = _run_boundary_check_on(tmp_path)
+    assert code == 0, (
+        f"Expected boundary check to pass when fixture is at the allowlisted "
+        f"path. Got exit={code}, output: {output}"
+    )
+
+
+def test_yaml_safe_load_in_allowlisted_policy_path_passes(tmp_path: Path) -> None:
+    """Story 2-2 review fix LOW: positive-pass coverage for the yaml allowlist.
+
+    The same yaml-violation fixture placed at the allowlisted policy.py path
+    must produce a clean check (exit 0)."""
+    target_dir = tmp_path / "mailbot_api" / "router"
+    _copy_fixture(
+        "violates_yaml_load_outside_policy.py.fixture",
+        target_dir,
+        "policy.py",  # the allowlisted filename
+    )
+    code, output = _run_boundary_check_on(tmp_path)
+    assert code == 0, (
+        f"Expected boundary check to pass when yaml fixture is at the "
+        f"allowlisted policy path. Got exit={code}, output: {output}"
+    )
+
+
+def test_router_calls_insert_f_string_caught_by_check_boundaries(tmp_path: Path) -> None:
+    """Story 2-1 review fix R5: an f-string that constructs the forbidden
+    literal at runtime should also fail the boundary check, not just plain
+    string constants."""
+    target = tmp_path / "mailbot_api" / "verbs"
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "fstring_bypass.py").write_text(
+        '''"""Try to bypass the boundary via f-string concatenation."""
+
+table = "router_calls"
+SQL = f"INSERT INTO {table} (ts) VALUES (?)"
+
+# This still tries the literal form via f-string fragment concat — should fail.
+ALSO_SQL = f"INSERT INTO router_calls ({\'ts\'}) VALUES (?)"
+''',
+        encoding="utf-8",
+    )
+    code, output = _run_boundary_check_on(tmp_path)
+    assert code != 0, (
+        f"Expected f-string bypass to fail boundary check. Got exit={code}, "
+        f"output: {output}"
+    )
+    assert "INSERT INTO router_calls" in output, (
+        f"Expected 'INSERT INTO router_calls' violation in output: {output}"
     )

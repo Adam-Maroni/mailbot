@@ -66,6 +66,29 @@ services:
       retries: 5
       start_period: 15s
 
+  # Story 2-3 AC-10: pre-pull the two models the Router + ingest pipeline need.
+  # Idempotent — `ollama pull` is a no-op when the model is already present
+  # in the named volume.
+  ollama_model_warmup:
+    image: ollama/ollama:0.6.2
+    container_name: mailbot-ollama-warmup
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - mailbot-net
+    volumes:
+      - mailbot_ollama:/root/.ollama
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        ollama pull qwen2.5:3b-instruct-q4_K_M && \
+        ollama pull nomic-embed-text && \
+        echo "model warmup complete"
+    restart: "no"
+
 networks:
   mailbot-net:
     name: mailbot-net

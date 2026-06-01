@@ -192,6 +192,10 @@ def test_lifespan_runs_migrations_on_startup_via_testclient(
 
     db_path = str(tmp_path / "lifespan.db")
     monkeypatch.setenv("MAILBOT_DB_PATH", db_path)
+    # Story 2-2: lifespan now also loads policy.yaml. Point at the project-root
+    # starter file so the lifespan can boot cleanly.
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    monkeypatch.setenv("MAILBOT_POLICY_PATH", str(repo_root / "router" / "policy.yaml"))
 
     with TestClient(app) as client:
         r = client.get("/health")
@@ -220,9 +224,15 @@ def test_lifespan_raises_when_db_path_unset_and_not_skipped(
 
 
 def test_lifespan_skips_db_when_skip_flag_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CR-10: MAILBOT_SKIP_DB=1 allows static health-only tests to bypass DB setup."""
+    """CR-10: MAILBOT_SKIP_DB=1 allows static health-only tests to bypass DB setup.
+
+    Story 2-2: also requires MAILBOT_SKIP_POLICY=1 for the prior minimal-static-
+    health behavior — DB-skip and policy-skip are now independent flags
+    (review fix HIGH: policy load is decoupled from DB-skip branch).
+    """
     monkeypatch.delenv("MAILBOT_DB_PATH", raising=False)
     monkeypatch.setenv("MAILBOT_SKIP_DB", "1")
+    monkeypatch.setenv("MAILBOT_SKIP_POLICY", "1")
 
     from mailbot_api.main import lifespan
 
@@ -231,6 +241,32 @@ def test_lifespan_skips_db_when_skip_flag_set(monkeypatch: pytest.MonkeyPatch) -
             pass
 
     # Should not raise.
+    asyncio.run(_run())
+
+
+def test_lifespan_loads_policy_when_db_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Story 2-2 / review fix HIGH: SKIP_DB=1 alone does NOT skip policy load.
+
+    Tests that need to exercise Router-side code without a DB set
+    MAILBOT_SKIP_DB=1 + MAILBOT_POLICY_PATH=<test fixture>; the policy
+    snapshot must be initialized so get_policy() / snapshot_for_dispatch()
+    succeed (no opaque RuntimeError from the carrier-only state)."""
+    monkeypatch.delenv("MAILBOT_DB_PATH", raising=False)
+    monkeypatch.delenv("MAILBOT_SKIP_POLICY", raising=False)
+    monkeypatch.setenv("MAILBOT_SKIP_DB", "1")
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    monkeypatch.setenv("MAILBOT_POLICY_PATH", str(repo_root / "router" / "policy.yaml"))
+
+    from mailbot_api.main import lifespan
+    from mailbot_api.router.policy import get_policy
+
+    async def _run() -> None:
+        async with lifespan(None):  # type: ignore[arg-type]
+            # Inside the lifespan, the snapshot must be loaded.
+            assert get_policy().version  # non-empty string
+
     asyncio.run(_run())
 
 

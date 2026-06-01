@@ -1,0 +1,79 @@
+"""Pause/resume kill-switch per Story 2-9.
+
+Module-level pause flag with SQLite persistence. When ``is_paused()`` is
+True, ``ask_router`` short-circuits before adapter dispatch with
+``RouterError(code=PROVIDER_ERROR, message="router paused", retryable=True)``.
+In-flight calls at pause time finish normally — we never abort mid-call.
+
+Verb-side handlers live in ``mailbot_api/verbs/router_control.py``.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+
+from mailbot_api.db import connection, queries
+
+_log = logging.getLogger(__name__)
+
+
+class PauseState:
+    def __init__(self) -> None:
+        self._paused: bool = False
+        self._reason: str | None = None
+
+    async def initialize(self, db_path: str) -> None:
+        row = await connection.fetchone(db_path, queries.PAUSE_STATE_SELECT, ())
+        if row is None:
+            return
+        self._paused = bool(row[0])
+        self._reason = row[1]
+
+    def is_paused(self) -> bool:
+        return self._paused
+
+    def reason(self) -> str | None:
+        return self._reason
+
+    async def pause(self, db_path: str, *, reason: str) -> None:
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        await connection.execute_write(
+            db_path, queries.PAUSE_STATE_PAUSE, (reason, now_iso)
+        )
+        self._paused = True
+        self._reason = reason
+        _log.warning(
+            "router paused",
+            extra={"event": "router.paused", "reason": reason},
+        )
+
+    async def resume(self, db_path: str) -> None:
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        await connection.execute_write(
+            db_path, queries.PAUSE_STATE_RESUME, (now_iso,)
+        )
+        self._paused = False
+        self._reason = None
+        _log.info(
+            "router resumed",
+            extra={"event": "router.resumed"},
+        )
+
+    def reset_for_test(self) -> None:
+        self._paused = False
+        self._reason = None
+
+
+_PAUSE_STATE = PauseState()
+
+
+def get_pause_state() -> PauseState:
+    return _PAUSE_STATE
+
+
+def _reset_pause_state_for_test() -> None:
+    _PAUSE_STATE.reset_for_test()
+
+
+__all__ = ["PauseState", "get_pause_state"]

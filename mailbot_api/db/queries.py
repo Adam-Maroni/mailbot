@@ -151,3 +151,149 @@ WORKER_HEALTH_UPSERT = (
     "  last_outcome = excluded.last_outcome, "
     "  last_error = excluded.last_error"
 )
+
+
+# --- router_calls (Story 2-1) ---
+#
+# The ONLY production-code INSERT into router_calls. Boundary-checked at
+# scripts/check_boundaries.py; any other module attempting this literal fails
+# `make lint`. Callers go through observability/audit.record_router_call().
+#
+# Column order is load-bearing: record_router_call() builds the parameter
+# tuple in this exact order. Any column addition requires synchronizing
+# (a) the migration, (b) this INSERT, (c) the param tuple in audit.py,
+# (d) the RouterCallRow model.
+
+ROUTER_CALLS_INSERT = (
+    "INSERT INTO router_calls ("
+    "  ts, task_type, prompt_version, model_chosen, model_chosen_reason, "
+    "  tokens_in, tokens_out, cached_tokens_in, cost_usd_estimated, latency_ms, "
+    "  outcome, caller_verb, caller_origin, email_id, "
+    "  sensitivity_grant_id, sensitivity_grant_minted_at"
+    ") VALUES ("
+    "  ?, ?, ?, ?, ?, "
+    "  ?, ?, ?, ?, ?, "
+    "  ?, ?, ?, ?, "
+    "  ?, ?"
+    ")"
+)
+
+
+# --- response_cache (Story 2-7) ---
+
+RESPONSE_CACHE_SELECT = (
+    "SELECT result_json, cost_usd, cached_at, ttl_seconds, hit_count "
+    "FROM response_cache WHERE cache_key = ?"
+)
+
+RESPONSE_CACHE_INSERT = (
+    "INSERT INTO response_cache ("
+    "  cache_key, task_type, model, result_json, cost_usd, "
+    "  cached_at, ttl_seconds, hit_count"
+    ") VALUES (?, ?, ?, ?, ?, ?, ?, 0) "
+    "ON CONFLICT(cache_key) DO UPDATE SET "
+    "  task_type = excluded.task_type, "
+    "  model = excluded.model, "
+    "  result_json = excluded.result_json, "
+    "  cost_usd = excluded.cost_usd, "
+    "  cached_at = excluded.cached_at, "
+    "  ttl_seconds = excluded.ttl_seconds"
+)
+
+RESPONSE_CACHE_INCREMENT_HIT = (
+    "UPDATE response_cache SET hit_count = hit_count + 1 WHERE cache_key = ?"
+)
+
+
+# --- degraded_mode_state (Story 2-8) ---
+
+DEGRADED_MODE_SELECT = (
+    "SELECT active, entered_at, exited_at FROM degraded_mode_state WHERE id = 1"
+)
+
+DEGRADED_MODE_ENTER = (
+    "UPDATE degraded_mode_state SET active = 1, entered_at = ?, exited_at = NULL WHERE id = 1"
+)
+
+DEGRADED_MODE_EXIT = (
+    "UPDATE degraded_mode_state SET active = 0, exited_at = ? WHERE id = 1"
+)
+
+
+# --- router_calls aggregations (Story 2-8) ---
+
+ROUTER_CALLS_SPEND_SINCE = (
+    "SELECT COALESCE(SUM(cost_usd_estimated), 0) FROM router_calls WHERE ts >= ?"
+)
+
+
+# --- pause_state (Story 2-9) ---
+
+PAUSE_STATE_SELECT = (
+    "SELECT paused, reason, paused_at, resumed_at FROM pause_state WHERE id = 1"
+)
+
+PAUSE_STATE_PAUSE = (
+    "UPDATE pause_state SET paused = 1, reason = ?, paused_at = ?, resumed_at = NULL WHERE id = 1"
+)
+
+PAUSE_STATE_RESUME = (
+    "UPDATE pause_state SET paused = 0, resumed_at = ? WHERE id = 1"
+)
+
+
+# --- call_volume_baseline (Story 2-9) ---
+
+CALL_VOLUME_LAST_HOUR_BY_ORIGIN = (
+    "SELECT caller_origin, COUNT(*) FROM router_calls "
+    "WHERE ts >= ? GROUP BY caller_origin"
+)
+
+CALL_VOLUME_BASELINE_SELECT = (
+    "SELECT mean_volume, stddev_volume, sample_count FROM call_volume_baseline "
+    "WHERE caller_origin = ? AND hour_of_day = ?"
+)
+
+# --- cost breakdown aggregations (Story 2-10) ---
+
+ROUTER_CALLS_TOTALS_SINCE = (
+    "SELECT "
+    "  COUNT(*), "
+    "  COALESCE(SUM(cost_usd_estimated), 0), "
+    "  COALESCE(SUM(cached_tokens_in), 0), "
+    "  COALESCE(SUM(tokens_in), 0) "
+    "FROM router_calls WHERE ts >= ?"
+)
+
+ROUTER_CALLS_BY_TASK_SINCE = (
+    "SELECT task_type, COALESCE(SUM(cost_usd_estimated), 0) "
+    "FROM router_calls WHERE ts >= ? GROUP BY task_type"
+)
+
+ROUTER_CALLS_BY_MODEL_SINCE = (
+    "SELECT model_chosen, COALESCE(SUM(cost_usd_estimated), 0) "
+    "FROM router_calls WHERE ts >= ? GROUP BY model_chosen"
+)
+
+ROUTER_CALLS_BY_CALLER_ORIGIN_SINCE = (
+    "SELECT caller_origin, COALESCE(SUM(cost_usd_estimated), 0) "
+    "FROM router_calls WHERE ts >= ? GROUP BY caller_origin"
+)
+
+# Hermes aux drift detection (Story 2-10 AC).
+ROUTER_CALLS_HERMES_AUX_SINCE = (
+    "SELECT COUNT(*) FROM router_calls "
+    "WHERE ts >= ? AND caller_origin LIKE 'hermes-aux-%'"
+)
+
+
+CALL_VOLUME_BASELINE_UPSERT = (
+    "INSERT INTO call_volume_baseline ("
+    "  caller_origin, hour_of_day, mean_volume, stddev_volume, sample_count, last_updated"
+    ") VALUES (?, ?, ?, ?, ?, ?) "
+    "ON CONFLICT(caller_origin, hour_of_day) DO UPDATE SET "
+    "  mean_volume = excluded.mean_volume, "
+    "  stddev_volume = excluded.stddev_volume, "
+    "  sample_count = excluded.sample_count, "
+    "  last_updated = excluded.last_updated"
+)

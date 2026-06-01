@@ -1,0 +1,8 @@
+"""Fixture: calls yaml.safe_load outside mailbot_api/router/policy.py.
+
+Must trigger Story 2-2 AC-12 boundary check.
+"""
+
+import yaml
+
+DATA = yaml.safe_load("x: 1")

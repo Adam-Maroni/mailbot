@@ -1,0 +1,51 @@
+# MailBot Router policy — per-task routing decisions.
+#
+# Architecture §"D11: policy.yaml reload semantics":
+#   - validation-or-no-swap on every edit
+#   - mid-call race is acceptable (in-flight calls finish under pre-swap policy)
+#
+# Edit this file at runtime; watchfiles will reload it. Invalid edits stay
+# logged but do NOT take effect — the previously-running policy continues.
+#
+# Schema reference: mailbot_api/router/policy.py (PolicyTable / PolicyEntry).
+
+version: "policy-v0-2026-06-01"
+
+tasks:
+  coarse_class:
+    model: "qwen2.5:3b-instruct-q4_K_M"
+    prompt_version: "v1"
+    escalate: false
+    max_tokens_out: 256
+    lane: "batch"
+    sensitivity: "any"
+    notes: "Coarse classification (newsletter / transactional / personal / promotional / spam) — small output, batch-lane appropriate."
+
+  sensitivity_class:
+    model: "qwen2.5:3b-instruct-q4_K_M"
+    prompt_version: "v1"
+    escalate: false
+    max_tokens_out: 128
+    lane: "batch"
+    sensitivity: "any"
+    notes: "Sensitivity classification — the gate that determines sensitivity. Must be local-only per Rule Q. sensitivity=any here means this task itself is unconstrained because it IS the gate."
+
+  draft_reply:
+    model: "claude-opus-4-7"
+    prompt_version: "v1"
+    escalate: false
+    max_tokens_out: 1500
+    lane: "interactive"
+    sensitivity: "any"
+    notes: "Drafts can contain sensitive content; Epic-4's grant flow gates the send. Interactive-lane so chat reply doesn't wait behind ingest."
+    demotion_hypothesis: "Haiku v1 may hold quality on short replies under 200 words; demote when corpus shows ≥0.85 calibrated score parity AND p95 latency stays under 8s."
+    promotion_hypothesis: null
+
+  hermes_aux:
+    model: "claude-haiku-4-5-20251001"
+    prompt_version: "v1"
+    escalate: false
+    max_tokens_out: 1024
+    lane: "interactive"
+    sensitivity: "any"
+    notes: "Hermes-aux pass-through via /v1/chat/completions. force_model is overridden by the request body; this entry exists so policy.tasks['hermes_aux'] resolves."

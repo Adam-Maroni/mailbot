@@ -1,0 +1,8 @@
+"""Fixture: bypasses yaml.safe_load(...) attribute detection via `from yaml import safe_load`.
+
+Story 2-2 review fix LOW: catch this bypass too.
+"""
+
+from yaml import safe_load
+
+DATA = safe_load("x: 1")

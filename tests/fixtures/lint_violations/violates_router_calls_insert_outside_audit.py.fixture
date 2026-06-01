@@ -1,0 +1,11 @@
+"""Fixture: contains `INSERT INTO router_calls` outside the audit-writer allowlist.
+
+Must trigger Story 2-1 AC-6 boundary check (separate from the raw-SQL check, even
+though both fire here — the dedicated check exists to point at the right
+boundary in the violation message).
+"""
+
+ROUTER_CALLS_INSERT_ROGUE = (
+    "INSERT INTO router_calls (ts, task_type, model_chosen, model_chosen_reason, outcome) "
+    "VALUES (?, ?, ?, ?, ?)"
+)

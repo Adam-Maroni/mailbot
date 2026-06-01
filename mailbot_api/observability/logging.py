@@ -11,21 +11,19 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import sys
 from datetime import datetime, timezone
 from typing import Any
 
-# Sanitizer patterns per AC-4. Each pattern replaces the entire match with `[REDACTED]`.
-_BEARER_TOKEN_RE = re.compile(r"Bearer\s+[A-Za-z0-9._-]+")
-_SK_KEY_RE = re.compile(r"sk-[A-Za-z0-9_-]{20,}")
-# Match URLs with sensitive query params. Capture up to the next `&` or end-of-string.
-_URL_TOKEN_QUERY_RE = re.compile(
-    r"(https?://[^\s?]+\?[^\s]*?(?:token|code|access_token)=)[^&\s]+",
-    flags=re.IGNORECASE,
+# Sanitizer patterns per AC-4 live in observability/_redaction.py (extracted
+# in Story 2-1 review fix R9 — sharing with router/errors.py without
+# cross-module private-symbol imports).
+from mailbot_api.observability._redaction import (
+    BEARER_TOKEN_RE,
+    SECRET_FILE_RE,
+    SK_KEY_RE,
+    URL_TOKEN_QUERY_RE,
 )
-# Match secret-shaped file paths.
-_SECRET_FILE_RE = re.compile(r"[/\\]?[\w/.\\-]+\.(?:env|key|pem)\b", flags=re.IGNORECASE)
 
 
 def sanitize(value: Any) -> Any:
@@ -36,10 +34,10 @@ def sanitize(value: Any) -> Any:
     ``scripts/`` can reuse the same redaction rules before printing to stderr.
     """
     if isinstance(value, str):
-        v = _BEARER_TOKEN_RE.sub("[REDACTED_BEARER]", value)
-        v = _SK_KEY_RE.sub("[REDACTED_SK_KEY]", v)
-        v = _URL_TOKEN_QUERY_RE.sub(r"\1[REDACTED_QUERY_TOKEN]", v)
-        v = _SECRET_FILE_RE.sub("[REDACTED_PATH]", v)
+        v = BEARER_TOKEN_RE.sub("[REDACTED_BEARER]", value)
+        v = SK_KEY_RE.sub("[REDACTED_SK_KEY]", v)
+        v = URL_TOKEN_QUERY_RE.sub(r"\1[REDACTED_QUERY_TOKEN]", v)
+        v = SECRET_FILE_RE.sub("[REDACTED_PATH]", v)
         return v
     if isinstance(value, dict):
         return {k: sanitize(v) for k, v in value.items()}

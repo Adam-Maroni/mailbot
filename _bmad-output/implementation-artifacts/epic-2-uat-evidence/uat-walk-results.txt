@@ -1,0 +1,16 @@
+Epic-2 Phase 3.5 UAT walk — walk_uat.py
+DB: C:\Users\Adam\AppData\Local\Temp\mailbot-uat-863kon31\uat.db
+
+[PASS] CP-1 router_calls schema: table present + 3 indexes (['ix_router_calls_email_id', 'ix_router_calls_task_type_model_chosen', 'ix_router_calls_ts'])
+[PASS] CP-2 policy hot-reload: version changed from uat-v1 to uat-v2
+[PASS] CP-2b policy malformed-edit: prior policy retained when YAML became malformed
+[SKIP] CP-3 ollama models pre-pulled: requires running Docker stack; deferred to real-env verification
+[PASS] CP-4 ask_router happy path: result.ok=True, row=('qwen2.5:3b-instruct-q4_K_M', 'policy', 'ok', 'uat-walk')
+[PASS] CP-5 interactive lane rate limit (60/hr): 61st call returned RATE_LIMITED
+[PASS] CP-6 Anthropic cached-token accounting (mocked): AdapterResponse.cached_tokens_in wires through to audit
+[PASS] CP-7 response cache hit: second call.cost_usd=0, model_used=qwen2.5:3b-instruct-q4_K_M+response_cache, adapter calls=1
+[PASS] CP-8 degraded mode + /budget reset: force-opus blocked while degraded; reset cleared flag
+[PASS] CP-9 pause/resume kill-switch + persistence: paused blocks, persists across re-init, resume restores
+[PASS] CP-10 /v1/chat/completions endpoint: covered by 5 integration tests in test_chat_completions_endpoint.py (all passing in suite of 325)
+
+Summary: PASS=10, FAIL=0, SKIP=1
