@@ -1,0 +1,15 @@
+fastapi==0.136.1
+uvicorn[standard]
+pydantic>=2
+anthropic==0.105.2
+ollama==0.6.2
+mcp==1.27.2
+numpy
+matplotlib
+httpx
+pyyaml
+watchfiles
+pytest
+pytest-asyncio
+ruff
+mypy

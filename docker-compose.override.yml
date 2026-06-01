@@ -1,0 +1,22 @@
+# Local-dev overrides per architecture §2 — applied automatically when running
+# `docker compose up` (compose merges -f docker-compose.yml + -f docker-compose.override.yml).
+#
+# Per CR-2: do NOT use `command:` override here. That bypasses entrypoint.sh and silently
+# drops the background worker process. Use UVICORN_RELOAD=1 env var instead; entrypoint.sh
+# reads it and adds --reload to the uvicorn flags.
+
+services:
+  mailbot-api:
+    ports:
+      - "8000:8000"
+    environment:
+      - UVICORN_RELOAD=1
+    volumes:
+      - ./mailbot_api:/app/mailbot_api
+      - ./router:/app/router
+      - ./prompts:/app/prompts
+      - ./verbs:/app/verbs
+
+  ollama:
+    ports:
+      - "11434:11434"

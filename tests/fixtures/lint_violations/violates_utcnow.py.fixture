@@ -1,0 +1,5 @@
+"""Fixture: uses datetime.utcnow() instead of datetime.now(timezone.utc). Must trigger DTZ003."""
+
+from datetime import datetime
+
+t = datetime.utcnow()

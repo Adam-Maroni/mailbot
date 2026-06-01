@@ -1,0 +1,82 @@
+# MailBot 3-container Docker Compose stack per architecture §"3-container Docker Compose stack".
+# Production-shape: no source bind-mounts, no host port maps except what's strictly needed.
+# docker-compose.override.yml layers on dev source bind-mounts + dev port exposure.
+
+services:
+  mailbot-hermes:
+    image: nousresearch/hermes-agent:latest  # per architecture AR-DEPLOY-1; image pin tracked in retro flags
+    container_name: mailbot-hermes
+    networks:
+      - mailbot-net
+    volumes:
+      - mailbot_hermes_data:/data
+      - mailbot_logs:/var/log/mailbot
+    environment:
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}
+      # Hermes routes its LLM calls through mailbot-api per AR-D2-1
+      - MAILBOT_API_BASE_URL=http://mailbot-api:8000/v1
+    depends_on:
+      mailbot-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  mailbot-api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mailbot-api
+    container_name: mailbot-api
+    networks:
+      - mailbot-net
+    volumes:
+      - mailbot_db:/data
+      - mailbot_logs:/var/log/mailbot
+    environment:
+      # mailbot-api holds the Anthropic key (Rule F.1)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OUTLOOK_CLIENT_ID=${OUTLOOK_CLIENT_ID:-}
+      - OUTLOOK_CLIENT_SECRET=${OUTLOOK_CLIENT_SECRET:-}
+      - OUTLOOK_TENANT_ID=${OUTLOOK_TENANT_ID:-}
+      - OUTLOOK_REFRESH_TOKEN=${OUTLOOK_REFRESH_TOKEN:-}
+      - MAILBOT_DB_PATH=/data/mailbot.db
+      - OLLAMA_URL=http://ollama:11434
+      - MAILBOT_ROUTER_KEY=${MAILBOT_ROUTER_KEY:-}
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  ollama:
+    image: ollama/ollama:0.6.2  # pinned to match anthropic/ollama Python SDK pin per AR-BOOT-2
+    container_name: mailbot-ollama
+    networks:
+      - mailbot-net
+    volumes:
+      - mailbot_ollama:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+networks:
+  mailbot-net:
+    name: mailbot-net
+    driver: bridge
+
+volumes:
+  mailbot_db:
+    name: mailbot_db
+  mailbot_ollama:
+    name: mailbot_ollama
+  mailbot_hermes_data:
+    name: mailbot_hermes_data
+  mailbot_logs:
+    name: mailbot_logs

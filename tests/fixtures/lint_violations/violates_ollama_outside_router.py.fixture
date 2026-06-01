@@ -1,0 +1,3 @@
+"""Fixture: imports ollama outside mailbot_api/router/models.py. Must trigger BOUNDARY via scripts/check_boundaries.py."""
+
+import ollama  # noqa: F401

@@ -1,0 +1,3 @@
+"""Fixture: a non-scripts/ Python file using print(). Must trigger T201."""
+
+print("this should fail T201")

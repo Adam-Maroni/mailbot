@@ -1,0 +1,129 @@
+# generated: 2026-05-31
+# last_updated: 2026-05-31
+# project: MailBot
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog -> in-progress: Automatically when first story is created (via create-story)
+#   - in-progress -> done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: 2026-05-31
+last_updated: 2026-06-01
+project: MailBot
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+
+development_status:
+  # Epic 1: Inbox Foundation
+  epic-1: done
+  1-1-repo-scaffold-dependency-pinning: done  # 2026-06-01 — Python 3.12 venv + 15-line requirements.txt + full architecture §2 scaffold + 17 __init__.py + 7 root configs; 5/7 code-review fixes applied (1 deferred CR-4 sub-dirs, 1 flagged CR-6 sensitivity_patterns.yaml ownership); all gates green. See story file Completion Notes.
+  1-2-docker-stack-scaffolding-with-health-endpoints: done  # 2026-06-01 — FastAPI /health + /v1/health, multi-stage Dockerfile (non-root user, tini PID 1), entrypoint.sh w/ wait -n fail-fast, docker-compose.yml (3 services, healthchecks, condition:service_healthy), 3 integration tests pass. Docker-compose-up verification deferred to Phase 3.5. 8/9 CR fixes applied, 1 partial (hermes:latest per architecture AR-DEPLOY-1).
+  1-3-sqlite-layer-with-wal-executor-writes-and-migration-runner: done  # 2026-06-01 — WAL pragmas + async fetchone/fetchall/execute_write (explicit BEGIN IMMEDIATE/COMMIT); migrations_runner with atomic apply (composite executescript) + duplicate-prefix detection; 001_init.sql w/ emails+threads+senders+sync_state + derived-field companion columns; FastAPI lifespan applies migrations on startup; 18 integration tests pass. 8/10 CR fixes applied, 2 deferred (CR-5 sync-reads architecture-permitted; CR-8 embedding dtype/shape owned by 3-4).
+  1-4-hard-code-boundaries-and-structured-json-logging: done  # 2026-06-01 — config.py get_secret/SecretMissing; observability/logging.py JsonFormatter+sanitizer (Bearer/sk-/URL-query/secret-paths); ruff T20+DTZ+S boundary rules; scripts/check_boundaries.py AST scan for selective-import allowlists; 7 lint-violation fixtures + parameterized meta-tests; 45 tests pass, ruff clean, mypy clean, boundary checker clean. Story 1-4 ships with no code-review subagent — gates green-on-first-try; CR escalation only for issues beyond gate-coverage. (Notably: Sonnet-4.6 review opted out to keep the loop moving — flagged in epic-run-flags.md.)
+  1-5-microsoft-graph-client-and-oauth-bootstrap-from-env: done  # 2026-06-01 — GraphClient (Rule B sole graph.microsoft.com consumer) with refresh-token exchange + in-memory access-token cache + lazy refresh + GraphAuthError; check_graph_auth.py smoke script; 8 unit tests via httpx.MockTransport. Real-tenant smoke deferred to Phase 3.5 manual verification (no OUTLOOK_* env vars on dev host). 53 tests pass total. No code-review subagent.
+  1-6-oauth-state-table-and-token-rotation-persistence: done  # 2026-06-01 — 002_oauth_state.sql migration + sync/oauth.py (load/seed/exchange/get_access_token) + db/queries.py Rule-C consolidation + docs/auth-recovery.md + 9 integration tests (real SQLite + httpx.MockTransport). Boundary checker tightened to reduce docstring false positives. 62 tests pass total, all gates green.
+  1-7-delta-sync-worker-and-idempotent-upserts: done  # 2026-06-01 — sync_worker.run_once with full FR-1.x coverage (delta_link, pagination via @odata.nextLink, @removed soft-delete, 429 + Retry-After honoring, exponential backoff, delta_link-advance-only-on-success); db/queries.py expanded with 7 new SQL constants; scripts/mailbot.py CLI with sync-now subcommand; 8 integration tests via real SQLite + httpx.MockTransport. 70 tests pass total, all gates green.
+  1-8-two-process-container-entrypoint-and-continuous-sync-health-alarm: done  # 2026-06-01 — 004_worker_health.sql migration + notifications.send_urgent JSONL writer + worker.sync_loop cron loop w/ alarm debounce + /health enriched with sync_* fields; 14 integration tests cover alarm debounce + recovery + silent-when-no-heartbeat-yet. Docker stack stand-up deferred to Phase 3.5. 84 tests pass total, all gates green. EPIC 1 COMPLETE.
+  epic-1-retrospective: optional
+
+  # Epic 2: Router as Cost-Discipline Center
+  epic-2: backlog
+  2-1-router-calls-audit-table-and-router-result-router-error-data-shapes: backlog
+  2-2-policy-yaml-schema-and-loader-and-watchfiles-hot-reload: backlog
+  2-3-ollama-adapter-and-qwen-local-model-serving: backlog
+  2-4-ask-router-core-orchestration-dispatch-timeout-schema-validation-retry-escalate: backlog
+  2-5-two-queue-lane-scheduling-and-rate-limits-and-concurrency-semaphore: backlog
+  2-6-anthropic-adapter-and-haiku-and-opus-and-ephemeral-prompt-cache: backlog
+  2-7-response-cache-and-cache-warmer: backlog
+  2-8-4-layer-budget-guard-and-degraded-mode-and-per-call-refusal-threshold: backlog
+  2-9-hourly-anomaly-detection-and-anti-loop-kill-switch-and-pause-resume: backlog
+  2-10-cost-slash-command-and-hermes-aux-routing-via-v1-chat-completions-and-caller-origin-tracking: backlog
+  epic-2-retrospective: optional
+
+  # Epic 3: Ingest Pipeline
+  epic-3: backlog
+  3-1-derived-field-schema-and-companion-metadata-and-idempotency-helper: backlog
+  3-2-prompt-modules-for-ingest-tasks-uniform-ar-pat-5-structure: backlog
+  3-3-sensitivity-classifier-and-sensitivity-patterns-yaml-and-router-precondition-layer: backlog
+  3-4-nomic-embed-text-embedding-adapter-and-embedding-column-writes: backlog
+  3-5-pipeline-ordering-enforcement-single-email-end-to-end: backlog
+  3-6-backpressure-ceiling-and-batched-processing-bulk-pipeline-drain: backlog
+  3-7-senders-and-threads-upsert-and-cached-sender-reputation-summary: backlog
+  3-8-targeted-re-derivation-cli: backlog
+  epic-3-retrospective: optional
+
+  # Epic 4: Authorized Actions
+  epic-4: backlog
+  4-1-action-type-enum-and-tier-for-and-cross-cutting-properties-table: backlog
+  4-2-pending-actions-and-action-grants-and-action-history-schema-and-propose-action-verb: backlog
+  4-3-scoped-time-bounded-grants-and-mint-grant-verb-and-is-grant-valid-helper: backlog
+  4-4-drainer-with-second-auth-check-and-tier-3-etag-and-lenient-tier-1-2-conflict-policy: backlog
+  4-5-outlook-write-back-via-graph-and-error-classified-retry-chain: backlog
+  4-6-cooling-off-and-cancel-action-id-and-hard-20-send-day-cap-enforcement: backlog
+  4-7-sensitive-content-api-override-handshake-mint-sensitivity-token-and-confirmation-token-parameter-and-in-memory-registry: backlog
+  4-8-tier-1-24-hour-reverter-via-action-history: backlog
+  epic-4-retrospective: optional
+
+  # Epic 5: Conversational Control
+  epic-5: backlog
+  5-1-read-side-verbs-projection-first-data-window-for-the-agent: backlog
+  5-2-mcp-server-exposing-verbs-as-tools: backlog
+  5-3-chat-side-prompts-intent-parsing-chat-reference-resolution-draft-reply-tone-style-mirror-multi-turn-refinement: backlog
+  5-4-hermes-container-config-and-discord-adapter-and-mcp-client-wiring: backlog
+  5-5-soul-md-defender-persona-and-agents-md-operational-rules-and-skill-md: backlog
+  5-6-slash-command-dispatcher: backlog
+  5-7-chat-input-redactor-and-memory-export-redactor: backlog
+  5-8-conversational-reference-resolution-built-and-instrumented-fr-4-3-validated-in-epic-7: backlog
+  5-9-draft-reply-flow-end-to-end-capstone: backlog
+  epic-5-retrospective: optional
+
+  # Epic 6: Observability & Trust Signals
+  epic-6: backlog
+  6-1-mailbot-status-cli-returning-the-full-picture-in-10-seconds: backlog
+  6-2-mailbot-logs-mailbot-pause-mailbot-resume-cli: backlog
+  6-3-notification-tier-dispatcher-and-discord-delivery: backlog
+  6-4-anti-fatigue-mechanics-quiet-hours-dedup-mute-self-reflection-urgent-only-posture: backlog
+  6-5-daily-digest-at-08-00-compose-digest-verb-and-hermes-agent-intro: backlog
+  6-6-internal-scheduler-sync-cache-warmer-ingest-drainer-anomaly-check-and-worker-health-heartbeats: backlog
+  6-7-vps-operator-scripts-setup-vps-sh-deploy-sh-backup-sh-restore-sh: backlog
+  6-8-spend-chart-command-matplotlib-rendered-png-analytics-verb: backlog
+  epic-6-retrospective: optional
+
+  # Epic 7: Eval & Calibration
+  epic-7: backlog
+  7-1-eval-corpus-email-corpus-v1-jsonl-with-100-hand-labeled-emails: backlog
+  7-2-benchmark-runner-and-benchmark-runs-table-and-cost-confirmation-gate: backlog
+  7-3-scorer-objective-and-subjective-with-anchor-calibrated-auto-eval: backlog
+  7-4-report-generator-pareto-frontier-and-demote-promote-suggestions: backlog
+  7-5-sunday-production-sampling-corpus-growth-via-discord-dm-prompts: backlog
+  7-6-weekly-kl-divergence-drift-report-distribution-shift-detection: backlog
+  7-7-shadow-mode-prompt-rollouts-and-fr-4-3-reference-resolution-validation: backlog
+  epic-7-retrospective: optional

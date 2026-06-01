@@ -1,0 +1,65 @@
+[project]
+name = "mailbot"
+version = "0.1.0"
+description = "Personal email triage agent with cost-disciplined Router and queued authorized actions"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = [
+    ".venv",
+    "build",
+    "dist",
+    "_bmad",
+    "_bmad-output",
+    ".claude",
+    "docs/external",
+    "_eval-outputs",
+    "hermes-docs",
+]
+
+[tool.ruff.lint]
+# Baseline + boundary-enforcement rules per AR-PAT-1.
+#   E/F/I/W — pycodestyle / pyflakes / isort / pylint-warning baseline
+#   T20     — flake8-print: bans print() outside scripts/ (per AR-PAT-6 Rule F)
+#   DTZ     — flake8-datetimez: bans datetime.utcnow() per AR-PAT-3
+#   S       — flake8-bandit: catches eval, exec, hardcoded passwords, shell=True
+# The selective import-allowlist boundaries (ollama/anthropic in router/models.py
+# only, sqlite3 in db/ only, os.environ in config.py only, raw SQL in db/queries.py
+# only) are enforced by scripts/check_boundaries.py — ruff doesn't natively support
+# per-file import allowlists.
+select = ["E", "F", "I", "W", "T20", "DTZ", "S"]
+# Allow assert in test code (S101); accept blocking sqlite imports in db modules
+# via the standalone boundary checker rather than per-file ruff ignores.
+ignore = ["S101", "S104"]
+
+[tool.ruff.lint.per-file-ignores]
+# Scripts may print; bandit's hardcoded-IP/binding checks don't apply.
+"scripts/**/*.py" = ["T201", "T203"]
+# Tests may use bandit-flagged patterns (assertions, fixture passwords, etc.).
+"tests/**/*.py" = ["S", "T20"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_unused_ignores = true
+warn_return_any = true
+exclude = [
+    "\\.venv",
+    "build",
+    "_bmad",
+    "_bmad-output",
+    "\\.claude",
+    "docs/external",
+    "_eval-outputs",
+    "hermes-docs",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]

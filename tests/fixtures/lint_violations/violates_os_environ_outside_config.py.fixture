@@ -1,0 +1,7 @@
+"""Fixture: uses os.environ outside mailbot_api/config.py. Must trigger BOUNDARY."""
+
+import os
+
+x = os.environ["FOO"]
+y = os.environ.get("BAR")
+z = os.getenv("BAZ")

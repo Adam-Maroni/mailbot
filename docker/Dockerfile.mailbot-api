@@ -1,0 +1,64 @@
+# Multi-stage Dockerfile for mailbot-api per architecture §2 line 807.
+# Stage 1 installs deps into a venv; stage 2 copies the venv + source for a slim runtime.
+
+# ---- Builder ----
+FROM python:3.12.10-slim-bookworm AS builder
+
+WORKDIR /build
+
+# Install build-time deps (gcc for numpy/matplotlib wheel fallbacks on slim base)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create venv and install pinned deps
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+
+# ---- Runtime ----
+FROM python:3.12.10-slim-bookworm AS runtime
+
+# Install runtime-only system deps (curl for entrypoint health probes; tini for PID 1;
+# procps for `ps` per Story 1-8 AC-6 `docker exec mailbot-api ps -ef`).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        tini \
+        procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root system user for the runtime process (security baseline per CR-3).
+# uid/gid 1000 matches typical Linux dev-host UID — eases dev-mode bind-mount permissions.
+RUN groupadd --system --gid 1000 mailbot \
+    && useradd --system --uid 1000 --gid mailbot --no-create-home --shell /usr/sbin/nologin mailbot \
+    && mkdir -p /app /data /var/log/mailbot \
+    && chown -R mailbot:mailbot /app /data /var/log/mailbot
+
+# Copy the prebuilt venv from builder
+COPY --from=builder --chown=mailbot:mailbot /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+# Copy source. .dockerignore keeps tests/, _bmad/, .venv/, etc. out.
+# scripts/ ships the operator CLIs (Story 1-5 check_graph_auth.py + Story 1-7 mailbot.py
+# sync-now) — required inside the container per AC-2 and AC-7 of those stories.
+COPY --chown=mailbot:mailbot mailbot_api/ ./mailbot_api/
+COPY --chown=mailbot:mailbot scripts/ ./scripts/
+COPY --chown=mailbot:mailbot docker/entrypoint.sh ./docker/entrypoint.sh
+RUN chmod +x ./docker/entrypoint.sh
+
+USER mailbot
+
+EXPOSE 8000
+
+# tini reaps zombies + forwards signals (entrypoint.sh `wait -n` propagates child deaths)
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["./docker/entrypoint.sh"]

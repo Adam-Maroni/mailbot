@@ -1,0 +1,5 @@
+"""Fixture: imports sqlite3 and calls sqlite3.connect outside mailbot_api/db/. Must trigger BOUNDARY."""
+
+import sqlite3
+
+conn = sqlite3.connect(":memory:")
