@@ -81,7 +81,19 @@ On the app's **Overview** page, copy:
   - Work/school single tenant → paste the GUID itself
   - Mixed-mode → `common`
 
-## Step 5 — Create the client secret
+## Step 5 — Create the client secret (CONFIDENTIAL CLIENT ONLY — usually skip)
+
+**Skip this step if you registered as a public client in Step 3** (the
+recommended path for personal MS accounts / the loopback-localhost flow).
+Public clients (Entra "Mobile and desktop applications" platform) MUST NOT
+send a client secret in the OAuth token exchange — doing so returns
+`AADSTS90023: Public clients can't send a client secret`. The bootstrap script
+omits `client_secret` when it's not in `.env`, which is the right behavior for
+the recommended public-client setup.
+
+**Do this step only if you registered a "Web" platform** in Step 3 (rare;
+typically only needed when the app is hosted as a confidential server-side
+web app).
 
 Go to **Certificates & secrets → Client secrets → New client secret**.
 
@@ -120,11 +132,13 @@ interactively in Step 7's browser flow.
 ## Step 7 — Pre-flight checklist
 
 Before running [scripts/mint_refresh_token.py](../scripts/mint_refresh_token.py),
-confirm you have all four values:
+confirm you have:
 
 - [ ] Client ID (from Step 4)
 - [ ] Tenant routing value: `consumers` / GUID / `common` (from Step 4 + Step 2)
-- [ ] Client secret **value** (from Step 5)
+- [ ] **Public client (recommended for personal MS accounts):** no client secret.
+      Skip the OUTLOOK_CLIENT_SECRET line entirely.
+- [ ] **Confidential client (Web platform):** client secret **value** (from Step 5)
 - [ ] Redirect URI: `http://localhost:8765/callback` (matches Step 3)
 
 Put them in your local dev-box `.env`:
@@ -132,7 +146,7 @@ Put them in your local dev-box `.env`:
 ```dotenv
 OUTLOOK_CLIENT_ID=<client-id-from-step-4>
 OUTLOOK_TENANT_ID=consumers
-OUTLOOK_CLIENT_SECRET=<value-from-step-5>
+# OUTLOOK_CLIENT_SECRET=<value-from-step-5>  # only for Web platform / confidential clients
 OUTLOOK_REDIRECT_URI=http://localhost:8765/callback
 ```
 
@@ -218,7 +232,8 @@ path re-engages, restart the container.
 | --- | --- | --- |
 | Browser shows `AADSTS50011: redirect URI mismatch` | The script's redirect URI does not exactly match the one registered in Step 3 | Re-check Step 3; URL must be byte-identical including trailing slash |
 | Script prints `FATAL: state mismatch` | Someone else's callback arrived first, OR the browser session is from an old run | Re-run the script; close any stale browser tabs from previous runs |
-| Script prints `FATAL: token exchange failed status=400 body={'error': 'invalid_client'}` | Client secret value wrong or expired | Re-do Step 5; paste the new secret into `.env`; re-run |
+| Script prints `FATAL: token exchange failed status=400 body={'error': 'invalid_request', ... 'AADSTS90023: Public clients can't send a client secret' ...}` | Entra app is registered as a public client (Mobile and desktop applications platform) but `OUTLOOK_CLIENT_SECRET` is set in `.env` | Remove (or comment out) the `OUTLOOK_CLIENT_SECRET` line in `.env`; re-run |
+| Script prints `FATAL: token exchange failed status=400 body={'error': 'invalid_client'}` | Client secret value wrong or expired (confidential / Web platform only) | Re-do Step 5; paste the new secret into `.env`; re-run |
 | Script prints `FATAL: token exchange failed status=400 body={'error': 'invalid_grant'}` | Auth code was reused or expired (codes are single-use, valid ~10 min) | Re-run the script — the code is regenerated each run |
 | Token response has no `refresh_token` field | `offline_access` not requested or not granted | Re-do Step 6 (ensure `offline_access` is ticked); re-do Step 8 |
 | Script appears to hang after "Opening browser..."; no browser tab opens | WSL or headless dev box where `webbrowser.open` silently no-ops | The script also prints the authorize URL to stderr — copy it into any browser manually. Then complete sign-in/consent; the callback to `localhost:8765` still works because the redirect goes to your local machine |

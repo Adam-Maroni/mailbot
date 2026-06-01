@@ -38,6 +38,17 @@ def _set_creds(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(k, v)
 
 
+def _set_creds_public_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Like _set_creds but with OUTLOOK_CLIENT_SECRET unset — simulates the
+    public-client (Mobile and desktop apps platform) Entra setup that Story 4-0's
+    Phase 3.5 walkthrough exposed."""
+    for k, v in _BASE_ENV.items():
+        if k == "OUTLOOK_CLIENT_SECRET":
+            monkeypatch.delenv(k, raising=False)
+            continue
+        monkeypatch.setenv(k, v)
+
+
 def _token_transport(
     rotated_refresh: str = "rt-rotated",
     access_token: str = "at-fresh",
@@ -197,3 +208,48 @@ async def test_get_access_token_caches_valid_token(
     t2 = await get_access_token(db_path, transport=transport)
     assert t1 == t2 == "at-cached"
     assert call_count == 1  # token exchange only happened once
+
+
+# --------------------------------------------------------------------------- #
+# Public-client (no OUTLOOK_CLIENT_SECRET) path — Story 4-0 Phase 3.5 finding.
+# --------------------------------------------------------------------------- #
+
+
+async def test_public_client_exchange_omits_client_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When OUTLOOK_CLIENT_SECRET is unset, the refresh-token exchange form body
+    MUST omit the key. Real Entra returns AADSTS90023 for public clients sending
+    a secret, so the production code path must respect the env-var absence."""
+    import urllib.parse
+
+    db_path = await _prepare_db(tmp_path)
+    _set_creds_public_client(monkeypatch)
+    state = await seed_oauth_state_from_env(db_path)
+
+    captured: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(dict(urllib.parse.parse_qsl(request.content.decode())))
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "at-pub",
+                "refresh_token": "rt-pub-rotated",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    await exchange_and_persist(db_path, state=state, transport=transport)
+
+    assert len(captured) == 1
+    form = captured[0]
+    assert "client_secret" not in form, (
+        "Public-client refresh-token exchange must omit client_secret entirely; "
+        "Entra returns AADSTS90023 if it's present (even empty-string)."
+    )
+    assert form["grant_type"] == "refresh_token"
+    assert form["client_id"] == "test-client"
+    assert form["refresh_token"] == "rt-bootstrap"

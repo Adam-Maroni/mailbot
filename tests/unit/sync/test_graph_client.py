@@ -203,6 +203,98 @@ def test_prefer_immutable_id_header_on_graph_requests() -> None:
     assert captured_headers["token"].get("Prefer", "") == ""
 
 
+# --------------------------------------------------------------------------- #
+# Public-client (no client_secret) path — Story 4-0 Phase 3.5 finding:
+# real Entra returns AADSTS90023 when a public client app sends a secret.
+# Mock transport doesn't catch the divergence because it returns 200 regardless
+# of what's in the form body.
+# --------------------------------------------------------------------------- #
+
+
+def test_public_client_omits_client_secret_from_token_form() -> None:
+    """When client_secret is not provided, the refresh-token exchange form body
+    MUST omit the key entirely. Real Entra (public client) returns AADSTS90023
+    otherwise."""
+    captured_forms: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import urllib.parse
+        if "login.microsoftonline.com" in request.url.host:
+            captured_forms.append(
+                dict(urllib.parse.parse_qsl(request.content.decode()))
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "at-fresh",
+                    "refresh_token": "rt-rotated",
+                    "expires_in": 3600,
+                    "token_type": "Bearer",
+                },
+            )
+        if "graph.microsoft.com" in request.url.host:
+            return httpx.Response(
+                200, json={"displayName": "X", "userPrincipalName": "x@y.com"}
+            )
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    # Pass client_secret=None explicitly — simulates the public-client setup.
+    client = GraphClient(
+        transport=transport,
+        client_id="cid",
+        client_secret=None,
+        tenant_id="consumers",
+        refresh_token="rt-orig",
+    )
+    client.me()
+
+    assert len(captured_forms) == 1
+    form = captured_forms[0]
+    assert "client_secret" not in form, (
+        "Public-client refresh-token exchange must omit client_secret entirely; "
+        "Entra returns AADSTS90023 if it's present."
+    )
+    assert form["grant_type"] == "refresh_token"
+    assert form["client_id"] == "cid"
+    assert form["refresh_token"] == "rt-orig"
+
+
+def test_confidential_client_includes_client_secret_in_token_form() -> None:
+    """Counter-check: when client_secret IS provided, it must appear in the form
+    (so Web-platform / confidential-client setups still work)."""
+    captured_forms: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import urllib.parse
+        if "login.microsoftonline.com" in request.url.host:
+            captured_forms.append(
+                dict(urllib.parse.parse_qsl(request.content.decode()))
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "at-fresh",
+                    "refresh_token": "rt-rotated",
+                    "expires_in": 3600,
+                    "token_type": "Bearer",
+                },
+            )
+        if "graph.microsoft.com" in request.url.host:
+            return httpx.Response(
+                200, json={"displayName": "X", "userPrincipalName": "x@y.com"}
+            )
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    client = GraphClient(transport=transport, **_FAKE_CREDS)
+    client.me()
+
+    assert len(captured_forms) == 1
+    form = captured_forms[0]
+    assert form["client_secret"] == "test-secret"
+
+
 def test_authorization_header_never_logged() -> None:
     """The me() call sends `Authorization: Bearer <token>` but does NOT log the
     Authorization header. Heuristic: scan the source for the substring

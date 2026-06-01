@@ -587,9 +587,51 @@ async def _cli_async_main(args: argparse.Namespace) -> int:
             )
             return 2
 
+    # Story 4-0 Finding 4: the FastAPI lifespan normally loads policy + patterns
+    # snapshots and registers adapters before any ask_router / pipeline call.
+    # The CLI bypasses the lifespan, so we must mirror that init here or every
+    # `process_email` call fails immediately at sensitivity_class.
+    await _cli_init_runtime(db_path)
+
     result = await process_email(email_id=args.email_id, db_path=db_path)
     print(result.model_dump_json(indent=2))  # noqa: T201 — CLI prints to stdout
     return 0 if result.ok else 1
+
+
+async def _cli_init_runtime(db_path: str) -> None:
+    """Initialize the module-level runtime that process_email depends on.
+
+    Mirrors mailbot_api/main.py lifespan() ordering: policy first, then
+    sensitivity patterns, then adapters, then budget guard, then pause state.
+    Apply pending migrations to make sure the DB schema is current for the
+    invoking process (lifespan does this; CLI must too).
+    """
+    from pathlib import Path
+
+    from mailbot_api.config import get_secret_optional
+    from mailbot_api.db.migrations_runner import apply_pending_migrations
+    from mailbot_api.router.budget import get_guard
+    from mailbot_api.router.pause import get_pause_state
+    from mailbot_api.router.policy import load_policy, set_policy_snapshot
+    from mailbot_api.router.registry import init_default_adapters
+    from mailbot_api.sensitivity import load_patterns
+    from mailbot_api.sensitivity.patterns import (
+        set_patterns_snapshot as _set_sensitivity_patterns,
+    )
+
+    apply_pending_migrations(db_path)
+
+    policy_path = Path(get_secret_optional("MAILBOT_POLICY_PATH", "/app/router/policy.yaml"))
+    set_policy_snapshot(load_policy(policy_path))
+
+    patterns_path = Path(
+        get_secret_optional("MAILBOT_PATTERNS_PATH", "/app/router/sensitivity_patterns.yaml")
+    )
+    _set_sensitivity_patterns(load_patterns(patterns_path))
+
+    init_default_adapters()
+    await get_guard().initialize(db_path)
+    await get_pause_state().initialize(db_path)
 
 
 def main() -> int:

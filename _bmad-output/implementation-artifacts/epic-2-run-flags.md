@@ -75,7 +75,7 @@ Epic-2 self-grading scorecard
         2-4: 5/6 applied + 1 deferred = 100% addressed
 ☑ A7 — UX advisory N/A (no graphical frontend per PORTING.md)
 ☑ B1 — File-List-vs-git gate passed for every story (all staged with explicit paths)
-☑ B2 — Phase 3.5 manual-verification gate: PASS (programmatic walk + real Docker stack verify, 2026-06-01)
+☑ B2 — Phase 3.5 manual-verification gate: PASS WITH FINDINGS (Story 4-0 full walk against real Anthropic + real Microsoft Graph + real Ollama stack, 2026-06-01). The original "PASS" label here was from the pre-emptive programmatic walk_uat.py run; the Story 4-0 walk used real services and discovered Findings 1/4/5/6/7/8. Epic 2-specific re-verification: CP-H bearer auth (PASS), CP-I cost_breakdown verb (PASS — but CLI wiring missing per F7), CP-J pause/resume (PASS in-process; F8 documented), policy hot-reload (PASS — confirmed via lifespan loading policy.yaml on every container restart during the walk). See `_bmad-output/implementation-artifacts/4-0-credential-capture-evidence.md` for complete CP-A..CP-K table.
 ```
 
 ## Phase 3.5 Manual Verification — verdict: PASS

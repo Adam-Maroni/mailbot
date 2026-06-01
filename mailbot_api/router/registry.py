@@ -53,6 +53,18 @@ def init_default_adapters() -> None:
         ),
     )
 
+    # Story 4-0 Finding 6: nomic-embed-text was missing from the default
+    # registration. Story 3-4's dispatch_embedding looks it up by model_id and
+    # crashed with KeyError on first real ingest pipeline run.
+    register_adapter(
+        "nomic-embed-text",
+        OllamaAdapter(
+            model_id="nomic-embed-text",
+            base_url=ollama_url,
+            timeout_seconds=30.0,
+        ),
+    )
+
     anthropic_key = get_secret_optional("ANTHROPIC_API_KEY", "")
     if not anthropic_key:
         _log.warning(

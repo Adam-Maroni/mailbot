@@ -82,7 +82,7 @@
 | A5 — issues-found-vs-applied tracked per story (target: ≥70% applied) | ☑ (stories with reviews: 1-1 71%, 1-2 89%, 1-3 80% — all over threshold) |
 | A7 — UX advisory invoked (UI epic) or N/A | N/A (no graphical frontend) |
 | B1 — File-List-vs-git gate passed cleanly for every story | ☑ (every story's File List paths verified before staging) |
-| B2 — Phase 3.5 manual-verification gate | ⏸ NOT YET RESOLVED — pending user PASS/FAIL/PASS WITH FINDINGS |
+| B2 — Phase 3.5 manual-verification gate | ☑ PASS WITH FINDINGS (Story 4-0 walk, 2026-06-01) — see `_bmad-output/implementation-artifacts/4-0-credential-capture-evidence.md`. 9 PASS, 1 SKIP-documented (CP-G cache), 1 PARTIAL (CP-E summary_short blocked by Finding 5 — Story 3-2 prompt JSON instruction missing). Privacy invariants CP-C + CP-F BOTH PASS. 5 latent bugs discovered (3 patched in-story: F1 public-client OAuth, F4 CLI init, F6 nomic-embed registration; 2 documented for follow-up: F5 Haiku JSON prompts, F7 CLI verb wiring). Test count: 458 → 466 passing. |
 
 ---
 
@@ -243,7 +243,7 @@ MailBot has no project-level schema doc. Recommended as a future docs story; not
 ☑ A5 — issues-found-vs-applied tracked (12/15 = 80% applied; ≥70% target met across the CR'd stories)
 ☑ A7 — UX advisory invoked — N/A (no graphical frontend)
 ☑ B1 — File-List-vs-git gate passed cleanly for every story
-☐ B2 — Phase 3.5 manual-verification gate — see "Phase 3.5 manual verification" below
+☑ B2 — Phase 3.5 manual-verification gate: PASS WITH FINDINGS (Story 4-0 walk, 2026-06-01) — see 4-0-credential-capture-evidence.md
 ☑ EPIC-DONE — all 8 stories `done`; `epic-3: done` in sprint-status.yaml
 ☐ CR-CONTRACT — different-model code-review NOT dispatched for Stories 3-3..3-8 — see Critical flag above
 ```

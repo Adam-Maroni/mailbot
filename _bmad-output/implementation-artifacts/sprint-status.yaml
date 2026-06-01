@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-05-31
-last_updated: 2026-06-01  # epic-3 retrospective completed (yolo mode) — see epic-3-retro-2026-06-01.md. 11 action items, prep tasks split across 3 critical milestones (pre-4.1, pre-4.4, pre-4.7). No HARD blockers for Epic 4. 2 HIGH-priority recommendations: retroactive CR on Stories 3-3 + 3-5, sub-second ts micro-fix (third-epic carryover).
+last_updated: 2026-06-01  # Story 4-0 → done (code-review PASS; gates clean: 466 passed + 2 skipped, ruff/mypy/boundary green; F1/F4/F6 patches verified; F5/F7 follow-up owed pre-4.1/pre-6.2 respectively). Phase 3.5 three-epic deferral CLOSED. Test count 458 → 466. B2 flipped to ☑ in Epic 2 + Epic 3 flags files. See _bmad-output/implementation-artifacts/4-0-credential-capture-evidence.md.
 project: MailBot
 project_key: NOKEY
 tracking_system: file-system
@@ -84,6 +84,7 @@ development_status:
 
   # Epic 4: Authorized Actions
   epic-4: backlog
+  4-0-interactive-credential-capture-and-phase-3-5-verification: done  # 2026-06-01 — PASS WITH FINDINGS. 13 keys captured to .env (gitignored); Phase 3.5 walk CP-A..CP-K against real Anthropic + real Microsoft Graph + real Ollama: 9 PASS, 1 SKIP (CP-G ≥1024 tokens), 1 PARTIAL (CP-E F5 prompt bug). Privacy invariants CP-C+CP-F both PASS for first time. 5 latent bugs found: F1 public-client OAuth (patched, +6 tests), F4 CLI init missing (patched, +1 test), F5 Haiku JSON prompts (documented), F6 nomic-embed-text not registered (patched, +1 test), F7 CLI verb wiring missing (documented), F8 pause singleton (design-intent). 458 → 466 tests. evidence: 4-0-credential-capture-evidence.md.
   4-1-action-type-enum-and-tier-for-and-cross-cutting-properties-table: backlog
   4-2-pending-actions-and-action-grants-and-action-history-schema-and-propose-action-verb: backlog
   4-3-scoped-time-bounded-grants-and-mint-grant-verb-and-is-grant-valid-helper: backlog

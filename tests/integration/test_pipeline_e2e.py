@@ -433,3 +433,50 @@ async def test_pipeline_records_idempotency_rows(tmp_path: Path, _clean_state: A
     assert "action_extraction" in task_types
     assert "embedding" in task_types
     assert len(task_types) == 6
+
+
+# --------------------------------------------------------------------------- #
+# Story 4-0 Finding 4: CLI runtime init must load policy + patterns + adapters
+# + budget guard + pause state before process_email is callable, mirroring the
+# FastAPI lifespan. Without this, every CLI invocation fails immediately at the
+# sensitivity_class step with 'policy not loaded'.
+# --------------------------------------------------------------------------- #
+
+
+async def test_cli_init_runtime_loads_policy_patterns_and_adapters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI helper must load every snapshot/registry process_email reads from."""
+    from mailbot_api.ingest.pipeline import _cli_init_runtime
+    from mailbot_api.router import policy as policy_module
+    from mailbot_api.router import registry as registry_module
+    from mailbot_api.sensitivity import patterns as patterns_module
+
+    db_path = str(tmp_path / "cli-init.db")
+    apply_pending_migrations(db_path)
+
+    # Reset every snapshot/registry to a clean state.
+    _reset_policy_snapshot_for_test()
+    _reset_registry_for_test()
+    _reset_guard_for_test()
+    _reset_pause_state_for_test()
+    patterns_module._PATTERN_SNAPSHOT = None  # noqa: SLF001 — test-only reset
+
+    # Point at real shipped configs.
+    repo_root = Path(__file__).resolve().parents[2]
+    monkeypatch.setenv("MAILBOT_POLICY_PATH", str(repo_root / "router" / "policy.yaml"))
+    monkeypatch.setenv(
+        "MAILBOT_PATTERNS_PATH", str(repo_root / "router" / "sensitivity_patterns.yaml")
+    )
+
+    # Pre-conditions: nothing loaded.
+    assert policy_module._policy is None  # noqa: SLF001
+    assert patterns_module._PATTERN_SNAPSHOT is None  # noqa: SLF001
+
+    await _cli_init_runtime(db_path)
+
+    # Post-conditions: everything that process_email reads is now ready.
+    assert policy_module._policy is not None  # noqa: SLF001
+    assert patterns_module._PATTERN_SNAPSHOT is not None  # noqa: SLF001
+    # Registry has at least one adapter registered (Ollama default).
+    assert len(registry_module._ADAPTER_REGISTRY) > 0  # noqa: SLF001

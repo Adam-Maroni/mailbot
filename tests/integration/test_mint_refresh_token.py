@@ -268,3 +268,86 @@ def test_transport_error_propagates_as_httpx_request_error() -> None:
             redirect_uri="http://localhost:8765/callback",
             transport=transport,
         )
+
+
+# --------------------------------------------------------------------------- #
+# exchange_code_for_tokens — public-client (no client_secret) path
+# (Story 4-0 Phase 3.5 finding: AADSTS90023 against real Entra when public
+# client app sends a client_secret. Mock tests didn't catch it because the
+# transport returned 200 unconditionally.)
+# --------------------------------------------------------------------------- #
+
+
+def test_public_client_omits_client_secret_from_form_body() -> None:
+    """Public clients (Mobile and desktop apps) MUST NOT send client_secret —
+    Entra rejects with AADSTS90023. Verify the form body omits the key when
+    client_secret=None is passed."""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["form"] = dict(urllib.parse.parse_qsl(request.content.decode()))
+        return httpx.Response(
+            200,
+            json={"access_token": "at", "refresh_token": "rt", "expires_in": 3600},
+        )
+
+    body = mint.exchange_code_for_tokens(
+        code="code-pub",
+        client_id="cid",
+        tenant="consumers",
+        client_secret=None,
+        redirect_uri="http://localhost:8765/callback",
+        transport=httpx.MockTransport(handler),
+    )
+
+    form = captured["form"]
+    assert "client_secret" not in form, (
+        "Public-client token exchange must omit client_secret entirely; "
+        "Entra returns AADSTS90023 if it's present (even empty-string)."
+    )
+    # Other required fields still present.
+    assert form["grant_type"] == "authorization_code"
+    assert form["client_id"] == "cid"
+    assert form["code"] == "code-pub"
+    assert body["refresh_token"] == "rt"
+
+
+def test_validate_args_no_longer_requires_client_secret() -> None:
+    """After the AADSTS90023 fix, --client-secret is optional.
+    Only --client-id and --tenant are required."""
+    import argparse as _argparse
+
+    ns = _argparse.Namespace(
+        client_id="cid",
+        tenant="consumers",
+        client_secret=None,
+        redirect_uri="http://localhost:8765/callback",
+    )
+    # Should not raise.
+    mint._validate_args(ns)
+
+
+def test_validate_args_still_requires_client_id_and_tenant() -> None:
+    """Sanity: removing client_secret from required-args list didn't accidentally
+    also drop the still-required ones."""
+    import argparse as _argparse
+
+    # Missing client_id
+    ns1 = _argparse.Namespace(
+        client_id=None,
+        tenant="consumers",
+        client_secret=None,
+        redirect_uri="http://localhost:8765/callback",
+    )
+    with pytest.raises(SystemExit, match="client-id"):
+        mint._validate_args(ns1)
+
+    # Missing tenant
+    ns2 = _argparse.Namespace(
+        client_id="cid",
+        tenant=None,
+        client_secret=None,
+        redirect_uri="http://localhost:8765/callback",
+    )
+    with pytest.raises(SystemExit, match="tenant"):
+        mint._validate_args(ns2)

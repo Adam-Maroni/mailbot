@@ -17,7 +17,7 @@ from typing import Any
 
 import httpx
 
-from mailbot_api.config import get_secret
+from mailbot_api.config import get_secret, get_secret_optional
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +86,13 @@ class GraphClient:
         `httpx.MockTransport`); production callers leave it None.
         """
         self._client_id = client_id or get_secret("OUTLOOK_CLIENT_ID")
-        self._client_secret = client_secret or get_secret("OUTLOOK_CLIENT_SECRET")
+        # client_secret is OPTIONAL: public clients (Mobile and desktop apps
+        # platform — the recommended Entra setup for personal MS accounts) MUST
+        # NOT send a secret on token exchange (AADSTS90023). Only confidential
+        # clients (Web platform) require it. See docs/entra-app-registration.md.
+        self._client_secret: str | None = client_secret or (
+            get_secret_optional("OUTLOOK_CLIENT_SECRET") or None
+        )
         self._tenant_id = tenant_id or get_secret("OUTLOOK_TENANT_ID")
         self._refresh_token = refresh_token or get_secret("OUTLOOK_REFRESH_TOKEN")
         self._scope = scope
@@ -111,13 +117,14 @@ class GraphClient:
         only — surviving until the process restarts.
         """
         token_url = _TOKEN_URL_TEMPLATE.format(tenant=self._tenant_id)
-        form = {
+        form: dict[str, str] = {
             "grant_type": "refresh_token",
             "client_id": self._client_id,
-            "client_secret": self._client_secret,
             "refresh_token": self._refresh_token,
             "scope": self._scope,
         }
+        if self._client_secret is not None:
+            form["client_secret"] = self._client_secret
 
         with self._build_http() as http:
             try:

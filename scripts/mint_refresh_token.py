@@ -22,12 +22,16 @@ Exit codes:
   4    — transport error (network, DNS, timeout) before/during exchange
   130  — KeyboardInterrupt (operator aborted)
 
-Usage:
+Usage (public client — Mobile and desktop applications platform, recommended):
+    python scripts/mint_refresh_token.py \\
+        --client-id <APP_ID> --tenant consumers
+
+Usage (confidential client — Web platform):
     python scripts/mint_refresh_token.py \\
         --client-id <APP_ID> --tenant consumers --client-secret <SECRET>
 
 Env-var fallback (one per arg): OUTLOOK_CLIENT_ID, OUTLOOK_TENANT_ID,
-OUTLOOK_CLIENT_SECRET, OUTLOOK_REDIRECT_URI.
+OUTLOOK_CLIENT_SECRET (optional), OUTLOOK_REDIRECT_URI.
 """
 
 from __future__ import annotations
@@ -159,13 +163,18 @@ def exchange_code_for_tokens(
     code: str,
     client_id: str,
     tenant: str,
-    client_secret: str,
+    client_secret: str | None,
     redirect_uri: str,
     scope: str = _SCOPES,
     transport: httpx.BaseTransport | None = None,
     timeout_seconds: float = _TOKEN_EXCHANGE_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Exchange an authorization code for access + refresh tokens.
+
+    `client_secret` is optional: omit (None) for public clients (Entra
+    "Mobile and desktop applications" platform — the recommended platform per
+    docs/entra-app-registration.md Step 3). Public clients sending a secret get
+    AADSTS90023. Pass a value for confidential clients (Web platform).
 
     Raises:
       TokenExchangeError on non-2xx (carries sanitized body).
@@ -175,14 +184,15 @@ def exchange_code_for_tokens(
     leave it None so real network IO happens.
     """
     url = _TOKEN_URL_TEMPLATE.format(tenant=tenant)
-    form = {
+    form: dict[str, str] = {
         "grant_type": "authorization_code",
         "client_id": client_id,
-        "client_secret": client_secret,
         "code": code,
         "redirect_uri": redirect_uri,
         "scope": scope,
     }
+    if client_secret is not None:
+        form["client_secret"] = client_secret
 
     if transport is not None:
         http = httpx.Client(transport=transport, timeout=httpx.Timeout(timeout_seconds))
@@ -345,7 +355,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--client-secret",
         default=os.environ.get("OUTLOOK_CLIENT_SECRET"),
-        help="Client secret value from Entra. Default: $OUTLOOK_CLIENT_SECRET.",
+        help=(
+            "Client secret value from Entra. Optional: omit for public clients "
+            "(Mobile and desktop applications platform); required for confidential "
+            "clients (Web platform). Default: $OUTLOOK_CLIENT_SECRET."
+        ),
     )
     parser.add_argument(
         "--redirect-uri",
@@ -359,12 +373,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _validate_args(args: argparse.Namespace) -> None:
+    # `--client-secret` is optional: public clients (Mobile and desktop
+    # applications platform) MUST NOT send one (AADSTS90023); confidential
+    # clients (Web platform) require it. Recipe defaults to public-client.
     missing = [
         flag
         for flag, value in (
             ("--client-id (or OUTLOOK_CLIENT_ID)", args.client_id),
             ("--tenant (or OUTLOOK_TENANT_ID)", args.tenant),
-            ("--client-secret (or OUTLOOK_CLIENT_SECRET)", args.client_secret),
         )
         if not value
     ]

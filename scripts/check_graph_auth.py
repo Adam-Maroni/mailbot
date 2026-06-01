@@ -28,8 +28,9 @@ def main() -> int:
     except SecretMissing as exc:
         print(  # noqa: T201 — scripts/ may print
             f"FATAL: required secret unset: {exc.name}. "
-            f"Set OUTLOOK_CLIENT_ID, OUTLOOK_CLIENT_SECRET, OUTLOOK_TENANT_ID, "
-            f"OUTLOOK_REFRESH_TOKEN in your .env (see .env.example).",
+            f"Set OUTLOOK_CLIENT_ID, OUTLOOK_TENANT_ID, OUTLOOK_REFRESH_TOKEN "
+            f"in your .env (see .env.example). OUTLOOK_CLIENT_SECRET is only "
+            f"required for confidential clients (Web platform).",
             file=sys.stderr,
         )
         return 2

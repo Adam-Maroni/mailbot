@@ -22,7 +22,7 @@ from typing import Any
 
 import httpx
 
-from mailbot_api.config import get_secret
+from mailbot_api.config import get_secret, get_secret_optional
 from mailbot_api.db.connection import execute_write, fetchone
 from mailbot_api.db.queries import (
     OAUTH_STATE_INSERT_SEED,
@@ -125,17 +125,19 @@ async def exchange_and_persist(
     leave it None.
     """
     client_id = get_secret("OUTLOOK_CLIENT_ID")
-    client_secret = get_secret("OUTLOOK_CLIENT_SECRET")
+    # OPTIONAL — see graph_client.py docstring re: AADSTS90023.
+    client_secret = get_secret_optional("OUTLOOK_CLIENT_SECRET") or None
     tenant_id = get_secret("OUTLOOK_TENANT_ID")
 
     token_url = _TOKEN_URL_TEMPLATE.format(tenant=tenant_id)
-    form = {
+    form: dict[str, str] = {
         "grant_type": "refresh_token",
         "client_id": client_id,
-        "client_secret": client_secret,
         "refresh_token": state.refresh_token,
         "scope": _DEFAULT_SCOPE,
     }
+    if client_secret is not None:
+        form["client_secret"] = client_secret
 
     def _build_http() -> httpx.Client:
         if transport is not None:
