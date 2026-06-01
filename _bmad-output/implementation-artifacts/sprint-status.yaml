@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-05-31
-last_updated: 2026-06-01  # epic-2 kickoff; story 2-1 ready-for-dev (autonomous-epic-run)
+last_updated: 2026-06-01  # epic-2 retrospective complete (yolo); see epic-2-retro-2026-06-01.md
 project: MailBot
 project_key: NOKEY
 tracking_system: file-system
@@ -68,7 +68,7 @@ development_status:
   2-8-4-layer-budget-guard-and-degraded-mode-and-per-call-refusal-threshold: done  # 2026-06-01 — 4-layer budget guard: per-call max_tokens (Layer 1 via policy), $2 daily soft-warn (Layer 2), $30 monthly hard cap → degraded mode w/ demotion (Layer 3), $0.20 per-call refusal w/ force-override (Layer 4). Migration 008_degraded_mode singleton row. /budget reset verb. Gate-coverage-only. 298 tests pass (+15 net).
   2-9-hourly-anomaly-detection-and-anti-loop-kill-switch-and-pause-resume: done  # 2026-06-01 — LoopDetector (5min/10x window + LOOP_DETECTED) + AnomalyDetector (hourly, baseline_mean+3σ, 24-sample warmup, Welford online stats) + PauseState (SQLite-persisted) + /pause-/resume verbs. Migrations 009_anomaly_baseline + 010_pause_state (renumbered from epic-spec 008/009). Gate-coverage-only. 316 tests pass (+18 net).
   2-10-cost-slash-command-and-hermes-aux-routing-via-v1-chat-completions-and-caller-origin-tracking: done  # 2026-06-01 — POST /v1/chat/completions OpenAI-shape endpoint with Bearer auth (MAILBOT_ROUTER_KEY), X-Mailbot-Caller-Origin header propagation, hermes_aux task in policy + pass-through prompt module. /v1/embeddings stub (501 until Story 3-4). cost_breakdown verb with raw-SQL aggregation (per_task / per_model / per_caller_origin / cache_hit_rate / degraded_mode flag). 325 tests pass (+9 net). EPIC 2 COMPLETE.
-  epic-2-retrospective: optional
+  epic-2-retrospective: done  # 2026-06-01 — retrospective completed (yolo mode); see epic-2-retro-2026-06-01.md. 10 action items, prep tasks split across 3 critical milestones (pre-3-1, pre-3-3, pre-3-6). 1 HARD blocker remains: W-5 embedding dtype/shape contract (Winston) must resolve before Story 3-1. Key takeaways: gate-coverage-only cadence validated (Sonnet review on 2-1/2-2/2-4 only, gate-only on the rest, all green); Phase 3.5 cadence from Epic 1 retro NOT executed in autonomous run (re-committed as user-side checkpoint); epic-run-flags discipline regressed (catch-up flags file owed); migration renumber chain absorbed cleanly (+1 shift, propagated to Epic 3 spec).
 
   # Epic 3: Ingest Pipeline
   epic-3: backlog
