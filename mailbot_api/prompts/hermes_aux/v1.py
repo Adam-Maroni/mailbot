@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+VERSION: str = "v1"
+
 SYSTEM = (
     "You are an auxiliary text-processing model. "
     "Respond with the requested transformation only — no preamble, no commentary."
@@ -34,3 +36,5 @@ class HermesAuxOutput(BaseModel):
 
 
 OUTPUT_SCHEMA: type[BaseModel] = HermesAuxOutput
+
+__all__ = ["VERSION", "SYSTEM", "USER_TEMPLATE", "OUTPUT_SCHEMA", "HermesAuxOutput"]

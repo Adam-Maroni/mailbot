@@ -1,0 +1,16 @@
+"""Fixture: re-implements the FR-2.2 idempotency-key formula outside the
+allowlisted `mailbot_api/ingest/idempotency.py`.
+
+Must trigger Story 3-1 AC-4 boundary check. The detection looks for a
+`hashlib.sha256(...)` call whose argument is an f-string (with `.encode(...)`
+wrapping) that references `prompt_version`, `model`, AND `task_type` inside its
+FormattedValue sub-expressions.
+"""
+
+import hashlib
+
+
+def bad_compute_key(body: str, prompt_version: str, model: str, task_type: str) -> str:
+    return hashlib.sha256(
+        f"{body}|{prompt_version}|{model}|{task_type}".encode("utf-8")
+    ).hexdigest()

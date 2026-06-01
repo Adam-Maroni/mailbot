@@ -24,10 +24,7 @@ OAUTH_STATE_SELECT = (
     "last_rotated_at, rotation_count FROM oauth_state WHERE provider = ?"
 )
 
-OAUTH_STATE_INSERT_SEED = (
-    "INSERT INTO oauth_state (provider, refresh_token, rotation_count) "
-    "VALUES (?, ?, 0)"
-)
+OAUTH_STATE_INSERT_SEED = "INSERT INTO oauth_state (provider, refresh_token, rotation_count) VALUES (?, ?, 0)"
 
 OAUTH_STATE_UPDATE_AFTER_EXCHANGE = (
     "UPDATE oauth_state SET refresh_token = ?, access_token = ?, "
@@ -39,8 +36,7 @@ OAUTH_STATE_UPDATE_AFTER_EXCHANGE = (
 # --- sync_state (Story 1-7) ---
 
 SYNC_STATE_SELECT = (
-    "SELECT provider, delta_link, last_sync_at, last_sync_messages_seen "
-    "FROM sync_state WHERE provider = ?"
+    "SELECT provider, delta_link, last_sync_at, last_sync_messages_seen FROM sync_state WHERE provider = ?"
 )
 
 SYNC_STATE_UPSERT = (
@@ -127,20 +123,363 @@ EMAIL_SOFT_DELETE = (
     # Story 1-10 AC-3: also capture the @removed.reason ('changed' | 'deleted'
     # | NULL) so Epic 4's Tier-1 reverter can distinguish recoverable removals
     # from permanent ones. The column was added by migration 005.
-    "UPDATE emails SET deleted_at = ?, removed_reason = ? "
-    "WHERE graph_id = ? AND deleted_at IS NULL"
+    "UPDATE emails SET deleted_at = ?, removed_reason = ? WHERE graph_id = ? AND deleted_at IS NULL"
 )
 
-EMAIL_EXISTS_WITH_MARKER = (
-    "SELECT 1 FROM emails WHERE graph_id = ? AND change_marker = ?"
+EMAIL_EXISTS_WITH_MARKER = "SELECT 1 FROM emails WHERE graph_id = ? AND change_marker = ?"
+
+
+# --- emails: sensitivity (Story 3-3) ---
+#
+# Three constants supporting the sensitivity classifier (AC-1) and the Router
+# precondition layer (AC-5):
+#   1. EMAIL_BODY_FOR_SENSITIVITY_SELECT — reads (subject, from_address,
+#      body_preview) for a single graph_id. Used by classify_sensitivity to
+#      populate the prompt's USER_TEMPLATE placeholders.
+#   2. EMAIL_SENSITIVITY_SELECT — reads (sensitivity, sensitivity_at) for a
+#      single graph_id. Used by the Router precondition layer to decide
+#      whether to refuse with SENSITIVITY_NOT_CLASSIFIED / SENSITIVITY_BLOCKS_API.
+#   3. EMAIL_SENSITIVITY_UPDATE — atomic write of sensitivity + all 4
+#      companion fields + override_reason in a single execute_write.
+
+EMAIL_BODY_FOR_SENSITIVITY_SELECT = "SELECT subject, from_address, body_preview FROM emails WHERE graph_id = ?"
+
+EMAIL_SENSITIVITY_SELECT = "SELECT sensitivity, sensitivity_at FROM emails WHERE graph_id = ?"
+
+EMAIL_SENSITIVITY_UPDATE = (
+    "UPDATE emails SET "
+    "  sensitivity = ?, "
+    "  sensitivity_prompt_v = ?, "
+    "  sensitivity_conf = ?, "
+    "  sensitivity_model = ?, "
+    "  sensitivity_at = ?, "
+    "  sensitivity_override_reason = ? "
+    "WHERE graph_id = ?"
+)
+
+
+# --- emails: per-task derived field updates (Story 3-5) ---
+#
+# Five atomic UPDATE constants for the pipeline's per-step writes. Each
+# writes the derived value column + its 4 standard companions
+# (*_prompt_v / _conf / _model / _at) in a single execute_write.
+#
+# Sensitivity (Story 3-3 EMAIL_SENSITIVITY_UPDATE) and embedding (Story 3-4
+# EMAIL_EMBEDDING_UPDATE) are NOT here — those modules own their writes
+# per the writer-monopoly contracts. These constants serve the remaining
+# 5 ingest tasks: class_coarse, class_fine, summary_short, importance_score,
+# action_extraction.
+
+EMAIL_CLASS_COARSE_UPDATE = (
+    "UPDATE emails SET "
+    "  class_coarse = ?, "
+    "  class_coarse_prompt_v = ?, "
+    "  class_coarse_conf = ?, "
+    "  class_coarse_model = ?, "
+    "  class_coarse_at = ? "
+    "WHERE graph_id = ?"
+)
+
+EMAIL_CLASS_FINE_UPDATE = (
+    "UPDATE emails SET "
+    "  class_fine = ?, "
+    "  class_fine_prompt_v = ?, "
+    "  class_fine_conf = ?, "
+    "  class_fine_model = ?, "
+    "  class_fine_at = ? "
+    "WHERE graph_id = ?"
+)
+
+EMAIL_SUMMARY_SHORT_UPDATE = (
+    "UPDATE emails SET "
+    "  summary_short = ?, "
+    "  summary_short_prompt_v = ?, "
+    "  summary_short_conf = ?, "
+    "  summary_short_model = ?, "
+    "  summary_short_at = ? "
+    "WHERE graph_id = ?"
+)
+
+EMAIL_IMPORTANCE_SCORE_UPDATE = (
+    "UPDATE emails SET "
+    "  importance_score = ?, "
+    "  importance_score_prompt_v = ?, "
+    "  importance_score_conf = ?, "
+    "  importance_score_model = ?, "
+    "  importance_score_at = ? "
+    "WHERE graph_id = ?"
+)
+
+EMAIL_ACTION_EXTRACTION_UPDATE = (
+    "UPDATE emails SET "
+    "  action_extraction = ?, "
+    "  action_extraction_prompt_v = ?, "
+    "  action_extraction_conf = ?, "
+    "  action_extraction_model = ?, "
+    "  action_extraction_at = ? "
+    "WHERE graph_id = ?"
+)
+
+
+# --- emails: sensitivity override re-write (Story 3-5 AC-3 + Dev Notes) ---
+#
+# After classify_sensitivity (Story 3-3) writes the raw classifier result, the
+# pipeline orchestrator runs apply_pattern_override and may need to re-write
+# just the sensitivity + sensitivity_override_reason columns (preserving the
+# original prompt_v/conf/model/at from the classifier run).
+
+EMAIL_SENSITIVITY_OVERRIDE_REWRITE = (
+    "UPDATE emails SET sensitivity = ?, sensitivity_override_reason = ? WHERE graph_id = ?"
+)
+
+# Story 3-5: hot-path read used by pipeline._run_sensitivity_step to detect
+# a previously-classified email (short-circuit step 1).
+EMAIL_SENSITIVITY_DETAIL_SELECT = (
+    "SELECT sensitivity, sensitivity_at, sensitivity_conf, sensitivity_model FROM emails WHERE graph_id = ?"
+)
+
+# Story 3-5: hot-path read used by pipeline after a class_coarse idempotency
+# short-circuit so the fine_class conditional gate still resolves correctly.
+EMAIL_CLASS_COARSE_SELECT = "SELECT class_coarse FROM emails WHERE graph_id = ?"
+
+
+# --- derivations_idempotency (Story 3-5) ---
+
+DERIVATIONS_IDEMPOTENCY_SELECT = (
+    "SELECT idempotency_key FROM derivations_idempotency WHERE email_id = ? AND task_type = ?"
+)
+
+DERIVATIONS_IDEMPOTENCY_UPSERT = (
+    "INSERT INTO derivations_idempotency (email_id, task_type, idempotency_key, applied_at) "
+    "VALUES (?, ?, ?, ?) "
+    "ON CONFLICT (email_id, task_type) DO UPDATE SET "
+    "  idempotency_key = excluded.idempotency_key, "
+    "  applied_at = excluded.applied_at"
+)
+
+
+# --- emails: embedding (Story 3-4) ---
+#
+# Two constants for the embedding writer-monopoly contract:
+#   1. EMAIL_EMBEDDING_UPDATE — atomic write of all 6 embedding columns:
+#      embedding (BLOB), embedding_dtype (TEXT), embedding_shape (TEXT),
+#      embedding_prompt_v (TEXT — sentinel "v1"; embeddings have no prompts),
+#      embedding_model (TEXT), embedding_at (TEXT). embedding_conf stays NULL
+#      by contract (no confidence concept for embeddings).
+#   2. EMAIL_EMBEDDING_SELECT — hot-path read for read_embedding: just the
+#      blob + the two W-5 companion columns. Story 3-1's
+#      EMAIL_DERIVED_FIELDS_SELECT also returns these, but EMAIL_EMBEDDING_SELECT
+#      is narrower for the embed-read inner loop.
+
+EMAIL_EMBEDDING_UPDATE = (
+    "UPDATE emails SET "
+    "  embedding = ?, "
+    "  embedding_dtype = ?, "
+    "  embedding_shape = ?, "
+    "  embedding_prompt_v = ?, "
+    "  embedding_model = ?, "
+    "  embedding_at = ? "
+    "WHERE graph_id = ?"
+)
+
+EMAIL_EMBEDDING_SELECT = "SELECT embedding, embedding_dtype, embedding_shape FROM emails WHERE graph_id = ?"
+
+
+# --- emails: derived fields (Story 3-1) ---
+#
+# Selects every derived-value column and its companion metadata
+# (*_prompt_v / _conf / _model / _at) for a single email row keyed by graph_id.
+# Used by Stories 3-3 through 3-8 to inspect what has and hasn't been derived
+# yet, and by integration tests verifying migration 011 applies the W-5
+# companion columns (embedding_dtype, embedding_shape) cleanly. Listed
+# explicitly (no SELECT *) per AR-PAT-1 producer-boundary discipline.
+
+EMAIL_DERIVED_FIELDS_SELECT = (
+    "SELECT "
+    "  sensitivity, sensitivity_prompt_v, sensitivity_conf, "
+    "  sensitivity_model, sensitivity_at, "
+    "  class_coarse, class_coarse_prompt_v, class_coarse_conf, "
+    "  class_coarse_model, class_coarse_at, "
+    "  class_fine, class_fine_prompt_v, class_fine_conf, "
+    "  class_fine_model, class_fine_at, "
+    "  summary_short, summary_short_prompt_v, summary_short_conf, "
+    "  summary_short_model, summary_short_at, "
+    "  importance_score, importance_score_prompt_v, importance_score_conf, "
+    "  importance_score_model, importance_score_at, "
+    "  action_extraction, action_extraction_prompt_v, action_extraction_conf, "
+    "  action_extraction_model, action_extraction_at, "
+    "  embedding, embedding_prompt_v, embedding_conf, "
+    "  embedding_model, embedding_at, "
+    "  embedding_dtype, embedding_shape "
+    "FROM emails WHERE graph_id = ?"
+)
+
+
+# --- senders + threads: enrichment (Story 3-7) ---
+#
+# Read + write constants for sender_reputation_summary and thread_continuity_note.
+# Cross-email synthesis stays Qwen-local per Rule F.1 and is cached forever
+# per Rule A.
+
+SENDER_REPUTATION_SELECT = "SELECT sender_reputation_summary FROM senders WHERE id = ?"
+
+EMAILS_RECENT_BY_SENDER_SELECT = (
+    "SELECT graph_id, subject, received_at, body_preview, sensitivity "
+    "FROM emails "
+    "WHERE sender_id = ? AND deleted_at IS NULL "
+    "ORDER BY received_at DESC "
+    "LIMIT 5"
+)
+
+SENDER_REPUTATION_UPDATE = (
+    "UPDATE senders SET "
+    "  sender_reputation_summary = ?, "
+    "  sender_reputation_summary_prompt_v = ?, "
+    "  sender_reputation_summary_conf = ?, "
+    "  sender_reputation_summary_model = ?, "
+    "  sender_reputation_summary_at = ? "
+    "WHERE id = ?"
+)
+
+THREAD_CONTINUITY_SELECT = "SELECT message_count, thread_continuity_note FROM threads WHERE id = ?"
+
+EMAILS_BY_THREAD_SELECT = (
+    "SELECT graph_id, subject, received_at, body_preview, sensitivity "
+    "FROM emails "
+    "WHERE thread_id = ? AND deleted_at IS NULL "
+    "ORDER BY received_at ASC "
+    "LIMIT 20"
+)
+
+THREAD_CONTINUITY_UPDATE = (
+    "UPDATE threads SET "
+    "  thread_continuity_note = ?, "
+    "  thread_continuity_note_prompt_v = ?, "
+    "  thread_continuity_note_conf = ?, "
+    "  thread_continuity_note_model = ?, "
+    "  thread_continuity_note_at = ? "
+    "WHERE id = ?"
+)
+
+
+# --- emails: re-derivation queries (Story 3-8) ---
+#
+# Per-task "rows needing re-derivation since DATE" queries. Each follows the
+# pattern: graph_id rows where received_at >= ? AND (<task>_at IS NULL OR
+# <task>_prompt_v != ?) AND deleted_at IS NULL ORDER BY received_at DESC.
+#
+# Sensitivity is its own column family (no `class_` prefix); embedding has
+# the W-5 dtype/shape companion columns. Each query has the same parameter
+# shape: (since_iso, target_prompt_v).
+
+EMAILS_NEEDING_REDERIVATION_SENSITIVITY = (
+    "SELECT graph_id FROM emails "
+    "WHERE received_at >= ? AND deleted_at IS NULL "
+    "AND (sensitivity_at IS NULL OR sensitivity_prompt_v != ?) "
+    "ORDER BY received_at DESC"
+)
+
+EMAILS_NEEDING_REDERIVATION_COARSE_CLASS = (
+    "SELECT graph_id FROM emails "
+    "WHERE received_at >= ? AND deleted_at IS NULL "
+    "AND (class_coarse_at IS NULL OR class_coarse_prompt_v != ?) "
+    "ORDER BY received_at DESC"
+)
+
+EMAILS_NEEDING_REDERIVATION_FINE_CLASS = (
+    "SELECT graph_id FROM emails "
+    "WHERE received_at >= ? AND deleted_at IS NULL "
+    "AND (class_fine_at IS NULL OR class_fine_prompt_v != ?) "
+    "AND class_coarse = 'human' "  # fine_class only applies after human gate
+    "ORDER BY received_at DESC"
+)
+
+EMAILS_NEEDING_REDERIVATION_SUMMARY_SHORT = (
+    "SELECT graph_id FROM emails "
+    "WHERE received_at >= ? AND deleted_at IS NULL "
+    "AND (summary_short_at IS NULL OR summary_short_prompt_v != ?) "
+    "ORDER BY received_at DESC"
+)
+
+EMAILS_NEEDING_REDERIVATION_IMPORTANCE_SCORING = (
+    "SELECT graph_id FROM emails "
+    "WHERE received_at >= ? AND deleted_at IS NULL "
+    "AND (importance_score_at IS NULL OR importance_score_prompt_v != ?) "
+    "ORDER BY received_at DESC"
+)
+
+EMAILS_NEEDING_REDERIVATION_ACTION_EXTRACTION = (
+    "SELECT graph_id FROM emails "
+    "WHERE received_at >= ? AND deleted_at IS NULL "
+    "AND (action_extraction_at IS NULL OR action_extraction_prompt_v != ?) "
+    "ORDER BY received_at DESC"
+)
+
+EMAILS_NEEDING_REDERIVATION_EMBEDDING = (
+    "SELECT graph_id FROM emails "
+    "WHERE received_at >= ? AND deleted_at IS NULL "
+    "AND (embedding_at IS NULL OR embedding_prompt_v != ?) "
+    "ORDER BY received_at DESC"
+)
+
+# Count of selected rows that ALSO have sensitivity_at IS NULL — used by
+# AC-4 to refuse non-sensitivity re-derivation when any row is unclassified.
+EMAILS_REDERIVATION_UNCLASSIFIED_COUNT = (
+    "SELECT COUNT(*) FROM emails "
+    "WHERE graph_id IN ({placeholders}) AND sensitivity_at IS NULL"
+)
+
+# AC-5: clear ALL downstream derived fields when re-deriving sensitivity_class.
+# Wipes 6 column families × 5–7 columns each. The atomic UPDATE keeps the row
+# in a consistent state — either all downstream cleared or none.
+EMAIL_CLEAR_DOWNSTREAM_DERIVATIONS = (
+    "UPDATE emails SET "
+    "  class_coarse = NULL, class_coarse_prompt_v = NULL, class_coarse_conf = NULL, "
+    "  class_coarse_model = NULL, class_coarse_at = NULL, "
+    "  class_fine = NULL, class_fine_prompt_v = NULL, class_fine_conf = NULL, "
+    "  class_fine_model = NULL, class_fine_at = NULL, "
+    "  summary_short = NULL, summary_short_prompt_v = NULL, summary_short_conf = NULL, "
+    "  summary_short_model = NULL, summary_short_at = NULL, "
+    "  importance_score = NULL, importance_score_prompt_v = NULL, importance_score_conf = NULL, "
+    "  importance_score_model = NULL, importance_score_at = NULL, "
+    "  action_extraction = NULL, action_extraction_prompt_v = NULL, action_extraction_conf = NULL, "
+    "  action_extraction_model = NULL, action_extraction_at = NULL, "
+    "  embedding = NULL, embedding_prompt_v = NULL, embedding_conf = NULL, "
+    "  embedding_model = NULL, embedding_at = NULL, "
+    "  embedding_dtype = NULL, embedding_shape = NULL "
+    "WHERE graph_id = ?"
+)
+
+# AC-5: delete derivations_idempotency rows for an email_id so subsequent
+# pipeline runs re-derive the downstream tasks.
+DERIVATIONS_IDEMPOTENCY_DELETE_FOR_EMAIL = (
+    "DELETE FROM derivations_idempotency WHERE email_id = ?"
+)
+
+# Story 3-8 re-derive embedding: clear the existing blob so embed_email's
+# read_embedding != None short-circuit doesn't fire on the re-derive path.
+EMAIL_EMBEDDING_CLEAR = "UPDATE emails SET embedding = NULL WHERE graph_id = ?"
+
+
+# --- emails: unprocessed queue (Story 3-6) ---
+#
+# Backpressure-aware drain queries. The "unprocessed" condition is
+# `sensitivity_at IS NULL AND deleted_at IS NULL` — the FR-2.3 hard invariant
+# treats sensitivity as the entry gate to the pipeline. Soft-deleted rows
+# (Story 1-10) are skipped — they shouldn't be derived for. Ordering is
+# `received_at DESC` per epic spec rationale.
+
+EMAIL_UNPROCESSED_COUNT_SELECT = "SELECT COUNT(*) FROM emails WHERE sensitivity_at IS NULL AND deleted_at IS NULL"
+
+EMAIL_UNPROCESSED_BATCH_SELECT = (
+    "SELECT graph_id FROM emails WHERE sensitivity_at IS NULL AND deleted_at IS NULL ORDER BY received_at DESC LIMIT ?"
 )
 
 
 # --- worker_health (Story 1-8) ---
 
 WORKER_HEALTH_SELECT = (
-    "SELECT component, last_heartbeat_at, last_outcome, last_error "
-    "FROM worker_health WHERE component = ?"
+    "SELECT component, last_heartbeat_at, last_outcome, last_error FROM worker_health WHERE component = ?"
 )
 
 WORKER_HEALTH_UPSERT = (
@@ -182,8 +521,7 @@ ROUTER_CALLS_INSERT = (
 # --- response_cache (Story 2-7) ---
 
 RESPONSE_CACHE_SELECT = (
-    "SELECT result_json, cost_usd, cached_at, ttl_seconds, hit_count "
-    "FROM response_cache WHERE cache_key = ?"
+    "SELECT result_json, cost_usd, cached_at, ttl_seconds, hit_count FROM response_cache WHERE cache_key = ?"
 )
 
 RESPONSE_CACHE_INSERT = (
@@ -200,53 +538,36 @@ RESPONSE_CACHE_INSERT = (
     "  ttl_seconds = excluded.ttl_seconds"
 )
 
-RESPONSE_CACHE_INCREMENT_HIT = (
-    "UPDATE response_cache SET hit_count = hit_count + 1 WHERE cache_key = ?"
-)
+RESPONSE_CACHE_INCREMENT_HIT = "UPDATE response_cache SET hit_count = hit_count + 1 WHERE cache_key = ?"
 
 
 # --- degraded_mode_state (Story 2-8) ---
 
-DEGRADED_MODE_SELECT = (
-    "SELECT active, entered_at, exited_at FROM degraded_mode_state WHERE id = 1"
-)
+DEGRADED_MODE_SELECT = "SELECT active, entered_at, exited_at FROM degraded_mode_state WHERE id = 1"
 
-DEGRADED_MODE_ENTER = (
-    "UPDATE degraded_mode_state SET active = 1, entered_at = ?, exited_at = NULL WHERE id = 1"
-)
+DEGRADED_MODE_ENTER = "UPDATE degraded_mode_state SET active = 1, entered_at = ?, exited_at = NULL WHERE id = 1"
 
-DEGRADED_MODE_EXIT = (
-    "UPDATE degraded_mode_state SET active = 0, exited_at = ? WHERE id = 1"
-)
+DEGRADED_MODE_EXIT = "UPDATE degraded_mode_state SET active = 0, exited_at = ? WHERE id = 1"
 
 
 # --- router_calls aggregations (Story 2-8) ---
 
-ROUTER_CALLS_SPEND_SINCE = (
-    "SELECT COALESCE(SUM(cost_usd_estimated), 0) FROM router_calls WHERE ts >= ?"
-)
+ROUTER_CALLS_SPEND_SINCE = "SELECT COALESCE(SUM(cost_usd_estimated), 0) FROM router_calls WHERE ts >= ?"
 
 
 # --- pause_state (Story 2-9) ---
 
-PAUSE_STATE_SELECT = (
-    "SELECT paused, reason, paused_at, resumed_at FROM pause_state WHERE id = 1"
-)
+PAUSE_STATE_SELECT = "SELECT paused, reason, paused_at, resumed_at FROM pause_state WHERE id = 1"
 
-PAUSE_STATE_PAUSE = (
-    "UPDATE pause_state SET paused = 1, reason = ?, paused_at = ?, resumed_at = NULL WHERE id = 1"
-)
+PAUSE_STATE_PAUSE = "UPDATE pause_state SET paused = 1, reason = ?, paused_at = ?, resumed_at = NULL WHERE id = 1"
 
-PAUSE_STATE_RESUME = (
-    "UPDATE pause_state SET paused = 0, resumed_at = ? WHERE id = 1"
-)
+PAUSE_STATE_RESUME = "UPDATE pause_state SET paused = 0, resumed_at = ? WHERE id = 1"
 
 
 # --- call_volume_baseline (Story 2-9) ---
 
 CALL_VOLUME_LAST_HOUR_BY_ORIGIN = (
-    "SELECT caller_origin, COUNT(*) FROM router_calls "
-    "WHERE ts >= ? GROUP BY caller_origin"
+    "SELECT caller_origin, COUNT(*) FROM router_calls WHERE ts >= ? GROUP BY caller_origin"
 )
 
 CALL_VOLUME_BASELINE_SELECT = (
@@ -266,25 +587,19 @@ ROUTER_CALLS_TOTALS_SINCE = (
 )
 
 ROUTER_CALLS_BY_TASK_SINCE = (
-    "SELECT task_type, COALESCE(SUM(cost_usd_estimated), 0) "
-    "FROM router_calls WHERE ts >= ? GROUP BY task_type"
+    "SELECT task_type, COALESCE(SUM(cost_usd_estimated), 0) FROM router_calls WHERE ts >= ? GROUP BY task_type"
 )
 
 ROUTER_CALLS_BY_MODEL_SINCE = (
-    "SELECT model_chosen, COALESCE(SUM(cost_usd_estimated), 0) "
-    "FROM router_calls WHERE ts >= ? GROUP BY model_chosen"
+    "SELECT model_chosen, COALESCE(SUM(cost_usd_estimated), 0) FROM router_calls WHERE ts >= ? GROUP BY model_chosen"
 )
 
 ROUTER_CALLS_BY_CALLER_ORIGIN_SINCE = (
-    "SELECT caller_origin, COALESCE(SUM(cost_usd_estimated), 0) "
-    "FROM router_calls WHERE ts >= ? GROUP BY caller_origin"
+    "SELECT caller_origin, COALESCE(SUM(cost_usd_estimated), 0) FROM router_calls WHERE ts >= ? GROUP BY caller_origin"
 )
 
 # Hermes aux drift detection (Story 2-10 AC).
-ROUTER_CALLS_HERMES_AUX_SINCE = (
-    "SELECT COUNT(*) FROM router_calls "
-    "WHERE ts >= ? AND caller_origin LIKE 'hermes-aux-%'"
-)
+ROUTER_CALLS_HERMES_AUX_SINCE = "SELECT COUNT(*) FROM router_calls WHERE ts >= ? AND caller_origin LIKE 'hermes-aux-%'"
 
 
 CALL_VOLUME_BASELINE_UPSERT = (

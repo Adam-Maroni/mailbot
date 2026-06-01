@@ -196,6 +196,10 @@ def test_lifespan_runs_migrations_on_startup_via_testclient(
     # starter file so the lifespan can boot cleanly.
     repo_root = Path(__file__).resolve().parent.parent.parent
     monkeypatch.setenv("MAILBOT_POLICY_PATH", str(repo_root / "router" / "policy.yaml"))
+    # Story 3-3: lifespan also loads sensitivity_patterns.yaml.
+    monkeypatch.setenv(
+        "MAILBOT_PATTERNS_PATH", str(repo_root / "router" / "sensitivity_patterns.yaml")
+    )
 
     with TestClient(app) as client:
         r = client.get("/health")
@@ -258,6 +262,10 @@ def test_lifespan_loads_policy_when_db_skipped(
     monkeypatch.setenv("MAILBOT_SKIP_DB", "1")
     repo_root = Path(__file__).resolve().parent.parent.parent
     monkeypatch.setenv("MAILBOT_POLICY_PATH", str(repo_root / "router" / "policy.yaml"))
+    # Story 3-3: lifespan also loads sensitivity_patterns.yaml.
+    monkeypatch.setenv(
+        "MAILBOT_PATTERNS_PATH", str(repo_root / "router" / "sensitivity_patterns.yaml")
+    )
 
     from mailbot_api.main import lifespan
     from mailbot_api.router.policy import get_policy

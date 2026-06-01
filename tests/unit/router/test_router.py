@@ -113,7 +113,9 @@ def _setup_db_and_policy(
 
 
 def _good_output_json() -> str:
-    return json.dumps({"label": "newsletter", "confidence": 0.9})
+    # Story 3-2: coarse_class output is now {class_coarse, confidence} with a
+    # 6-label taxonomy (newsletter is still valid).
+    return json.dumps({"class_coarse": "newsletter", "confidence": 0.9})
 
 
 def _adapter_response(text: str = "", tokens_in: int = 10, tokens_out: int = 5) -> AdapterResponse:

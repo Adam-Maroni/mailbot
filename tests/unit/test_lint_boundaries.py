@@ -84,11 +84,9 @@ def test_pyproject_per_file_ignores_scripts_for_t201() -> None:
     the right way to assert "the exemption is configured."
     """
     pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'scripts/**/*.py' in pyproject
+    assert "scripts/**/*.py" in pyproject
     # Find the line and verify T201 (or its alias T20) is one of the codes.
-    scripts_line = next(
-        line for line in pyproject.splitlines() if 'scripts/**/*.py' in line
-    )
+    scripts_line = next(line for line in pyproject.splitlines() if "scripts/**/*.py" in line)
     assert ("T201" in scripts_line) or ("T20" in scripts_line)
 
 
@@ -149,6 +147,21 @@ def test_utcnow_triggers_dtz003(tmp_path: Path) -> None:
             "mailbot_api/verbs",
             "from yaml import safe_load",
         ),
+        # Story 3-1 AC-4: FR-2.2 idempotency-key formula outside the
+        # idempotency.py allowlist. Detection is narrow — fires only when all
+        # three of prompt_version, model, task_type appear inside the f-string.
+        (
+            "violates_idempotency_key_outside_allowlist.py.fixture",
+            "mailbot_api/router",
+            "FR-2.2 idempotency formula",
+        ),
+        # Story 3-4 AC-7: embedding-column write outside the embedding.py
+        # allowlist. Mirrors the Story 2-1 router_calls writer-monopoly pattern.
+        (
+            "violates_embedding_write_outside_allowlist.py.fixture",
+            "mailbot_api/router",
+            "UPDATE emails SET ... embedding",
+        ),
     ],
 )
 def test_boundary_violations_caught_by_check_boundaries(
@@ -162,9 +175,7 @@ def test_boundary_violations_caught_by_check_boundaries(
     code, output = _run_boundary_check_on(tmp_path)
     assert code != 0, f"Expected boundary check to fail, got success. Output: {output}"
     assert "BOUNDARY:" in output, f"Expected 'BOUNDARY:' in output: {output}"
-    assert expected_substring in output, (
-        f"Expected '{expected_substring}' in boundary output: {output}"
-    )
+    assert expected_substring in output, f"Expected '{expected_substring}' in boundary output: {output}"
 
 
 def test_router_calls_insert_in_allowlisted_audit_path_passes(tmp_path: Path) -> None:
@@ -178,8 +189,59 @@ def test_router_calls_insert_in_allowlisted_audit_path_passes(tmp_path: Path) ->
     )
     code, output = _run_boundary_check_on(tmp_path)
     assert code == 0, (
-        f"Expected boundary check to pass when fixture is at the allowlisted "
-        f"path. Got exit={code}, output: {output}"
+        f"Expected boundary check to pass when fixture is at the allowlisted path. Got exit={code}, output: {output}"
+    )
+
+
+def test_idempotency_key_in_allowlisted_idempotency_path_passes(tmp_path: Path) -> None:
+    """Story 3-1 AC-4 positive-pass coverage: the same fixture content placed
+    at the allowlisted `mailbot_api/ingest/idempotency.py` path must produce a
+    clean check (exit 0)."""
+    target_dir = tmp_path / "mailbot_api" / "ingest"
+    _copy_fixture(
+        "violates_idempotency_key_outside_allowlist.py.fixture",
+        target_dir,
+        "idempotency.py",  # the allowlisted filename
+    )
+    code, output = _run_boundary_check_on(tmp_path)
+    assert code == 0, (
+        f"Expected boundary check to pass when idempotency-key fixture is at "
+        f"the allowlisted path. Got exit={code}, output: {output}"
+    )
+
+
+def test_embedding_write_in_allowlisted_embedding_path_passes(tmp_path: Path) -> None:
+    """Story 3-4 AC-7 positive-pass coverage: the same embedding-write fixture
+    content placed AT the allowlisted `mailbot_api/ingest/embedding.py` path
+    must produce a clean check (exit 0)."""
+    target_dir = tmp_path / "mailbot_api" / "ingest"
+    _copy_fixture(
+        "violates_embedding_write_outside_allowlist.py.fixture",
+        target_dir,
+        "embedding.py",  # the allowlisted filename
+    )
+    code, output = _run_boundary_check_on(tmp_path)
+    assert code == 0, (
+        f"Expected boundary check to pass when embedding-write fixture is at "
+        f"the allowlisted path. Got exit={code}, output: {output}"
+    )
+
+
+def test_benign_sha256_use_does_not_trigger_idempotency_boundary(tmp_path: Path) -> None:
+    """Story 3-1 AC-4 specificity: generic `hashlib.sha256(...)` use that does
+    NOT carry the FR-2.2 formula (prompt_version + model + task_type all
+    referenced inside the f-string) must NOT trigger the idempotency boundary
+    check, even placed in a non-allowlisted path."""
+    target = tmp_path / "mailbot_api" / "verbs"
+    _copy_fixture("benign_sha256_use.py.fixture", target, "uses_sha256.py")
+
+    code, output = _run_boundary_check_on(tmp_path)
+    assert code == 0, (
+        f"Expected boundary check to pass for benign sha256 use, but it "
+        f"reported violations. Got exit={code}, output: {output}"
+    )
+    assert "FR-2.2 idempotency formula" not in output, (
+        f"Benign sha256 use should not match the FR-2.2 detection: {output}"
     )
 
 
@@ -219,10 +281,5 @@ ALSO_SQL = f"INSERT INTO router_calls ({\'ts\'}) VALUES (?)"
         encoding="utf-8",
     )
     code, output = _run_boundary_check_on(tmp_path)
-    assert code != 0, (
-        f"Expected f-string bypass to fail boundary check. Got exit={code}, "
-        f"output: {output}"
-    )
-    assert "INSERT INTO router_calls" in output, (
-        f"Expected 'INSERT INTO router_calls' violation in output: {output}"
-    )
+    assert code != 0, f"Expected f-string bypass to fail boundary check. Got exit={code}, output: {output}"
+    assert "INSERT INTO router_calls" in output, f"Expected 'INSERT INTO router_calls' violation in output: {output}"

@@ -1,0 +1,19 @@
+"""Fixture: benign sha256 usage that does NOT match the FR-2.2 formula.
+
+Must NOT trigger the Story 3-1 AC-4 idempotency boundary check. This is the
+positive-pass control: generic sha256 usage anywhere in the codebase is
+permitted because the detection is narrow (requires all three of
+`prompt_version`, `model`, and `task_type` to appear inside the f-string's
+FormattedValue sub-expressions).
+"""
+
+import hashlib
+
+
+def hash_anything(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def hash_two_things(prompt_version: str, model: str) -> str:
+    # Only two of the three formula names — must NOT trip the check.
+    return hashlib.sha256(f"{prompt_version}|{model}".encode("utf-8")).hexdigest()

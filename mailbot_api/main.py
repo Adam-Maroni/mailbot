@@ -62,6 +62,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """
     skip_db = get_secret_optional("MAILBOT_SKIP_DB", "0") == "1"
     skip_policy = get_secret_optional("MAILBOT_SKIP_POLICY", "0") == "1"
+    # Story 3-3: lifespan tests that bypass DB or run Router code without
+    # needing the sensitivity gate set MAILBOT_SKIP_PATTERNS=1 to skip the
+    # patterns.yaml load. Production startup never sets this.
+    skip_patterns = get_secret_optional("MAILBOT_SKIP_PATTERNS", "0") == "1"
 
     db_path: str | None = None
     if not skip_db:
@@ -103,6 +107,44 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             extra={"event": "policy.startup.loaded", "version": initial_policy.version},
         )
 
+        # Story 3-3 AC-2: FR-2.5 startup safeguard. Fail-fast if policy.yaml
+        # drifted at boot to a non-Qwen model for sensitivity_class. The
+        # per-call safeguard in classify_sensitivity handles the hot-reload
+        # case.
+        from mailbot_api.sensitivity import assert_qwen_only, load_patterns
+        from mailbot_api.sensitivity.patterns import set_patterns_snapshot as _set_sensitivity_patterns
+
+        assert_qwen_only(initial_policy)
+        logger.info(
+            "sensitivity FR-2.5 startup safeguard passed",
+            extra={"event": "sensitivity.startup.qwen_only_ok"},
+        )
+
+        # Story 3-3 AC-3: load sensitivity_patterns.yaml. Co-located with
+        # policy.yaml under MAILBOT_PATTERNS_PATH (defaults to
+        # /app/router/sensitivity_patterns.yaml). Bypassed when
+        # MAILBOT_SKIP_PATTERNS=1 (Router-unit-test path).
+        if not skip_patterns:
+            patterns_path = Path(get_secret_optional("MAILBOT_PATTERNS_PATH", "/app/router/sensitivity_patterns.yaml"))
+            try:
+                sensitivity_patterns = load_patterns(patterns_path)
+                _set_sensitivity_patterns(sensitivity_patterns)
+                logger.info(
+                    "sensitivity patterns loaded",
+                    extra={
+                        "event": "sensitivity.patterns.startup.loaded",
+                        "version": sensitivity_patterns.version,
+                        "force_confidential_count": len(sensitivity_patterns.force_confidential),
+                        "force_sensitive_count": len(sensitivity_patterns.force_sensitive),
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 — startup-phase, surface details
+                logger.error(
+                    "sensitivity patterns startup failed",
+                    extra={"event": "sensitivity.patterns.startup.failed", "detail": str(exc)},
+                )
+                raise RuntimeError(f"sensitivity_patterns.yaml failed to load: {exc}") from exc
+
         # Story 2-4: register the default adapter set (Ollama; Story 2-6 will
         # add Anthropic). Lifespan order matters — must happen after policy
         # load so a later ask_router call finds both pieces wired.
@@ -137,9 +179,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             await anomaly_detector.start()
 
         policy_stop_event = asyncio.Event()
-        policy_watcher_task = asyncio.create_task(
-            policy_reload_loop(policy_path, stop_event=policy_stop_event)
-        )
+        policy_watcher_task = asyncio.create_task(policy_reload_loop(policy_path, stop_event=policy_stop_event))
 
     # Stash db_path + watcher handles on app state so endpoint handlers + the
     # shutdown branch can reach them. `_app is None` arises in unit tests that
@@ -196,9 +236,7 @@ async def _build_health_payload(db_path: str | None) -> dict[str, Any]:
 
     elapsed = minutes_since(last_heartbeat_at)
     payload["sync_minutes_since_last_ok"] = elapsed if last_outcome == "ok" else None
-    payload["sync_health_alarm"] = (
-        last_outcome != "ok" or elapsed > STALE_THRESHOLD_MINUTES
-    )
+    payload["sync_health_alarm"] = last_outcome != "ok" or elapsed > STALE_THRESHOLD_MINUTES
     return payload
 
 
@@ -314,9 +352,7 @@ async def chat_completions(
     # Late import to avoid the lifespan circular-import surface.
     from mailbot_api.router import ask_router as _ask_router
 
-    caller_origin = (
-        x_mailbot_caller_origin if x_mailbot_caller_origin else "unknown-external"
-    )
+    caller_origin = x_mailbot_caller_origin if x_mailbot_caller_origin else "unknown-external"
     result = await _ask_router(
         "hermes_aux",
         content,

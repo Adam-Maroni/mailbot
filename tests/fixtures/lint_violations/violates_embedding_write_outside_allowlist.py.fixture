@@ -1,0 +1,12 @@
+"""Fixture: contains `UPDATE emails SET ... embedding` outside the embedding
+writer-monopoly allowlist.
+
+Must trigger Story 3-4 AC-7 boundary check. The dedicated check exists to
+enforce that only `mailbot_api/ingest/embedding.py` (plus the queries.py
+constant module + the migrations runner) writes to the embedding columns.
+"""
+
+EMBEDDING_WRITE_ROGUE = (
+    "UPDATE emails SET embedding = ?, embedding_dtype = ?, embedding_shape = ? "
+    "WHERE graph_id = ?"
+)

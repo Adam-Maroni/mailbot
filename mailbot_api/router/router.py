@@ -16,10 +16,13 @@ Each later story bolts onto a specific seam declared here.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
+from mailbot_api.db.connection import fetchone
+from mailbot_api.db.queries import EMAIL_SENSITIVITY_SELECT
 from mailbot_api.observability.audit import RouterCallRow, record_router_call
 from mailbot_api.prompts import PromptResolutionError, resolve_prompt
 from mailbot_api.router.budget import (
@@ -59,6 +62,13 @@ _STRICTER_PROMPT_PREFIX = (
     "Your previous reply was not valid JSON matching the schema. "
     "Reply only with valid JSON matching this schema: {schema_dump}\n\n"
 )
+
+# Story 3-3 AC-5: API-bound model detection for the precondition layer.
+# Matches the Anthropic model id prefix family (haiku / opus / sonnet variants).
+# Local-only models (Qwen `qwen2.5:*`, `nomic-embed-text`) do NOT match — they
+# are exempt from the SENSITIVITY_BLOCKS_API gate because sensitive bodies CAN
+# flow to local LLMs per FR-2.5.
+_API_BOUND_MODEL_RE = re.compile(r"^claude-(haiku|opus|sonnet)\b")
 
 
 def _stricter_user_template(original: str, output_schema: type[BaseModel]) -> str:
@@ -198,9 +208,7 @@ async def ask_router(
         msg = f"task_type not in policy: {task_type}"
         return RouterResult(
             ok=False,
-            error=RouterError(
-                code=ErrorCode.PROVIDER_ERROR, message=msg, retryable=False
-            ),
+            error=RouterError(code=ErrorCode.PROVIDER_ERROR, message=msg, retryable=False),
         )
 
     # Resolve prompt module.
@@ -244,6 +252,45 @@ async def ask_router(
         if demoted != model:
             model = demoted
             model_chosen_reason = "degraded"
+
+    # Story 3-3 AC-5: FR-2.3 hard invariant — sensitivity precondition layer.
+    # Applies to every email-scoped Router call EXCEPT sensitivity_class itself
+    # (which IS the gate). Ad-hoc Router calls with email_id=None (Hermes-aux
+    # compression, cache-warmer, sender-reputation, etc.) bypass the gate.
+    #
+    # No router_calls row is written when the gate refuses — the precondition
+    # is a routing-side decision, not a dispatch outcome. The audit table
+    # captures actual provider interaction.
+    #
+    # TODO Epic 4: accept a `confirmation_token` kwarg and validate it here so
+    # the SENSITIVITY_BLOCKS_API path admits Adam-confirmed sensitive-to-API
+    # dispatches. Stub for now — every API-bound sensitive/confidential email
+    # without a token refuses unconditionally.
+    if task_type != "sensitivity_class" and email_id is not None:
+        sensitivity_row = await fetchone(db_path, EMAIL_SENSITIVITY_SELECT, (email_id,))
+        if sensitivity_row is None or sensitivity_row[1] is None:
+            # Either the email row is missing entirely OR sensitivity_at is NULL.
+            # In both cases the FR-2.3 invariant blocks dispatch.
+            return RouterResult(
+                ok=False,
+                error=RouterError(
+                    code=ErrorCode.SENSITIVITY_NOT_CLASSIFIED,
+                    message="email sensitivity must be classified before any other Router task",
+                    retryable=False,
+                ),
+            )
+        sensitivity_value, _sensitivity_at = sensitivity_row
+        if sensitivity_value in ("sensitive", "confidential") and _API_BOUND_MODEL_RE.match(model) is not None:
+            return RouterResult(
+                ok=False,
+                error=RouterError(
+                    code=ErrorCode.SENSITIVITY_BLOCKS_API,
+                    message="email sensitivity blocks API dispatch; needs confirmation token",
+                    retryable=False,
+                    model_attempted=[model],
+                ),
+                model_used=model,
+            )
 
     return await _dispatch_with_failure_chain(
         task_type=task_type,
@@ -305,9 +352,7 @@ async def _dispatch_with_failure_chain(
         # an exhausted lane or escalations bucket fails fast with RATE_LIMITED.
         # The audit row still records via the outer `finally` so observability
         # can correlate the breach with the calling task_type.
-        breach_dim = enforce_rate_limit(
-            policy_entry.lane, model_chosen_reason, caller_origin
-        )
+        breach_dim = enforce_rate_limit(policy_entry.lane, model_chosen_reason, caller_origin)
         if breach_dim is not None:
             result = RouterResult(
                 ok=False,
@@ -363,9 +408,7 @@ async def _dispatch_with_failure_chain(
         # rogue caller can't trigger the cache-write path with an
         # ultra-expensive call.
         estimated_tokens_in = (len(prompt.system) + len(user_msg)) // 4
-        estimated_cost = estimate_cost_usd(
-            model, estimated_tokens_in, policy_entry.max_tokens_out
-        )
+        estimated_cost = estimate_cost_usd(model, estimated_tokens_in, policy_entry.max_tokens_out)
         if estimated_cost > PER_CALL_REFUSAL_THRESHOLD_USD and not force:
             result = RouterResult(
                 ok=False,
@@ -393,9 +436,7 @@ async def _dispatch_with_failure_chain(
         cached = await response_cache_lookup(db_path, cache_key)
         if cached is not None:
             try:
-                parsed_cached = prompt.output_schema.model_validate_json(
-                    str(cached["result_json"])
-                )
+                parsed_cached = prompt.output_schema.model_validate_json(str(cached["result_json"]))
             except (ValidationError, ValueError):
                 # Cached payload no longer validates (schema rev?) — treat
                 # as cache miss; the live dispatch will re-cache.
@@ -564,9 +605,7 @@ async def _dispatch_with_failure_chain(
                 # `escalate=False` so the recursive call's schema-validation
                 # failure terminates at SCHEMA_VALIDATION_FAILED rather than
                 # chaining qwen→haiku→opus and tripling costs.
-                escalated_policy_entry = policy_entry.model_copy(
-                    update={"escalate": False}
-                )
+                escalated_policy_entry = policy_entry.model_copy(update={"escalate": False})
                 escalated = await _dispatch_with_failure_chain(
                     task_type=task_type,
                     prompt=prompt,
@@ -606,10 +645,7 @@ async def _dispatch_with_failure_chain(
         # schema validation. Without this, callers can't distinguish a
         # double-validation-fail from a retry-timeout.
         if retry_exc is not None:
-            retry_failure_note = (
-                f"; retry leg raised {type(retry_exc).__name__}: "
-                f"{sanitize_error(retry_exc)}"
-            )
+            retry_failure_note = f"; retry leg raised {type(retry_exc).__name__}: {sanitize_error(retry_exc)}"
         else:
             retry_failure_note = "; retry also failed schema validation"
         result = RouterResult(
@@ -658,4 +694,245 @@ async def _dispatch_with_failure_chain(
         )
 
 
-__all__ = ["ask_router"]
+# ---------------------------------------------------------------------------
+# Story 3-4 — dispatch_embedding sibling helper.
+# ---------------------------------------------------------------------------
+
+
+class EmbeddingDispatchResult(BaseModel):
+    """Return shape of ``dispatch_embedding`` (Story 3-4 AC-5).
+
+    Parallel to ``RouterResult`` but tailored to embedding dispatch:
+      * No ``output: BaseModel`` — embeddings don't have prompt OUTPUT_SCHEMAs.
+      * Carries the raw vector + dim instead.
+      * Carries cost telemetry (latency, tokens_in) but no cost_usd because
+        local Ollama embedding cost is $0.00.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    ok: bool
+    vector: list[float] | None = None
+    dim: int | None = None
+    tokens_in: int = 0
+    latency_ms: int = 0
+    model_used: str = ""
+    error: RouterError | None = None
+
+
+# Sentinel: dispatch_embedding skips the schema-fail-retry path entirely.
+# This outcome string flows into ``router_calls.outcome`` for embedding rows.
+_EMBEDDING_OUTCOME_OK = "ok"
+_EMBEDDING_OUTCOME_FAILED = "failed"
+
+
+async def dispatch_embedding(
+    *,
+    text: str,
+    db_path: str,
+    email_id: str | None,
+    caller_origin: str = "ingest-pipeline-embedding",
+    caller_verb: str | None = None,
+) -> EmbeddingDispatchResult:
+    """Embedding-side sibling of ``ask_router`` (Story 3-4 AC-5).
+
+    Why a sibling instead of widening ``ask_router``: embeddings have a
+    different shape (no system/user prompt, no OUTPUT_SCHEMA, no schema-fail-
+    retry, no escalation). Conflating them would pollute the chat-side
+    failure chain. See story Dev Notes "Why a sibling dispatch_embedding".
+
+    Honors:
+      * Pause kill-switch (Story 2-9)
+      * Policy snapshot lookup (Story 2-2)
+      * FR-2.3 sensitivity precondition (Story 3-3) — sensitivity_at IS NULL
+        on an email-scoped call → SENSITIVITY_NOT_CLASSIFIED.
+
+    Does NOT apply:
+      * SENSITIVITY_BLOCKS_API — embeddings are local-only per FR-2.5.
+      * Budget guard / degraded mode — Ollama cost is $0.00; the guard is
+        an Anthropic-side concern.
+      * Lane scheduling / rate limits — embeddings use the batch lane via
+        policy; per-call rate limiting is the Anthropic-side concern.
+      * Schema-fail-retry / escalation — there is no schema.
+
+    Writes a ``router_calls`` audit row at the end (success or failure).
+    Errors-as-data per AR-PAT-4: never raises.
+    """
+    # Pause kill-switch.
+    if get_pause_state().is_paused():
+        return EmbeddingDispatchResult(
+            ok=False,
+            error=RouterError(
+                code=ErrorCode.PROVIDER_ERROR,
+                message="router paused",
+                retryable=True,
+            ),
+        )
+
+    # Policy snapshot.
+    try:
+        policy: PolicyTable = snapshot_for_dispatch()
+    except RuntimeError as exc:
+        return EmbeddingDispatchResult(
+            ok=False,
+            error=RouterError(
+                code=ErrorCode.PROVIDER_ERROR,
+                message=sanitize_error(exc),
+                retryable=False,
+            ),
+        )
+
+    policy_entry = policy.tasks.get("embedding")
+    if policy_entry is None:
+        return EmbeddingDispatchResult(
+            ok=False,
+            error=RouterError(
+                code=ErrorCode.PROVIDER_ERROR,
+                message="task_type 'embedding' not in policy",
+                retryable=False,
+            ),
+        )
+
+    model = policy_entry.model
+    prompt_version = policy_entry.prompt_version  # sentinel "v1"
+
+    # FR-2.3 sensitivity precondition — only fires when an email_id is provided.
+    # Note: dispatch_embedding does NOT apply SENSITIVITY_BLOCKS_API (the model
+    # is local Ollama; FR-2.5 permits sensitive bodies to flow to local LLMs).
+    if email_id is not None:
+        sensitivity_row = await fetchone(db_path, EMAIL_SENSITIVITY_SELECT, (email_id,))
+        if sensitivity_row is None or sensitivity_row[1] is None:
+            return EmbeddingDispatchResult(
+                ok=False,
+                model_used=model,
+                error=RouterError(
+                    code=ErrorCode.SENSITIVITY_NOT_CLASSIFIED,
+                    message="email sensitivity must be classified before any other Router task",
+                    retryable=False,
+                ),
+            )
+
+    # Resolve the adapter.
+    try:
+        adapter = get_adapter(model)
+    except KeyError as exc:
+        # Audit row + return error.
+        await _record(
+            db_path=db_path,
+            task_type="embedding",
+            prompt_version=prompt_version,
+            model_chosen=model,
+            model_chosen_reason="policy",
+            tokens_in=0,
+            tokens_out=0,
+            cached_tokens_in=0,
+            cost_usd_estimated=0.0,
+            latency_ms=0,
+            outcome=_EMBEDDING_OUTCOME_FAILED,
+            caller_verb=caller_verb,
+            caller_origin=caller_origin,
+            email_id=email_id,
+        )
+        return EmbeddingDispatchResult(
+            ok=False,
+            model_used=model,
+            error=RouterError(
+                code=ErrorCode.PROVIDER_ERROR,
+                message=sanitize_error(exc),
+                retryable=False,
+            ),
+        )
+
+    # Dispatch via adapter.embed. The adapter raises AdapterTimeout /
+    # AdapterProviderError; we catch and translate at this boundary.
+    embed = getattr(adapter, "embed", None)
+    if embed is None or not callable(embed):
+        await _record(
+            db_path=db_path,
+            task_type="embedding",
+            prompt_version=prompt_version,
+            model_chosen=model,
+            model_chosen_reason="policy",
+            tokens_in=0,
+            tokens_out=0,
+            cached_tokens_in=0,
+            cost_usd_estimated=0.0,
+            latency_ms=0,
+            outcome=_EMBEDDING_OUTCOME_FAILED,
+            caller_verb=caller_verb,
+            caller_origin=caller_origin,
+            email_id=email_id,
+        )
+        return EmbeddingDispatchResult(
+            ok=False,
+            model_used=model,
+            error=RouterError(
+                code=ErrorCode.PROVIDER_ERROR,
+                message=(
+                    f"adapter for model={model!r} does not expose an "
+                    f"embed(text) method — adapter is not an embedding adapter"
+                ),
+                retryable=False,
+            ),
+        )
+
+    try:
+        embedding_response = await embed(text)
+    except (AdapterTimeout, AdapterProviderError) as exc:
+        code = ErrorCode.TIMEOUT if isinstance(exc, AdapterTimeout) else ErrorCode.PROVIDER_ERROR
+        await _record(
+            db_path=db_path,
+            task_type="embedding",
+            prompt_version=prompt_version,
+            model_chosen=model,
+            model_chosen_reason="policy",
+            tokens_in=0,
+            tokens_out=0,
+            cached_tokens_in=0,
+            cost_usd_estimated=0.0,
+            latency_ms=0,
+            outcome=_EMBEDDING_OUTCOME_FAILED,
+            caller_verb=caller_verb,
+            caller_origin=caller_origin,
+            email_id=email_id,
+        )
+        return EmbeddingDispatchResult(
+            ok=False,
+            model_used=model,
+            error=RouterError(
+                code=code,
+                message=sanitize_error(exc),
+                retryable=False,
+                model_attempted=[model],
+            ),
+        )
+
+    # Success path. Embedding cost is $0.00 (local Ollama).
+    await _record(
+        db_path=db_path,
+        task_type="embedding",
+        prompt_version=prompt_version,
+        model_chosen=model,
+        model_chosen_reason="policy",
+        tokens_in=embedding_response.tokens_in,
+        tokens_out=0,
+        cached_tokens_in=0,
+        cost_usd_estimated=0.0,
+        latency_ms=embedding_response.latency_ms,
+        outcome=_EMBEDDING_OUTCOME_OK,
+        caller_verb=caller_verb,
+        caller_origin=caller_origin,
+        email_id=email_id,
+    )
+
+    return EmbeddingDispatchResult(
+        ok=True,
+        vector=embedding_response.vector,
+        dim=embedding_response.dim,
+        tokens_in=embedding_response.tokens_in,
+        latency_ms=embedding_response.latency_ms,
+        model_used=model,
+    )
+
+
+__all__ = ["EmbeddingDispatchResult", "ask_router", "dispatch_embedding"]

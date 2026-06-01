@@ -19,7 +19,7 @@ tasks:
     max_tokens_out: 256
     lane: "batch"
     sensitivity: "any"
-    notes: "Coarse classification (newsletter / transactional / personal / promotional / spam) — small output, batch-lane appropriate."
+    notes: "Coarse classification (transactional / newsletter / human / notification / spam_like / unknown — 6-label taxonomy per Story 3-2) — small output, batch-lane appropriate."
 
   sensitivity_class:
     model: "qwen2.5:3b-instruct-q4_K_M"
@@ -40,6 +40,69 @@ tasks:
     notes: "Drafts can contain sensitive content; Epic-4's grant flow gates the send. Interactive-lane so chat reply doesn't wait behind ingest."
     demotion_hypothesis: "Haiku v1 may hold quality on short replies under 200 words; demote when corpus shows ≥0.85 calibrated score parity AND p95 latency stays under 8s."
     promotion_hypothesis: null
+
+  fine_class:
+    model: "qwen2.5:3b-instruct-q4_K_M"
+    prompt_version: "v1"
+    escalate: false
+    max_tokens_out: 128
+    lane: "batch"
+    sensitivity: "any"
+    notes: "Fine-grained classification (only invoked when class_coarse == 'human'). Local Qwen — Story 3-5 pipeline orchestrator handles the conditional."
+
+  summary_short:
+    model: "claude-haiku-4-5-20251001"
+    prompt_version: "v1"
+    escalate: false
+    max_tokens_out: 384
+    lane: "batch"
+    sensitivity: "any"
+    notes: "One-line ≤280-char summary. Haiku-bound; sensitive/confidential emails are gated by the Router precondition (SENSITIVITY_BLOCKS_API)."
+
+  importance_scoring:
+    model: "claude-haiku-4-5-20251001"
+    prompt_version: "v1"
+    escalate: false
+    max_tokens_out: 256
+    lane: "batch"
+    sensitivity: "any"
+    notes: "0..100 importance score + ≤5 signal tags. Haiku-bound; sensitivity-gated."
+
+  action_extraction:
+    model: "claude-haiku-4-5-20251001"
+    prompt_version: "v1"
+    escalate: false
+    max_tokens_out: 512
+    lane: "batch"
+    sensitivity: "any"
+    notes: "Structured action items with strict ISO-8601 deadline_at format. Haiku-bound; sensitivity-gated."
+
+  sender_reputation_summary:
+    model: "qwen2.5:3b-instruct-q4_K_M"
+    prompt_version: "v1"
+    escalate: false
+    max_tokens_out: 256
+    lane: "batch"
+    sensitivity: "any"
+    notes: "Cross-email sender summary. Local Qwen only per Rule F.1 (cross-email aggregation never escapes to Anthropic). Cached forever per Rule A. email_id=None bypasses FR-2.3 precondition; digest excludes confidential bodies entirely + sensitive bodies (subjects only)."
+
+  thread_continuity:
+    model: "qwen2.5:3b-instruct-q4_K_M"
+    prompt_version: "v1"
+    escalate: false
+    max_tokens_out: 256
+    lane: "batch"
+    sensitivity: "any"
+    notes: "Multi-message thread continuity note. Local Qwen only. Cached forever. Same digest sensitivity filtering as sender_reputation_summary."
+
+  embedding:
+    model: "nomic-embed-text"
+    prompt_version: "v1"
+    escalate: false
+    max_tokens_out: 0
+    lane: "batch"
+    sensitivity: "any"
+    notes: "Embedding via Ollama nomic-embed-text. Local-only per FR-2.5; never escapes the device. The Router's dispatch_embedding helper handles routing; ask_router does NOT handle this task type. prompt_version is a sentinel — no prompts/embedding/v1.py module exists."
 
   hermes_aux:
     model: "claude-haiku-4-5-20251001"

@@ -1,0 +1,38 @@
+# MailBot sensitivity-pattern overrides (Story 3-3 AC-3).
+#
+# These rules are user-configurable forcing overrides that fire AFTER the
+# sensitivity_class classifier runs. The override pipeline:
+#
+#   1. classify_sensitivity returns SensitivityResult(sensitivity=<label>, ...)
+#   2. apply_pattern_override checks force_confidential rules first
+#      (highest precedence — they ALWAYS win, even over classifier's
+#      "confidential" or "sensitive" labels).
+#   3. If no force_confidential match, force_sensitive rules check;
+#      they upgrade "normal" -> "sensitive" but NEVER downgrade.
+#   4. If no override fires, the classifier's label stands.
+#
+# Pattern entry shapes (exactly ONE of regex, sender_domain, keyword per entry):
+#   - regex:         Python re.search() pattern (use (?i) for case-insensitive)
+#   - sender_domain: lowercased domain part of From address; exact match
+#   - keyword:       case-insensitive substring match against subject + body_preview
+#
+# Reference: mailbot_api/sensitivity/patterns.py for the loader contract.
+
+version: "patterns-v0-2026-06-01"
+
+force_confidential:
+  # Account-recovery flows often contain active reset codes — must stay local.
+  - {regex: "(?i)password\\s+reset\\s+(code|confirmation|link)"}
+  - {regex: "(?i)two[-\\s]?factor\\s+(code|token|verification)"}
+  # Legal counsel correspondence — privileged by default.
+  - {sender_domain: "legal.example.com"}
+  # Financial / banking — by-domain forcing.
+  - {sender_domain: "bank.example.com"}
+
+force_sensitive:
+  # Explicit defender-tone markers.
+  - {keyword: "confidential"}
+  - {keyword: "private and confidential"}
+  - {regex: "(?i)NDA|non[-\\s]?disclosure"}
+  # Personal health / medical — defaults to at-least sensitive.
+  - {regex: "(?i)medical\\s+record|lab\\s+result|diagnos(is|es|ed)"}

@@ -40,6 +40,32 @@ class AdapterResponse(BaseModel):
     raw: dict[str, Any]
 
 
+class EmbeddingResponse(BaseModel):
+    """Normalized shape returned by ``OllamaAdapter.embed`` (Story 3-4).
+
+    Parallels ``AdapterResponse`` but tailored to embeddings:
+      * ``vector`` is the raw float list returned by the embedding API.
+      * ``dim`` is the embedding dimensionality; ``len(vector) == dim`` is
+        invariant-checked at the adapter boundary.
+      * No ``text`` / ``tokens_out`` — embedding output is a vector, not a string.
+      * No ``cached_tokens_in`` — Ollama's embedding API does not return cache stats.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    vector: list[float]
+    dim: int
+    tokens_in: int
+    latency_ms: int
+    raw: dict[str, Any]
+
+
+# Story 3-4: embeddings are faster than chat completions; the spec mandates
+# a separate, shorter timeout so a slow embedding call doesn't borrow the
+# chat-side 30s budget. Only used by ``OllamaAdapter.embed``.
+_EMBEDDING_TIMEOUT_SECONDS: float = 15.0
+
+
 class AdapterError(Exception):
     """Base class for all adapter-side failures."""
 
@@ -163,6 +189,80 @@ class OllamaAdapter:
             raw=raw_dict,
         )
 
+    async def embed(self, text: str) -> EmbeddingResponse:
+        """Generate an embedding for ``text`` via Ollama's embeddings API (Story 3-4).
+
+        Used by ``mailbot_api/ingest/embedding.py`` (the sole writer of the
+        ``emails.embedding`` BLOB column). Uses a separate, shorter timeout
+        (``_EMBEDDING_TIMEOUT_SECONDS = 15.0``) than the chat path because
+        embeddings are typically much faster than chat completions.
+
+        Defensive contract: ``len(vector) == dim`` is asserted at the adapter
+        boundary — a misbehaving Ollama can't corrupt downstream consumers
+        with mismatched shapes.
+        """
+        start_ns = time.monotonic_ns()
+        try:
+            response = await asyncio.wait_for(
+                self._client.embeddings(model=self.model_id, prompt=text),
+                timeout=_EMBEDDING_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            raise AdapterTimeout(
+                model_id=self.model_id,
+                timeout_seconds=_EMBEDDING_TIMEOUT_SECONDS,
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 — adapter boundary
+            raise AdapterProviderError(
+                model_id=self.model_id,
+                sanitized_message=sanitize_error(exc),
+            ) from exc
+
+        latency_ms = (time.monotonic_ns() - start_ns) // 1_000_000
+
+        raw_dict: dict[str, Any] = (
+            response.model_dump() if hasattr(response, "model_dump") else dict(response)
+        )
+
+        # Ollama's embeddings response carries the vector under the
+        # ``embedding`` key. Convert to plain list of floats for the
+        # ``EmbeddingResponse`` wire shape.
+        vector_raw = raw_dict.get("embedding") or []
+        if not isinstance(vector_raw, list):
+            raise AdapterProviderError(
+                model_id=self.model_id,
+                sanitized_message=(
+                    f"ollama embeddings response 'embedding' field is not a list; "
+                    f"got {type(vector_raw).__name__}"
+                ),
+            )
+        try:
+            vector = [float(v) for v in vector_raw]
+        except (TypeError, ValueError) as exc:
+            raise AdapterProviderError(
+                model_id=self.model_id,
+                sanitized_message=sanitize_error(exc),
+            ) from exc
+
+        dim = len(vector)
+        if dim == 0:
+            raise AdapterProviderError(
+                model_id=self.model_id,
+                sanitized_message="ollama embeddings response returned an empty vector",
+            )
+
+        # Ollama doesn't return token counts on the embed path; surface 0
+        # (callers don't gate on this).
+        tokens_in = int(raw_dict.get("prompt_eval_count") or 0)
+
+        return EmbeddingResponse(
+            vector=vector,
+            dim=dim,
+            tokens_in=tokens_in,
+            latency_ms=int(latency_ms),
+            raw=raw_dict,
+        )
+
 
 class AnthropicAdapter:
     """Adapter for Claude Haiku 4.5 + Opus 4.7 with Rule M ephemeral cache.
@@ -274,6 +374,7 @@ __all__ = [
     "AdapterResponse",
     "AdapterTimeout",
     "AnthropicAdapter",
+    "EmbeddingResponse",
     "ModelAdapter",
     "OllamaAdapter",
 ]

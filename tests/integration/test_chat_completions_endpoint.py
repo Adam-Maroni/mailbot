@@ -65,6 +65,10 @@ def _bootstrap(
     monkeypatch.setenv("MAILBOT_DB_PATH", db_path)
     repo_root = Path(__file__).resolve().parent.parent.parent
     monkeypatch.setenv("MAILBOT_POLICY_PATH", str(repo_root / "router" / "policy.yaml"))
+    # Story 3-3: lifespan also loads sensitivity_patterns.yaml.
+    monkeypatch.setenv(
+        "MAILBOT_PATTERNS_PATH", str(repo_root / "router" / "sensitivity_patterns.yaml")
+    )
     monkeypatch.setenv("MAILBOT_ROUTER_KEY", "test-router-key-xyz")
 
     # Pre-register a fake adapter for the model the endpoint will dispatch to.

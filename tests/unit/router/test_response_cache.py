@@ -45,7 +45,8 @@ async def test_lookup_miss_returns_none(tmp_path: Path) -> None:
 async def test_insert_then_lookup_hit(tmp_path: Path) -> None:
     db_path = str(tmp_path / "t.db")
     apply_pending_migrations(db_path)
-    payload = json.dumps({"label": "newsletter", "confidence": 0.9})
+    # Story 3-2: coarse_class output uses field name `class_coarse` with 6 labels.
+    payload = json.dumps({"class_coarse": "newsletter", "confidence": 0.9})
     await insert(
         db_path,
         cache_key="key-1",
@@ -64,7 +65,8 @@ async def test_insert_then_lookup_hit(tmp_path: Path) -> None:
 async def test_lookup_increments_hit_count(tmp_path: Path) -> None:
     db_path = str(tmp_path / "t.db")
     apply_pending_migrations(db_path)
-    payload = json.dumps({"label": "spam", "confidence": 0.99})
+    # Story 3-2: "spam" is now "spam_like" in the 6-label taxonomy.
+    payload = json.dumps({"class_coarse": "spam_like", "confidence": 0.99})
     await insert(
         db_path,
         cache_key="key-2",

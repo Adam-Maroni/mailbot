@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-05-31
-last_updated: 2026-06-01  # epic-2 retrospective complete (yolo); see epic-2-retro-2026-06-01.md
+last_updated: 2026-06-01  # epic-3 COMPLETE — all 8 stories done; autonomous-epic-run finished. Retrospective remains optional (manual interactive in a future session).
 project: MailBot
 project_key: NOKEY
 tracking_system: file-system
@@ -43,7 +43,7 @@ story_location: _bmad-output/implementation-artifacts
 
 development_status:
   # Epic 1: Inbox Foundation
-  epic-1: in-progress  # reverted 2026-06-01 — story 1-10 added post-retro is still backlog; epic cannot be done while 1-10 is unfinished
+  epic-1: done  # 2026-06-01 — all 10 stories done; 1-10 (added post-retro) completed same day. Retrospective done. EPIC 1 COMPLETE.
   1-1-repo-scaffold-dependency-pinning: done  # 2026-06-01 — Python 3.12 venv + 15-line requirements.txt + full architecture §2 scaffold + 17 __init__.py + 7 root configs; 5/7 code-review fixes applied (1 deferred CR-4 sub-dirs, 1 flagged CR-6 sensitivity_patterns.yaml ownership); all gates green. See story file Completion Notes.
   1-2-docker-stack-scaffolding-with-health-endpoints: done  # 2026-06-01 — FastAPI /health + /v1/health, multi-stage Dockerfile (non-root user, tini PID 1), entrypoint.sh w/ wait -n fail-fast, docker-compose.yml (3 services, healthchecks, condition:service_healthy), 3 integration tests pass. Docker-compose-up verification deferred to Phase 3.5. 8/9 CR fixes applied, 1 partial (hermes:latest per architecture AR-DEPLOY-1).
   1-3-sqlite-layer-with-wal-executor-writes-and-migration-runner: done  # 2026-06-01 — WAL pragmas + async fetchone/fetchall/execute_write (explicit BEGIN IMMEDIATE/COMMIT); migrations_runner with atomic apply (composite executescript) + duplicate-prefix detection; 001_init.sql w/ emails+threads+senders+sync_state + derived-field companion columns; FastAPI lifespan applies migrations on startup; 18 integration tests pass. 8/10 CR fixes applied, 2 deferred (CR-5 sync-reads architecture-permitted; CR-8 embedding dtype/shape owned by 3-4).
@@ -71,15 +71,15 @@ development_status:
   epic-2-retrospective: done  # 2026-06-01 — retrospective completed (yolo mode); see epic-2-retro-2026-06-01.md. 10 action items, prep tasks split across 3 critical milestones (pre-3-1, pre-3-3, pre-3-6). 1 HARD blocker remains: W-5 embedding dtype/shape contract (Winston) must resolve before Story 3-1. Key takeaways: gate-coverage-only cadence validated (Sonnet review on 2-1/2-2/2-4 only, gate-only on the rest, all green); Phase 3.5 cadence from Epic 1 retro NOT executed in autonomous run (re-committed as user-side checkpoint); epic-run-flags discipline regressed (catch-up flags file owed); migration renumber chain absorbed cleanly (+1 shift, propagated to Epic 3 spec).
 
   # Epic 3: Ingest Pipeline
-  epic-3: backlog
-  3-1-derived-field-schema-and-companion-metadata-and-idempotency-helper: backlog
-  3-2-prompt-modules-for-ingest-tasks-uniform-ar-pat-5-structure: backlog
-  3-3-sensitivity-classifier-and-sensitivity-patterns-yaml-and-router-precondition-layer: backlog
-  3-4-nomic-embed-text-embedding-adapter-and-embedding-column-writes: backlog
-  3-5-pipeline-ordering-enforcement-single-email-end-to-end: backlog
-  3-6-backpressure-ceiling-and-batched-processing-bulk-pipeline-drain: backlog
-  3-7-senders-and-threads-upsert-and-cached-sender-reputation-summary: backlog
-  3-8-targeted-re-derivation-cli: backlog
+  epic-3: done  # 2026-06-01 — EPIC 3 COMPLETE. All 8 stories done. 458 tests pass + 2 skipped. Code-review subagent ran for 3-1 + 3-2 (high-impact stories); 3-3 through 3-8 ran gate-coverage-only (Router + privacy-invariant surfaces noted in epic-run-flags.md for retro discussion). +133 tests net across the epic (325 → 458).
+  3-1-derived-field-schema-and-companion-metadata-and-idempotency-helper: done  # 2026-06-01 — disposition-aware delta shipped: W-5 companion columns (embedding_dtype/_shape) + 3 missing indexes via migration 011 + compute_idempotency_key() helper + boundary-check writer monopoly (positional + keyword args). 5/7 code-review patches applied, 2 deferred (pre-existing scope limits). 345 tests pass (+20 net); all gates green. See story file Completion Notes.
+  3-2-prompt-modules-for-ingest-tasks-uniform-ar-pat-5-structure: done  # 2026-06-01 — 6 AR-PAT-5 prompt modules shipped (sensitivity_class, coarse_class replaced, fine_class, summary_short, importance_scoring, action_extraction). Registry extended to 4-export (incl. VERSION + non-empty SYSTEM/USER_TEMPLATE). 7/8 CR patches applied; 1 deferred (pre-existing hermes_aux cache double-wrap latent bug). 379 tests pass (+34 net); all gates green. See story file Completion Notes.
+  3-3-sensitivity-classifier-and-sensitivity-patterns-yaml-and-router-precondition-layer: done  # 2026-06-01 — sensitivity classifier (Qwen-locked, FR-2.5 startup + per-call safeguard) + sensitivity_patterns.yaml loader + Router precondition layer (FR-2.3 hard invariant: sensitivity_at IS NULL → SENSITIVITY_NOT_CLASSIFIED; sensitive/confidential + Haiku/Opus → SENSITIVITY_BLOCKS_API) + migration 012 (sensitivity_override_reason) + MAILBOT_SKIP_PATTERNS env-var. 26 new tests (13 unit + 13 integration). 405 tests pass total, all gates green. Code-review subagent NOT invoked — flagged for retro (gate-coverage-only cadence). See story file Completion Notes.
+  3-4-nomic-embed-text-embedding-adapter-and-embedding-column-writes: done  # 2026-06-01 — OllamaAdapter.embed + EmbeddingResponse + dispatch_embedding sibling helper + ingest/embedding.py writer-monopoly (write_embedding/read_embedding/embed_email) + migration 011 W-5 columns leveraged + policy.yaml embedding entry + boundary-check extension. 22 new tests. 427 tests pass total, all gates green. Code-review subagent NOT invoked — gate-coverage-only per epic-run-flags. See story file Completion Notes.
+  3-5-pipeline-ordering-enforcement-single-email-end-to-end: done  # 2026-06-01 — pipeline orchestrator with 7-step FR-2.3 fixed ordering (sensitivity → coarse → conditional fine → summary → importance → action → embedding), per-step idempotency via derivations_idempotency (migration 013), sensitivity-blocks-API graceful skip + pattern-override integration, CLI `python -m mailbot_api.ingest.pipeline`. 7 e2e tests + 4 policy.yaml entries. 434 tests pass total. Gate-coverage-only. See story file Completion Notes.
+  3-6-backpressure-ceiling-and-batched-processing-bulk-pipeline-drain: done  # 2026-06-01 — backpressure module (count_unprocessed, should_throttle, run_drain_loop, ingest_pipeline_interval_task stub) + pipeline.run_batch() + worker_health heartbeats per batch + 100-batch drain with 500-threshold sleep-5s backpressure. 8 e2e tests. 442 tests pass total. Gate-coverage-only. See story file Completion Notes.
+  3-7-senders-and-threads-upsert-and-cached-sender-reputation-summary: done  # 2026-06-01 — sender_reputation_summary + thread_continuity AR-PAT-5 prompts (Qwen-locked) + sender_enrichment.py (enrich_sender/enrich_thread with cross-email sensitivity-aware digest filtering + Rule A cache) + migration 014 (thread_continuity_note columns; senders side N/A — already in 001_init) + 2 policy.yaml entries. 7 e2e tests. 449 tests pass total. Gate-coverage-only. See story file Completion Notes.
+  3-8-targeted-re-derivation-cli: done  # 2026-06-01 — `mailbot rederive --task=<task> --since=<date>` CLI subcommand + rederive.py orchestrator (plan_rederive + execute_rederive + RederivePlan + RederiveResult) + 7 per-task selection queries + EMAIL_CLEAR_DOWNSTREAM_DERIVATIONS for sensitivity case + 30s confirmation prompt + cli-rederive caller_origin + pipeline.py public API rename. 9 e2e tests. 458 tests pass total. Gate-coverage-only. EPIC 3 COMPLETE.
   epic-3-retrospective: optional
 
   # Epic 4: Authorized Actions
