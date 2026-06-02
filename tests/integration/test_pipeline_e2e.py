@@ -395,6 +395,21 @@ async def test_pipeline_sensitive_email_blocks_haiku_steps_but_runs_local(tmp_pa
     )
     assert row == (None, None, None)
 
+    # CR-3-5-6: prove the Qwen-local steps actually wrote their results back.
+    # Without this, a future policy drift that puts coarse_class on Haiku
+    # would silently flip this test green (steps_run claim alone is not proof
+    # the row was written).
+    qwen_row = await fetchone(
+        db_path,
+        "SELECT class_coarse, class_coarse_at, class_fine, class_fine_at FROM emails WHERE graph_id = ?",
+        ("e-1",),
+    )
+    assert qwen_row is not None
+    assert qwen_row[0] == "human"  # class_coarse populated by Qwen
+    assert qwen_row[1] is not None  # class_coarse_at populated
+    assert qwen_row[2] is not None  # class_fine populated (gate opens on "human")
+    assert qwen_row[3] is not None  # class_fine_at populated
+
 
 async def test_pipeline_preflight_missing_email_returns_error(tmp_path: Path, _clean_state: Any) -> None:
     """AC-2 preflight: nonexistent email_id returns error before any step."""

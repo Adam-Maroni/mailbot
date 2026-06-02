@@ -12,7 +12,12 @@
 #   4. If no override fires, the classifier's label stands.
 #
 # Pattern entry shapes (exactly ONE of regex, sender_domain, keyword per entry):
-#   - regex:         Python re.search() pattern (use (?i) for case-insensitive)
+#   - regex:         Python re.search() pattern (use (?i) for case-insensitive).
+#                    NOTE (CR-3-3-9): regex is applied against `subject + body_preview`
+#                    ONLY — NOT against the From address. Use `sender_domain` for any
+#                    address-based rule. A regex like `(?i)bank\.com` will silently
+#                    fail to match an email from @bank.com unless those characters
+#                    appear in the subject or body.
 #   - sender_domain: lowercased domain part of From address; exact match
 #   - keyword:       case-insensitive substring match against subject + body_preview
 #

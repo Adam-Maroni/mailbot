@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -25,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from mailbot_api.db.connection import fetchone
 from mailbot_api.db.queries import EMAIL_SENSITIVITY_SELECT
 from mailbot_api.observability.audit import RouterCallRow, record_router_call
+from mailbot_api.observability.timestamps import utc_z_now
 from mailbot_api.prompts import PromptResolutionError, resolve_prompt
 from mailbot_api.router.budget import (
     PER_CALL_REFUSAL_THRESHOLD_USD,
@@ -338,7 +338,10 @@ async def ask_router(
             # audit purposes "consumed_at" is the relevant fact; same value
             # serves both. Story 4-x can extend the consume() API to return
             # minted_at if a forensic gap appears.
-            _sensitivity_grant_minted_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            # CR-3-3-5: use the shared microsecond-precision helper (AR-PAT-3 +
+            # Epic 4 retro action item #3). Inline isoformat()+replace() produced
+            # second-precision values on Windows whenever microsecond==0.
+            _sensitivity_grant_minted_at = utc_z_now()
 
     return await _dispatch_with_failure_chain(
         task_type=task_type,

@@ -326,3 +326,37 @@ The 8/8-story epic-run autonomous protocol mandates a different-model code-revie
 - `tests/integration/test_chat_completions_endpoint.py` — set MAILBOT_PATTERNS_PATH for lifespan test
 - `tests/integration/test_db_connection.py` — set MAILBOT_PATTERNS_PATH for 2 lifespan tests
 - `tests/integration/test_migration_011.py` — relaxed exact-list assertion (012 now exists)
+
+---
+
+## Retroactive Code Review (2026-06-02)
+
+Per Epic 4 retro action item #2 (Adam, 2026-06-02): Story 3-3 originally shipped under the gate-coverage-only cadence; no CR subagent dispatched at the time. This is the retroactive CR pass — a privacy-invariant surface deserves a second pair of eyes.
+
+**Reviewer:** claude-sonnet-4-6 via Agent dispatch (model=sonnet) — different model from the original Opus 4.7 dev pass.
+
+**Verdict:** NOTABLE — 9 findings (5 patches, 2 decisions, 2 defers). Applied rate **8/9 = 89%** (above 70% threshold).
+
+### Findings and disposition
+
+- **CR-3-3-1 [HIGH] Blind Hunter** — `apply_pattern_override` early-returns on first force_sensitive match when classifier was already ≥sensitive, silently skipping later rules. **PATCHED:** `return` → `continue` on the no-op branch (`mailbot_api/sensitivity/patterns.py:204`).
+- **CR-3-3-2 [HIGH] Acceptance Auditor** — `assert_qwen_only` startup safeguard had ZERO test coverage. AC-2's startup arm was not directly tested. **PATCHED:** new `tests/unit/sensitivity/test_classifier.py` with 6 `assert_qwen_only` tests (valid policy, Haiku drift, Opus drift, missing entry, no .tasks dict, entry without model attribute).
+- **CR-3-3-3 [HIGH] Acceptance Auditor** — `tests/unit/sensitivity/test_classifier.py` file (AC-6 deliverable) was never created. **PATCHED:** file created — same file as CR-3-3-2.
+- **CR-3-3-4 [MEDIUM] Edge Case Hunter** — Confidence-floor boundary (`< 0.5`) had no boundary tests. **PATCHED:** 4 new boundary tests in `test_classifier.py` pinning `< 0.5` vs `<= 0.5` behaviour at 0.0, 0.4999, 0.5, 0.5001, and 0.9.
+- **CR-3-3-5 [MEDIUM] Blind Hunter** — `router.py:341` used inline `datetime.now(...).isoformat().replace(...)` producing second-precision timestamps on Windows when microsecond=0; missed by the Epic 4 retro sub-second `ts` migration. **PATCHED:** swapped to `utc_z_now()` (`mailbot_api/router/router.py:341`); dead `from datetime import datetime, timezone` import removed.
+- **CR-3-3-6 [MEDIUM] Edge Case Hunter** — `_SENSITIVITY_RANK[label]` raises KeyError on unknown labels; not wrapped in errors-as-data. **PATCHED:** new `_rank(label)` helper returns -1 for unknown labels (fail-safe direction — force_sensitive still upgrades unknown). Used in the force_sensitive loop.
+- **CR-3-3-7 [MEDIUM] Acceptance Auditor** — Degraded-mode + sensitivity gate interaction untested (the code is correct; the question was whether to add the test or document the invariant). **ACCEPTED-NO-CHANGE:** the precondition check uses the resolved-after-demotion `model` variable; correct by construction. No additional test added — pipeline-level invariant correctness is sufficiently load-bearing on the existing precondition tests.
+- **CR-3-3-8 [LOW] Acceptance Auditor** — `apply_pattern_override` signature diverges from AC-3 spec (email_id dropped, SensitivityResult unpacked to str). **PATCHED:** added a "Signature note (CR-3-3-8)" paragraph to the function docstring documenting the deliberate divergence.
+- **CR-3-3-9 [LOW] Edge Case Hunter** — `regex` pattern is applied against subject+body only, not from_address; YAML docs didn't warn. **PATCHED:** YAML comment in `router/sensitivity_patterns.yaml` warns that `regex` does NOT apply to From address and points users to `sender_domain` for address rules.
+
+### Tests added
+
+- `tests/unit/sensitivity/test_classifier.py` (+10 tests) — `assert_qwen_only` 6 cases + confidence-floor boundary 4 cases.
+
+### Gates
+
+All 4 quality gates green after patches: pytest (625 → 646 baseline +21 from 3-3 + 3-5 retroactive CR combined), ruff, mypy --strict (85 source files), boundary checker.
+
+### Status
+
+Retroactive CR complete. Story 3-3 is now CR-cleared.

@@ -262,3 +262,43 @@ claude-opus-4-7 (1M context) — autonomous-epic-run loop (Phase 2, Story 3-5) �
 - `mailbot_api/db/queries.py` — 5 per-task UPDATE constants + `EMAIL_SENSITIVITY_OVERRIDE_REWRITE` + `EMAIL_SENSITIVITY_DETAIL_SELECT` + `EMAIL_CLASS_COARSE_SELECT` + `DERIVATIONS_IDEMPOTENCY_SELECT` + `DERIVATIONS_IDEMPOTENCY_UPSERT`
 - `router/policy.yaml` — 4 new task entries (fine_class, summary_short, importance_scoring, action_extraction)
 - `mailbot_api/sensitivity/__init__.py` — re-export `get_patterns`
+
+---
+
+## Retroactive Code Review (2026-06-02)
+
+Per Epic 4 retro action item #2 (Adam, 2026-06-02): Story 3-5 originally shipped under the gate-coverage-only cadence; no CR subagent dispatched at the time. This is the retroactive CR pass — a load-bearing-orchestrator surface (every email forever flows through `process_email`) deserves a second pair of eyes.
+
+**Reviewer:** claude-sonnet-4-6 via Agent dispatch (model=sonnet) — different model from the original Opus 4.7 dev pass.
+
+**Verdict:** NOTABLE — 9 findings (5 patches, 2 decisions, 2 defers). Applied rate **8/9 = 89%** (above 70% threshold).
+
+### Findings and disposition
+
+- **CR-3-5-1 [HIGH] Blind Hunter** — When `coarse_class` is blocked by SENSITIVITY_BLOCKS_API (latent under current policy but reachable if coarse_class is ever moved to Haiku/Opus), `class_coarse_value` stays None, so `fine_class` is misattributed to `steps_inapplicable` instead of `steps_blocked_by_sensitivity`. **PATCHED:** added `coarse_class_blocked_by_sensitivity` marker variable; the fine_class gate distinguishes "inapplicable because not human" from "inapplicable because coarse_class was blocked" and routes the latter to `steps_blocked_by_sensitivity`. (`mailbot_api/ingest/pipeline.py:332-348, 396-401`)
+- **CR-3-5-2 [HIGH] Acceptance Auditor** — `tests/unit/ingest/test_pipeline.py` file (AC-8 deliverable) was never created — all coverage at integration tier. **PATCHED:** created `test_pipeline.py` with 11 tests covering `ProcessEmailResult` field defaults + retryable propagation, `RunBatchResult` field defaults + `retryable_failed` counter, and `_is_sensitivity_blocks_api` predicate over all RouterError codes. The reviewer's recommendation to mock the entire process_email tree was rejected — project convention (test_idempotency.py) is to unit-test pure functions and integration-test orchestration.
+- **CR-3-5-3 [MEDIUM] Edge Case Hunter** — `_run_sensitivity_step` silently returns when body row vanishes mid-override-pass (narrow race: soft-delete between classifier write and override fetch). **PATCHED:** added `logger.warning` with `event="ingest.sensitivity.override_skip_missing_row"` so the silent skip is observable. (`mailbot_api/ingest/pipeline.py:234-249`)
+- **CR-3-5-4 [MEDIUM] Blind Hunter** — `ProcessEmailResult` / `RunBatchResult` use bare `= []` defaults; Pydantic v2 is safe but the convention diverges from the rest of the codebase. **PATCHED:** migrated 6 list fields to `Field(default_factory=list)` across both models. (`mailbot_api/ingest/pipeline.py:98-108, 504-512`)
+- **CR-3-5-5 [MEDIUM] Edge Case Hunter** — `retryable=True` errors from the router were treated as terminal by `process_email` and counted as permanent failures by `run_batch`. Backpressure re-enqueue only covers sensitivity-step failures (the email keeps `sensitivity_at IS NULL`); later-step transient failures (rate-limited summary_short) were lost. **PATCHED (option a):** added `retryable: bool` field to `ProcessEmailResult` populated from inner `RouterError.retryable` on every abort path; added `retryable_failed: int` counter to `RunBatchResult` so operators can distinguish "needs attention" from "throttled". (`mailbot_api/ingest/pipeline.py` — multiple sites)
+- **CR-3-5-6 [MEDIUM] Acceptance Auditor** — Sensitive-email integration test asserted Haiku blocks but did NOT assert `class_coarse_at IS NOT NULL` or `class_coarse == "human"`; a future policy drift that moved coarse_class to Haiku would silently flip the test green. **PATCHED:** added 4-line DB-level assertion at the end of `test_pipeline_sensitive_email_blocks_haiku_steps_but_runs_local` proving Qwen actually wrote coarse + fine. (`tests/integration/test_pipeline_e2e.py:398-410`)
+- **CR-3-5-7 [LOW] Blind Hunter** — CLI `_cli_init_runtime` did not mirror the FastAPI lifespan's `assert_qwen_only` startup check. **PATCHED:** added `assert_qwen_only(snapshot_for_dispatch())` after `set_policy_snapshot` in `_cli_init_runtime`. (`mailbot_api/ingest/pipeline.py:686-694`)
+- **CR-3-5-8 [LOW] Edge Case Hunter** — Missing `embedding` policy entry was silently skipped rather than hard-failing like other tasks. Adam chose option (a): hard-fail for consistency. **PATCHED:** `entry is None` branch now sets `result.failed_at = "embedding"` + `PROVIDER_ERROR` and returns; consistent with the earlier `_ROUTER_TASKS_IN_ORDER` loop. (`mailbot_api/ingest/pipeline.py:490-509`)
+- **CR-3-5-9 [LOW] Acceptance Auditor** — AC-8 "Sensitivity step failure aborts before coarse_class" scenario not directly tested. **DEFERRED:** logically covered by `test_pipeline_failed_step_aborts_remaining` (which proves the abort-on-failure pattern on coarse_class); the sensitivity-step-failure code path is the same shape with no special branching.
+
+### Decisions Adam made
+
+- **CR-3-5-5 (retryable propagation):** Option (a) — add `retryable` propagation. Rationale: backpressure re-enqueue only covers sensitivity-step failures via the `sensitivity_at IS NULL` selector; later-step transient failures (rate-limit on summary_short) leave `sensitivity_at` populated and never get retried.
+- **CR-3-5-8 (missing embedding policy):** Option (a) — hard-fail. Rationale: consistency with the other task entries; if embedding should be disabled, remove it from `_ROUTER_TASKS_IN_ORDER`, not silently skip via policy absence.
+
+### Tests added
+
+- `tests/unit/ingest/test_pipeline.py` (+11 tests) — `ProcessEmailResult` field defaults + retryable + partial_due_to_sensitivity, `RunBatchResult` field defaults + retryable_failed, `_is_sensitivity_blocks_api` over 6 error codes + ok=True + the RouterResult invariant.
+- `tests/integration/test_pipeline_e2e.py` (+1 assertion in existing sensitive-email test) — proves `class_coarse_at NOT NULL` and `class_fine_at NOT NULL` after sensitive-email pipeline run.
+
+### Gates
+
+All 4 quality gates green after patches: pytest (625 → 646 baseline +21 from 3-3 + 3-5 retroactive CR combined), ruff, mypy --strict (85 source files), boundary checker.
+
+### Status
+
+Retroactive CR complete. Story 3-5 is now CR-cleared.

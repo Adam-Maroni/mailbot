@@ -168,6 +168,18 @@ def load_patterns(yaml_path: str | Path) -> PatternTable:
 _SENSITIVITY_RANK: Final[dict[str, int]] = {"normal": 0, "sensitive": 1, "confidential": 2}
 
 
+def _rank(label: str) -> int:
+    """Return the rank for a sensitivity label, or -1 for unknown labels.
+
+    CR-3-3-6: a bare `_SENSITIVITY_RANK[label]` lookup raises KeyError on any
+    label outside the known set. AR-PAT-4 (errors-as-data) requires this
+    function never raise. Unknown labels are treated as below-normal so that
+    a `force_sensitive` rule still upgrades them — fail-safe direction for a
+    privacy invariant.
+    """
+    return _SENSITIVITY_RANK.get(label, -1)
+
+
 def apply_pattern_override(
     *,
     classifier_sensitivity: str,
@@ -186,6 +198,12 @@ def apply_pattern_override(
       2. force_sensitive rules upgrade "normal" -> "sensitive" but NEVER
          downgrade "confidential" or "sensitive".
       3. No match → classifier label stands, override_reason=None.
+
+    Signature note (CR-3-3-8): the story-spec AC-3 listed
+    `(email_id, classifier_result: SensitivityResult, ...)`. The shipped
+    signature takes `classifier_sensitivity: str` (the only field consumed)
+    and drops `email_id` (caller has it; never used here). The change avoided
+    a circular import via `SensitivityResult`. Behaviour is unchanged.
     """
     # Force-confidential pass.
     for entry in patterns.force_confidential:
@@ -195,13 +213,18 @@ def apply_pattern_override(
 
     # Force-sensitive pass. Only fires if classifier said "normal" — downgrades
     # forbidden per epic spec ("downgrades from `confidential` are never applied").
+    # CR-3-3-1: the no-op case (classifier already ≥sensitive) MUST `continue`
+    # rather than `return` — otherwise a later force_sensitive rule that DOES
+    # match the email is silently skipped on already-sensitive inputs. The
+    # upgrade case returns early (no later rule can do anything additional).
     for entry in patterns.force_sensitive:
         if entry.matches(subject=subject, from_address=from_address, body_preview=body_preview):
-            if _SENSITIVITY_RANK[classifier_sensitivity] < _SENSITIVITY_RANK["sensitive"]:
+            if _rank(classifier_sensitivity) < _SENSITIVITY_RANK["sensitive"]:
                 reason = f"pattern_override: force_sensitive {entry.describe()}"
                 return ("sensitive", reason)
             # Classifier already at "sensitive" or higher — pattern is a no-op.
-            return (classifier_sensitivity, None)
+            # Keep scanning so all force_sensitive rules are evaluated.
+            continue
 
-    # No match at all.
+    # No match at all (or only no-op matches above).
     return (classifier_sensitivity, None)

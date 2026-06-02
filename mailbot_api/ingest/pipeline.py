@@ -28,7 +28,7 @@ import logging
 import sys
 from typing import Any, Final
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from mailbot_api.db.connection import execute_write, fetchone
 from mailbot_api.db.queries import (
@@ -95,12 +95,20 @@ class ProcessEmailResult(BaseModel):
 
     ok: bool
     email_id: str
-    steps_run: list[str] = []
-    steps_skipped: list[str] = []  # idempotency short-circuits
-    steps_inapplicable: list[str] = []  # e.g., fine_class on non-human
-    steps_blocked_by_sensitivity: list[str] = []  # SENSITIVITY_BLOCKS_API
+    # CR-3-5-4: Pydantic v2 wraps these in default_factory internally so the
+    # bare `= []` form is safe, but the project convention (RouterError, etc.)
+    # uses `Field(default_factory=list)` explicitly to avoid the shared-mutable-
+    # default trap if this pattern is copied into a non-Pydantic dataclass.
+    steps_run: list[str] = Field(default_factory=list)
+    steps_skipped: list[str] = Field(default_factory=list)  # idempotency short-circuits
+    steps_inapplicable: list[str] = Field(default_factory=list)  # fine_class on non-human
+    steps_blocked_by_sensitivity: list[str] = Field(default_factory=list)  # SENSITIVITY_BLOCKS_API
     failed_at: str | None = None
     partial_due_to_sensitivity: bool = False
+    # CR-3-5-5: propagate the inner RouterError.retryable upward so the batch
+    # caller (run_batch) can distinguish transient (rate-limited, paused) from
+    # terminal failures and let backpressure re-enqueue them.
+    retryable: bool = False
     error: RouterError | None = None
 
 
@@ -233,6 +241,19 @@ async def _run_sensitivity_step(*, db_path: str, email_id: str) -> tuple[Sensiti
     # Apply pattern override (may upgrade normal → sensitive or → confidential).
     body_row = await fetchone(db_path, EMAIL_BODY_FOR_SENSITIVITY_SELECT, (email_id,))
     if body_row is None:
+        # CR-3-5-3: narrow race — classifier just wrote a row but a concurrent
+        # soft-delete removed it before the override pass. Classifier result
+        # stands (no upgrade applied). Log so the silent skip is observable;
+        # privacy is not compromised (override could only have upgraded, never
+        # downgraded), but a force_confidential rule that should have fired is
+        # silently missed.
+        logger.warning(
+            "sensitivity override skipped — body row vanished between classify and override",
+            extra={
+                "event": "ingest.sensitivity.override_skip_missing_row",
+                "email_id": email_id,
+            },
+        )
         return (classifier_result, False)
     subject, from_address, body_preview = body_row
 
@@ -314,6 +335,9 @@ async def process_email(
     if not sensitivity_result.ok:
         result.failed_at = "sensitivity_class"
         result.error = sensitivity_result.error
+        # CR-3-5-5: propagate retryable from the inner RouterError so
+        # run_batch can let backpressure re-enqueue transient failures.
+        result.retryable = bool(sensitivity_result.error and sensitivity_result.error.retryable)
         logger.warning(
             "pipeline step failed",
             extra={
@@ -331,10 +355,20 @@ async def process_email(
 
     # ----- Steps 2-6: ask_router-dispatched tasks (with conditional fine_class) -----
     class_coarse_value: str | None = None  # populated by step 2 to gate step 3
+    coarse_class_blocked_by_sensitivity = False  # CR-3-5-1 marker
     for task_type in _ROUTER_TASKS_IN_ORDER:
         # Conditional gate: fine_class only when class_coarse == "human".
+        # CR-3-5-1: if coarse_class itself was blocked by the sensitivity gate
+        # (possible under a future policy that puts coarse_class on Haiku/Opus),
+        # `class_coarse_value` stays None — we cannot decide applicability for
+        # fine_class. Attribute it to sensitivity-blocked rather than
+        # inapplicable so the result accurately reflects WHY it was skipped.
         if task_type == "fine_class" and class_coarse_value != "human":
-            result.steps_inapplicable.append(task_type)
+            if coarse_class_blocked_by_sensitivity:
+                result.steps_blocked_by_sensitivity.append(task_type)
+                result.partial_due_to_sensitivity = True
+            else:
+                result.steps_inapplicable.append(task_type)
             continue
 
         # Resolve policy entry up-front so we can compute the idempotency key.
@@ -379,6 +413,10 @@ async def process_email(
         if _is_sensitivity_blocks_api(rr):
             result.steps_blocked_by_sensitivity.append(task_type)
             result.partial_due_to_sensitivity = True
+            # CR-3-5-1: mark coarse_class as blocked so the fine_class gate
+            # downstream attributes its skip to sensitivity, not "inapplicable".
+            if task_type == "coarse_class":
+                coarse_class_blocked_by_sensitivity = True
             logger.info(
                 "pipeline step skipped due to sensitivity",
                 extra={
@@ -392,6 +430,12 @@ async def process_email(
         if not rr.ok or rr.output is None:
             result.failed_at = task_type
             result.error = rr.error
+            # CR-3-5-5: see ProcessEmailResult.retryable. Transient errors
+            # (RATE_LIMITED, router-paused PROVIDER_ERROR) carry retryable=True
+            # so run_batch can leave the email in the unprocessed queue (its
+            # sensitivity_at IS set, so it won't actually re-enqueue — see the
+            # `failed_at != "sensitivity_class"` lane in run_batch).
+            result.retryable = bool(rr.error and rr.error.retryable)
             logger.warning(
                 "pipeline step failed",
                 extra={
@@ -399,6 +443,7 @@ async def process_email(
                     "email_id": email_id,
                     "task_type": task_type,
                     "error_code": (rr.error.code.value if rr.error else "unknown"),
+                    "retryable": result.retryable,
                 },
             )
             return result
@@ -445,21 +490,35 @@ async def process_email(
         # Record idempotency for embedding too (cross-task consistency).
         # The embedding key uses the same formula but its policy entry's
         # prompt_version is the sentinel "v1".
+        # CR-3-5-8: hard-fail when the embedding entry is missing. The earlier
+        # router-task loop already rejects missing entries with PROVIDER_ERROR
+        # (see line ~376); a silent skip here would have left a gap in
+        # derivations_idempotency that breaks the cross-task consistency claim
+        # in migration 013's comment. If embedding should be disabled, remove
+        # it from _ROUTER_TASKS_IN_ORDER + this block rather than relying on
+        # policy.yaml absence.
         policy_snapshot = snapshot_for_dispatch()
         entry = policy_snapshot.tasks.get("embedding")
-        if entry is not None:
-            embedding_key = compute_idempotency_key(
-                body=body_preview,
-                prompt_version=entry.prompt_version,
-                model=entry.model,
-                task_type="embedding",
+        if entry is None:
+            result.failed_at = "embedding"
+            result.error = RouterError(
+                code=ErrorCode.PROVIDER_ERROR,
+                message="task_type 'embedding' not in policy",
+                retryable=False,
             )
-            await record_idempotency(
-                db_path=db_path,
-                email_id=email_id,
-                task_type="embedding",
-                key=embedding_key,
-            )
+            return result
+        embedding_key = compute_idempotency_key(
+            body=body_preview,
+            prompt_version=entry.prompt_version,
+            model=entry.model,
+            task_type="embedding",
+        )
+        await record_idempotency(
+            db_path=db_path,
+            email_id=email_id,
+            task_type="embedding",
+            key=embedding_key,
+        )
         result.steps_run.append("embedding")
 
     result.ok = True
@@ -478,8 +537,11 @@ class RunBatchResult(BaseModel):
     succeeded: int
     failed: int
     partial_due_to_sensitivity: int
-    email_ids: list[str] = []
-    errors: list[str] = []
+    # CR-3-5-5: count emails whose pipeline failed with a retryable error so
+    # operators can distinguish "permanently broken" from "should be retried".
+    retryable_failed: int = 0
+    email_ids: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
 
 
 async def run_batch(
@@ -508,6 +570,7 @@ async def run_batch(
 
     succeeded = 0
     failed = 0
+    retryable_failed = 0
     partial_sensitive = 0
     errors: list[str] = []
     last_error: str | None = None
@@ -523,6 +586,17 @@ async def run_batch(
                     partial_sensitive += 1
             else:
                 failed += 1
+                # CR-3-5-5: a retryable failure (rate-limit / pause) is
+                # bookkept separately so operators can distinguish "needs
+                # operator attention" from "queue is throttled". The email
+                # itself: if the failure was at sensitivity_class, the row
+                # still has sensitivity_at IS NULL → backpressure re-enqueues
+                # on the next batch. Failures at later steps leave
+                # sensitivity_at populated, so the email won't be re-picked
+                # automatically — surfaced via the count for now; a future
+                # story can extend with a "retry queue" if needed.
+                if r.retryable:
+                    retryable_failed += 1
                 msg = f"{email_id}: {r.failed_at} ({r.error.code.value if r.error else 'unknown'})"
                 errors.append(msg)
                 last_error = msg
@@ -551,6 +625,7 @@ async def run_batch(
         succeeded=succeeded,
         failed=failed,
         partial_due_to_sensitivity=partial_sensitive,
+        retryable_failed=retryable_failed,
         email_ids=email_ids,
         errors=errors,
     )
@@ -612,9 +687,9 @@ async def _cli_init_runtime(db_path: str) -> None:
     from mailbot_api.db.migrations_runner import apply_pending_migrations
     from mailbot_api.router.budget import get_guard
     from mailbot_api.router.pause import get_pause_state
-    from mailbot_api.router.policy import load_policy, set_policy_snapshot
+    from mailbot_api.router.policy import load_policy, set_policy_snapshot, snapshot_for_dispatch
     from mailbot_api.router.registry import init_default_adapters
-    from mailbot_api.sensitivity import load_patterns
+    from mailbot_api.sensitivity import assert_qwen_only, load_patterns
     from mailbot_api.sensitivity.patterns import (
         set_patterns_snapshot as _set_sensitivity_patterns,
     )
@@ -623,6 +698,11 @@ async def _cli_init_runtime(db_path: str) -> None:
 
     policy_path = Path(get_secret_optional("MAILBOT_POLICY_PATH", "/app/router/policy.yaml"))
     set_policy_snapshot(load_policy(policy_path))
+    # CR-3-5-7: mirror the FastAPI lifespan's FR-2.5 startup check. The
+    # per-call safeguard in classifier.py would catch a drifted policy at
+    # first dispatch, but the CLI's job is fail-fast at init — same shape
+    # as the lifespan at main.py.
+    assert_qwen_only(snapshot_for_dispatch())
 
     patterns_path = Path(
         get_secret_optional("MAILBOT_PATTERNS_PATH", "/app/router/sensitivity_patterns.yaml")
