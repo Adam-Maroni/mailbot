@@ -5,8 +5,8 @@ Story 1-3: adds FastAPI lifespan handler that applies pending DB migrations on s
 Story 1-4: env reads go through config.get_secret per Rule F.
 Story 1-8: /health + /v1/health enriched with sync_* fields read from worker_health.
 Story 2-2: lifespan loads router/policy.yaml and starts watchfiles hot-reloader.
-
-Verb routes, /v1/chat/completions, /v1/embeddings, and MCP server land in later stories.
+Story 2-10: /v1/chat/completions and /v1/embeddings OpenAI-shape endpoints.
+Story 5-2: MCP server mounted at /mcp via FastMCP streamable-HTTP transport.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from mailbot_api.config import SecretMissing, get_secret, get_secret_optional
 from mailbot_api.db.migrations_runner import apply_pending_migrations
+from mailbot_api.mcp_server import build_mcp_server
 from mailbot_api.observability.logging import configure_logging
 from mailbot_api.router.anomaly import AnomalyDetector
 from mailbot_api.router.budget import get_guard
@@ -66,6 +67,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # needing the sensitivity gate set MAILBOT_SKIP_PATTERNS=1 to skip the
     # patterns.yaml load. Production startup never sets this.
     skip_patterns = get_secret_optional("MAILBOT_SKIP_PATTERNS", "0") == "1"
+    # Story 5-2: MAILBOT_SKIP_MCP=1 bypasses the MCP session-manager
+    # lifecycle (useful for tests that boot the FastAPI app without exercising
+    # the MCP transport — mirrors the SKIP_DB/SKIP_POLICY/SKIP_PATTERNS pattern).
+    skip_mcp = get_secret_optional("MAILBOT_SKIP_MCP", "0") == "1"
 
     db_path: str | None = None
     if not skip_db:
@@ -191,23 +196,68 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.policy_watcher_task = policy_watcher_task
         if not skip_policy:
             _app.state.lane_scheduler = lane_scheduler
-    try:
-        yield
-    finally:
-        if policy_stop_event is not None and policy_watcher_task is not None:
-            policy_stop_event.set()
-            try:
-                await asyncio.wait_for(policy_watcher_task, timeout=5.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
-                logger.warning(
-                    "policy watcher shutdown timeout",
-                    extra={"event": "policy.shutdown.timeout", "exc_type": type(exc).__name__},
-                )
-                policy_watcher_task.cancel()
-        if not skip_policy:
-            await lane_scheduler.stop(timeout=30.0)
-            if anomaly_detector is not None:
-                await anomaly_detector.stop(timeout=5.0)
+
+    # Story 5-2: build a fresh FastMCP server + mount its streamable-HTTP
+    # ASGI app on every lifespan entry. Per-lifespan instantiation is
+    # required because FastMCP's StreamableHTTPSessionManager binds to the
+    # event loop at construction; reusing a single module-level instance
+    # across multiple TestClient lifespans (each running on a fresh loop)
+    # breaks subsequent runs. The route is appended to the FastAPI router
+    # before yield and popped after — single-app, multi-lifespan safe.
+    mcp_mount = None
+    async with AsyncExitStack() as stack:
+        if not skip_mcp and _app is not None and db_path is not None:
+            from starlette.routing import Mount
+
+            mcp_server = build_mcp_server(db_path=db_path)
+            # `streamable_http_app()` lazily constructs the session manager,
+            # so call it FIRST — then `.session_manager` is safe to access.
+            streamable_app = mcp_server.streamable_http_app()
+            await stack.enter_async_context(mcp_server.session_manager.run())
+            mcp_mount = Mount("/mcp", app=streamable_app)
+            _app.router.routes.append(mcp_mount)
+            _app.state.mcp_server = mcp_server
+            logger.info(
+                "mcp server live",
+                extra={"event": "mcp.startup.live", "tools": 11, "path": "/mcp"},
+            )
+        elif _app is not None and not skip_mcp:
+            # CR-6: surface misconfiguration. skip_mcp=False but db_path=None
+            # would silently skip the mount (e.g., MAILBOT_SKIP_DB=1 without
+            # MAILBOT_SKIP_MCP=1). Log a warning so the gap is operationally
+            # visible.
+            logger.warning(
+                "mcp server skipped — db_path unavailable",
+                extra={
+                    "event": "mcp.startup.skipped",
+                    "reason": "db_path_unavailable",
+                    "skip_mcp": skip_mcp,
+                },
+            )
+        try:
+            yield
+        finally:
+            # Pop the per-lifespan mount so the next lifespan can re-mount
+            # cleanly (without two routes resolving the same path).
+            if mcp_mount is not None and _app is not None:
+                try:
+                    _app.router.routes.remove(mcp_mount)
+                except ValueError:
+                    pass
+            if policy_stop_event is not None and policy_watcher_task is not None:
+                policy_stop_event.set()
+                try:
+                    await asyncio.wait_for(policy_watcher_task, timeout=5.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+                    logger.warning(
+                        "policy watcher shutdown timeout",
+                        extra={"event": "policy.shutdown.timeout", "exc_type": type(exc).__name__},
+                    )
+                    policy_watcher_task.cancel()
+            if not skip_policy:
+                await lane_scheduler.stop(timeout=30.0)
+                if anomaly_detector is not None:
+                    await anomaly_detector.stop(timeout=5.0)
 
 
 app = FastAPI(
@@ -216,6 +266,9 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+# Story 5-2: the /mcp Starlette mount is appended dynamically inside
+# `lifespan()` per-startup so the FastMCP session manager binds to the
+# active event loop (see lifespan body for the Mount append + cleanup).
 
 
 async def _build_health_payload(db_path: str | None) -> dict[str, Any]:

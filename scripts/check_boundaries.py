@@ -22,6 +22,13 @@ Bans enforced:
     `mailbot_api/actions/types.py`. Only `mailbot_api/actions/types.py`
     (where the enum is defined) is allowlisted; the `tests/` tree is
     inherently outside this script's scan (we only scan `mailbot_api/`).
+  - Story 5-2 AC-7: `from mailbot_api.verbs.*` outside `mailbot_api/verbs/`
+    and `mailbot_api/mcp_server.py`. Verbs are the agent-facing surface;
+    internal callers should reach the underlying business logic directly
+    (e.g., `mailbot_api/actions/propose.py`, not
+    `mailbot_api/verbs/propose_action.py`).
+  - Story 5-2 AC-7: `from mcp.server.fastmcp` outside `mailbot_api/mcp_server.py`.
+    Keeps the FastMCP dependency localized to the MCP server module.
 
 Output: one line per violation, non-zero exit code on any violation.
 """
@@ -121,6 +128,41 @@ _ACTION_TYPE_STRING_LITERAL_ALLOW = frozenset(
         "mailbot_api/actions/outlook_adapter.py",
     }
 )
+# Story 5-2 AC-7: verb-import isolation. Only the verbs package itself + the
+# MCP server module may import `mailbot_api.verbs.<verb_name>` symbols. This
+# is the boundary that keeps internal callers from sneaking through the
+# agent-facing surface — production code should reach the underlying logic
+# (e.g., mailbot_api.actions.propose, mailbot_api.actions.cancel) directly.
+# Tests are not scanned by this script.
+_VERBS_IMPORT_ALLOW = frozenset(
+    {
+        # The verbs package itself can re-export across sibling modules.
+        "mailbot_api/verbs/__init__.py",
+        "mailbot_api/verbs/find_emails.py",
+        "mailbot_api/verbs/hydrate_email.py",
+        "mailbot_api/verbs/get_thread.py",
+        "mailbot_api/verbs/count_emails.py",
+        "mailbot_api/verbs/get_sender_summary.py",
+        "mailbot_api/verbs/schemas.py",
+        "mailbot_api/verbs/ask_router.py",
+        "mailbot_api/verbs/propose_action.py",
+        "mailbot_api/verbs/mint_grant.py",
+        "mailbot_api/verbs/revoke_grant.py",
+        "mailbot_api/verbs/cancel_action.py",
+        "mailbot_api/verbs/revert_action.py",
+        "mailbot_api/verbs/mint_sensitivity_token.py",
+        "mailbot_api/verbs/budget_admin.py",
+        "mailbot_api/verbs/router_control.py",
+        "mailbot_api/verbs/cost.py",
+        # Story 5-2: mcp_server.py legitimately consumes every verb to register
+        # them as MCP tools — it IS the agent-facing surface.
+        "mailbot_api/mcp_server.py",
+    }
+)
+# Story 5-2 AC-7: FastMCP import isolation. Only mcp_server.py may import
+# from `mcp.server.fastmcp`. The MCP SDK is a heavy dependency we keep
+# localized; tests live under tests/ and are not scanned.
+_FASTMCP_IMPORT_ALLOW = frozenset({"mailbot_api/mcp_server.py"})
 _ACTION_TYPE_VALUES = frozenset(
     {
         # Tier 1
@@ -338,6 +380,30 @@ def check_file(path: Path, repo_root: Path) -> list[str]:
                     violations.append(_violation(node.lineno, "`import anthropic`", _ANTHROPIC_ALLOW))
                 if root_name == "sqlite3" and rel not in _SQLITE_ALLOW:
                     violations.append(_violation(node.lineno, "`import sqlite3`", _SQLITE_ALLOW))
+                # Story 5-2 AC-7: bare `import mailbot_api.verbs[.xxx]` bypass.
+                if (
+                    alias.name == "mailbot_api.verbs"
+                    or alias.name.startswith("mailbot_api.verbs.")
+                ) and rel not in _VERBS_IMPORT_ALLOW:
+                    violations.append(
+                        _violation(
+                            node.lineno,
+                            f"`import {alias.name}`",
+                            _VERBS_IMPORT_ALLOW,
+                        )
+                    )
+                # Story 5-2 AC-7: bare `import mcp.server.fastmcp[.xxx]` bypass.
+                if (
+                    alias.name == "mcp.server.fastmcp"
+                    or alias.name.startswith("mcp.server.fastmcp.")
+                ) and rel not in _FASTMCP_IMPORT_ALLOW:
+                    violations.append(
+                        _violation(
+                            node.lineno,
+                            f"`import {alias.name}`",
+                            _FASTMCP_IMPORT_ALLOW,
+                        )
+                    )
 
         # Story 2-2 AC-12: `yaml.safe_load(...)` / `yaml.load(...)` calls.
         # Detection on Call → Attribute (`yaml.safe_load(...)`); imports of
@@ -351,12 +417,54 @@ def check_file(path: Path, repo_root: Path) -> list[str]:
                     violations.append(_violation(node.lineno, f"`yaml.{attr_name}(...)`", _YAML_LOAD_ALLOW))
         if isinstance(node, ast.ImportFrom):
             mod = (node.module or "").split(".")[0]
+            full_mod = node.module or ""
             if mod == "ollama" and rel not in _OLLAMA_ALLOW:
                 violations.append(_violation(node.lineno, "`from ollama`", _OLLAMA_ALLOW))
             if mod == "anthropic" and rel not in _ANTHROPIC_ALLOW:
                 violations.append(_violation(node.lineno, "`from anthropic`", _ANTHROPIC_ALLOW))
             if mod == "sqlite3" and rel not in _SQLITE_ALLOW:
                 violations.append(_violation(node.lineno, "`from sqlite3`", _SQLITE_ALLOW))
+            # Story 5-2 AC-7: ban `from mailbot_api.verbs.*` outside the
+            # verbs package + mcp_server.py. The bare `from mailbot_api.verbs
+            # import ...` form is also banned (modules outside the allowlist
+            # have no business reaching the agent-facing surface).
+            if (
+                full_mod == "mailbot_api.verbs"
+                or full_mod.startswith("mailbot_api.verbs.")
+            ) and rel not in _VERBS_IMPORT_ALLOW:
+                violations.append(
+                    _violation(
+                        node.lineno,
+                        f"`from {full_mod} import ...`",
+                        _VERBS_IMPORT_ALLOW,
+                    )
+                )
+            # Story 5-2 AC-7 (CR-5 closure): indirect-import bypass —
+            # `from mailbot_api import verbs` then `verbs.find_emails()`.
+            # node.module is "mailbot_api", aliased name is "verbs"; the
+            # primary check above doesn't fire because module != "mailbot_api.verbs".
+            if full_mod == "mailbot_api" and rel not in _VERBS_IMPORT_ALLOW:
+                for alias in node.names:
+                    if alias.name == "verbs":
+                        violations.append(
+                            _violation(
+                                node.lineno,
+                                "`from mailbot_api import verbs` (indirect bypass)",
+                                _VERBS_IMPORT_ALLOW,
+                            )
+                        )
+            # Story 5-2 AC-7: ban `from mcp.server.fastmcp` outside mcp_server.py.
+            if (
+                full_mod == "mcp.server.fastmcp"
+                or full_mod.startswith("mcp.server.fastmcp.")
+            ) and rel not in _FASTMCP_IMPORT_ALLOW:
+                violations.append(
+                    _violation(
+                        node.lineno,
+                        f"`from {full_mod} import ...`",
+                        _FASTMCP_IMPORT_ALLOW,
+                    )
+                )
             # Story 2-2 review fix LOW: `from yaml import safe_load`
             # bare-name bypass — the bare `safe_load(x)` call after such an
             # import won't be caught by the `yaml.safe_load(...)` attribute

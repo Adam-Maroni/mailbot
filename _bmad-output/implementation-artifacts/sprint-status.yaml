@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-05-31
-last_updated: 2026-06-02  # autonomous-epic-run for epic 5 started; epic-5 in-progress; Story 5-1 ready-for-dev. // Epic 4 retro action items #7 (architecture.md doc-debt — 4 paragraphs landed: AR-SCHEMA-2 embedding contract + migration-numbering policy + Rule G writer-monopoly canonical recipe + Rule H defense-in-depth) + #8 (docs/DATABASE.md — 17 migrations, 10 tables, cross-linked) + #10 (Hermes-aux cache double-wrap guard test) all DONE. 655 tests (+1 net); all 4 gates green. Epic 4 retro action items #1 + #2 + #3 + #7 + #8 + #10 + Story 4-1 CR-2 all CLOSED before Epic 5. Remaining retro items: #5 (epic-3-run-flags content migration partial), #6 (Phase 3.5 structural backstop — partially structural via Story X-0 pattern), #9 + #11 + #12 (deferred decisions for future stories).
+last_updated: 2026-06-02  # Story 5-2 done — Phase 3.5 manual verification 5/5 PASS (live HTTP MCP transport walked end-to-end; confidential body-bytes-leak check confirmed clean). Epic 5: 5-2 of 9 done.
 project: MailBot
 project_key: NOKEY
 tracking_system: file-system
@@ -98,7 +98,7 @@ development_status:
   # Epic 5: Conversational Control
   epic-5: in-progress  # 2026-06-02 — Story 5-1 done (1 of 9); autonomous-epic-run halted after 5-1 per user decision (option a — per-story cadence)
   5-1-read-side-verbs-projection-first-data-window-for-the-agent: done  # 2026-06-02 — 5 read-side verbs (find_emails / hydrate_email / get_thread / count_emails / get_sender_summary) + schemas.py + 38 tests; schema-reality reframe: list_unread + full-body hydration deferred to a future sync-side capture story. CR (Sonnet 4.6) 7/7 findings applied (1 HIGH, 4 MEDIUM, 2 LOW); 693 tests, +38 net, all 4 gates green. See story file Completion Notes.
-  5-2-mcp-server-exposing-verbs-as-tools: backlog
+  5-2-mcp-server-exposing-verbs-as-tools: in-progress  # 2026-06-02 — CR (Sonnet 4.6) returned Changes Requested: 1 HIGH (session_id=None in 10/11 tool logs, AC-8 gap), 3 MEDIUM (cancel/revert no round-trip tests; mint_sensitivity_token success path untested; docstring overclaim on items 16+18), 3 LOW (silent MCP skip; __all__ exports private test helper; asserts after registration loop). Boundary checker bypass noted (indirect import not caught). ESCALATE-TO-REVIEWER resolved: keep explicit _VERBS_IMPORT_ALLOW list.
   5-3-chat-side-prompts-intent-parsing-chat-reference-resolution-draft-reply-tone-style-mirror-multi-turn-refinement: backlog
   5-4-hermes-container-config-and-discord-adapter-and-mcp-client-wiring: backlog
   5-5-soul-md-defender-persona-and-agents-md-operational-rules-and-skill-md: backlog
