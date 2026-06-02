@@ -216,19 +216,15 @@ def _build_pre_state(row: PendingActionRow) -> dict[str, Any]:
     return {}
 
 
-async def _write_history_and_apply(
-    db_path: str, row: PendingActionRow, grant_id: int | None = None,
-) -> None:
-    """Write action_history pre-state + flip pending_actions to 'applied'.
+async def _insert_history(db_path: str, row: PendingActionRow) -> None:
+    """Write the action_history pre-state row.
 
-    The two writes are intentionally separate — the action_history INSERT
-    happens BEFORE the dispatch (per AC-7 — partial failures still audit),
-    and the pending_actions UPDATE happens AFTER dispatch success. They are
-    NOT in the same SQL transaction by design: a successful Graph call with
-    a subsequent DB write failure leaves an action_history row witnessing
-    that the action did happen, which is the auditable behavior. A future
-    iteration could wrap them in a savepoint if the failure mode becomes
-    operationally annoying.
+    CR-4-4-2: per AC-7 — the action_history row must exist BEFORE the
+    Graph dispatch, so that a failed dispatch (or an in-flight crash) still
+    leaves an auditable record. The previous implementation wrote history
+    only on the success path inside `_write_history_and_apply`; failed and
+    adapter-exception paths produced no history row, breaking Story 4-8's
+    reverter and contradicting the docstring's own stated intent.
     """
     pre_state_json = json.dumps(_build_pre_state(row))
     await execute_write(
@@ -236,7 +232,6 @@ async def _write_history_and_apply(
         ACTION_HISTORY_INSERT,
         (row.id, pre_state_json, _iso(_utc_now())),
     )
-    await _mark_applied(db_path, row, grant_id=grant_id)
 
 
 async def _read_email_marker_and_deleted(
@@ -357,18 +352,47 @@ def _notify_failure(row: PendingActionRow, reason: str) -> None:
             with send_urgent so the operator at least sees the row (and we
             log the intended tier so Epic 6 can re-route).
     Tier-3: urgent.
+
+    CR-4-4-5: every notification emits a structured `intended_notification_tier`
+    log field so an Epic 6 migration / shadow-mode observer can programmatically
+    detect "this would have been important, not urgent" without text-matching
+    the human-readable message.
     """
     if row.tier == 1:
         return
     if row.tier == 2:
         # TODO(epic-6): replace with notifications.send_important; for now
         # surface via urgent so failures don't get silently lost.
+        _logger.warning(
+            "drainer Tier-2 failure routed to urgent as stand-in",
+            extra={
+                "event": "action.drainer.notify",
+                "action_id": row.id,
+                "action_type": row.action_type.value,
+                "tier": 2,
+                "intended_notification_tier": "important",
+                "actual_notification_tier": "urgent",
+                "reason": reason,
+            },
+        )
         send_urgent(
             f"action {row.id} ({row.action_type.value}, Tier 2) failed: {reason} "
             "[intended tier=important; Epic 6 wires the digest]"
         )
         return
     # Tier 3
+    _logger.warning(
+        "drainer Tier-3 failure routed to urgent",
+        extra={
+            "event": "action.drainer.notify",
+            "action_id": row.id,
+            "action_type": row.action_type.value,
+            "tier": 3,
+            "intended_notification_tier": "urgent",
+            "actual_notification_tier": "urgent",
+            "reason": reason,
+        },
+    )
     send_urgent(
         f"action {row.id} ({row.action_type.value}, Tier 3) failed: {reason}"
     )
@@ -389,9 +413,11 @@ async def run_tick(
     if adapter is None:
         adapter = FakeGraphWriteAdapter()
     rows_data = await fetchall(db_path, PENDING_ACTIONS_SELECT_DRAINABLE, (batch_size,))
+    # CR-4-4-3: emit prefetch_count at tick.start so the metric name is honest;
+    # processed count fires at tick.done after the loop.
     _logger.info(
         "drainer tick start",
-        extra={"event": "action.drainer.tick.start", "claimed_count": len(rows_data)},
+        extra={"event": "action.drainer.tick.start", "prefetch_count": len(rows_data)},
     )
     processed = 0
     for tup in rows_data:
@@ -400,7 +426,38 @@ async def run_tick(
         if not await _claim_row(db_path, row.id):
             continue
         processed += 1
-        await _process_claimed_row(db_path, row, adapter)
+        # CR-4-4-1: defensive catch-all so an unexpected exception in any of
+        # the per-tier checks / history write / send-cap query does not leave
+        # the row stuck in `draining` forever. The adapter-level try/except
+        # below still handles dispatch exceptions with finer-grained tagging.
+        try:
+            await _process_claimed_row(db_path, row, adapter)
+        except Exception as exc:  # noqa: BLE001 — recovery guard for stuck-draining rows
+            _logger.exception(
+                "drainer row processing crashed; marking failed to clear claim",
+                extra={
+                    "event": "action.drainer.row_crash",
+                    "action_id": row.id,
+                    "action_type": row.action_type.value,
+                    "tier": row.tier,
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            try:
+                await _mark_failed(db_path, row, f"drainer_internal_error:{type(exc).__name__}")
+            except Exception:  # noqa: BLE001 — last-resort guard
+                _logger.exception(
+                    "drainer recovery _mark_failed also crashed — row stuck in draining",
+                    extra={"event": "action.drainer.recovery_failed", "action_id": row.id},
+                )
+    _logger.info(
+        "drainer tick done",
+        extra={
+            "event": "action.drainer.tick.done",
+            "prefetch_count": len(rows_data),
+            "processed_count": processed,
+        },
+    )
     return processed
 
 
@@ -419,11 +476,30 @@ async def _process_claimed_row(
         if should_wait:
             await _revert_to_pending_grant(db_path, row, grant_id)
             return
-    else:  # tier == 3
+    elif row.tier == 3:
         failure, grant_id, should_wait = await _check_tier_3(db_path, row)
         if should_wait:
             await _revert_to_pending_grant(db_path, row, grant_id)
             return
+    else:
+        # CR-4-4-4: explicit guard for impossible tier values. The
+        # `pending_actions.tier` CHECK constraint and PendingActionRow's
+        # Literal[1,2,3] type both already exclude this, but a row inserted
+        # by a future migration or direct sqlite3 shell command could slip
+        # through; defaulting to Tier-3 semantics would silently apply the
+        # wrong policy. Fail loud.
+        _logger.warning(
+            "drainer row has invalid tier value — marking failed",
+            extra={
+                "event": "action.drainer.invalid_tier",
+                "action_id": row.id,
+                "action_type": row.action_type.value,
+                "tier": row.tier,
+            },
+        )
+        await _mark_failed(db_path, row, f"invalid_tier:{row.tier}")
+        _notify_failure(row, f"invalid_tier:{row.tier}")
+        return
 
     if failure is not None:
         await _mark_failed(db_path, row, failure)
@@ -439,6 +515,12 @@ async def _process_claimed_row(
         _notify_failure(row, "daily_send_cap_exceeded")
         return
 
+    # CR-4-4-2: action_history pre-state row MUST exist before dispatch so
+    # that failed/exception paths still leave an auditable record (AC-7).
+    # Previous implementation wrote history only on the success path inside
+    # `_write_history_and_apply`.
+    await _insert_history(db_path, row)
+
     # Dispatch via the adapter — capture both result and any synchronous exception.
     try:
         result: GraphApplyResult = await adapter.apply(row)
@@ -448,7 +530,7 @@ async def _process_claimed_row(
         return
 
     if result.ok:
-        await _write_history_and_apply(db_path, row, grant_id=grant_id)
+        await _mark_applied(db_path, row, grant_id=grant_id)
     else:
         reason = result.error or "unknown_adapter_failure"
         await _mark_failed(db_path, row, reason)

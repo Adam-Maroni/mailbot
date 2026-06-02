@@ -200,3 +200,48 @@ Story 4-4 ships the drainer + GraphWriteAdapter Protocol + FakeGraphWriteAdapter
 
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`
 - `_bmad-output/implementation-artifacts/4-4-drainer-with-second-auth-check-and-tier-3-etag-and-lenient-tier-1-2-conflict-policy.md` (this file)
+
+---
+
+## Retroactive Code Review (2026-06-02)
+
+Per Epic 4 retro action item #2 (Adam, 2026-06-02): Story 4-4 originally shipped under the gate-coverage-only cadence; no CR subagent dispatched at the time. This is the retroactive CR pass — the drainer is the load-bearing path for every action MailBot ever applies, so a second pair of eyes is owed.
+
+**Reviewer:** claude-sonnet-4-6 via Agent dispatch (model=sonnet) — different model from the original Opus 4.7 dev pass.
+
+**Verdict:** NOTABLE — 9 findings (6 patches, 2 decisions, 1 defer). Applied rate **8/9 = 89%** (above 70% threshold).
+
+### Findings and disposition
+
+- **CR-4-4-1 [HIGH] Blind Hunter** — Rows stuck in `draining` if any per-tier check / history write / send-cap query raises an unexpected exception. The adapter try/except only wraps `adapter.apply`, leaving the earlier coroutines bare; an `OSError` from disk-full / Pydantic ValidationError / etc. would propagate out of `_process_claimed_row`, get caught by `run_tick`'s outer guard, and leave the row in `draining` forever (no recovery path). **PATCHED:** wrapped `_process_claimed_row` call in `run_tick` with `try/except` that logs and calls `_mark_failed` with reason `drainer_internal_error:<ExceptionType>`. Last-resort guard logs if `_mark_failed` itself crashes. (`mailbot_api/actions/drainer.py:413-441`)
+- **CR-4-4-2 [HIGH] Blind Hunter** — `action_history` INSERT was written only on the success path, contradicting AC-7 and its own docstring ("the action_history INSERT happens BEFORE the dispatch"). Failed dispatches and adapter exceptions produced no history row, breaking Story 4-8's reverter. **PATCHED:** extracted `_insert_history(db_path, row)` helper; called in `_process_claimed_row` BEFORE `adapter.apply`. `_write_history_and_apply` is gone — success path just calls `_mark_applied`. Added 2 regression tests asserting history rows exist after dispatch failure AND after adapter exception. (`mailbot_api/actions/drainer.py:219-235, 487-510`)
+- **CR-4-4-3 [MEDIUM] Blind Hunter** — `claimed_count` log field on `tick.start` was the prefetch count, not the actual claimed count (under multi-drainer contention these diverge). **PATCHED:** renamed to `prefetch_count` on `tick.start`; new `tick.done` event emits `processed_count` after the loop. (`mailbot_api/actions/drainer.py:399-403, 442-450`)
+- **CR-4-4-4 [MEDIUM] Edge Case Hunter** — Tier-dispatch `else` arm silently treated unknown tier values (Tier-0 / Tier-4) as Tier-3. SQLite CHECK constraint catches inserts but not direct shell modifications. **PATCHED:** changed `else` to `elif row.tier == 3` + explicit `else: _mark_failed("invalid_tier:<value>")` with structured log + notification. (`mailbot_api/actions/drainer.py:469-487`)
+- **CR-4-4-5 [MEDIUM] Edge Case Hunter** — Tier-2 failures routed to `send_urgent` as a stand-in for the Epic 6 "important" tier. Adam chose option (a): keep urgent + add structured log fields. **PATCHED:** every `_notify_failure` call emits `event="action.drainer.notify"` with `intended_notification_tier` + `actual_notification_tier` fields so an Epic 6 migration / shadow-mode observer can programmatically detect mismatches without text-matching. (`mailbot_api/actions/drainer.py:367-413`)
+- **CR-4-4-6 [MEDIUM] Acceptance Auditor** — AC-9 (drainer worker wiring + heartbeat per tick) was deferred but the story still marked `done`. Adam chose option (b): formal deferral. **PATCHED (docs):** see § "AC-9 formal deferral" below.
+- **CR-4-4-7 [LOW] Blind Hunter** — `EMAIL_LESS_ACTIONS` consistency check between drainer and types.py. **DEFERRED:** no current bug; the divergence risk is real but bounded; picked up in Epic 5/6 type-system pass.
+- **CR-4-4-8 [LOW] Acceptance Auditor** — `test_batch_size_limit_honored` would pass even if `DEFAULT_BATCH_SIZE` were silently changed from 25 to 30. **PATCHED:** strengthened — uses `batch_size=5` against 10-seed corpus, runs two ticks, asserts exact 5/5 split. (`tests/unit/actions/test_drainer.py:393-426`)
+- **CR-4-4-9 [LOW] Acceptance Auditor** — No test for the Tier-2 grant-revoked-mid-flight window. **PATCHED:** new test `test_tier_2_archive_grant_revoked_before_drain_reverts_to_pending_grant` (`tests/unit/actions/test_drainer.py:189-223`).
+
+### Adam's decisions
+
+- **CR-4-4-5 (Tier-2 notify routing):** Option (a) — keep `send_urgent` stand-in + add `intended_notification_tier` structured log field. Rationale: silently dropping Tier-2 failures risks operators missing real failures; explicit log fields enable Epic 6 migration.
+- **CR-4-4-6 (AC-9 worker wiring):** Option (b) — formal deferral. Rationale: worker wiring is genuinely Epic 6 work; right fix is making the deferred state explicit.
+
+### AC-9 formal deferral
+
+AC-9 (drainer worker integration + per-tick heartbeat) is **explicitly deferred to Story 6-6** (the Epic 6 scheduler story) per Adam's decision in the post-CR review. The drainer's `run_loop` coroutine is shipped + exported + tested in isolation in Story 4-4; Story 6-6 will wire it into `mailbot_api/worker.py`'s `asyncio.gather` alongside the existing sync loop, sensitivity_tokens.sweep() (per CR-4-7-2 inline-sweep), the ingest pipeline backpressure task, and the cache warmer. The per-tick `component='drainer'` heartbeat upsert is part of that wiring.
+
+Story 4-4's `done` status reflects the drainer's correctness as a stand-alone module. Until Story 6-6 ships, **the drainer is dormant in production** (the worker process starts without invoking `run_loop`); `docker compose up` will not drain any action. See `epic-4-run-flags.md` and the Epic 3 retro #9 thread for the broader Epic 6 wire-up checklist.
+
+### Tests added
+
+- `tests/unit/actions/test_drainer.py` (+4 tests): `test_tier_2_archive_grant_revoked_before_drain_reverts_to_pending_grant` (CR-4-4-9), `test_action_history_row_exists_after_failure_path` + `test_action_history_row_exists_after_adapter_exception` (CR-4-4-2), `test_pre_dispatch_crash_marks_failed_not_stuck_in_draining` (CR-4-4-1). `test_batch_size_limit_honored` strengthened (CR-4-4-8).
+
+### Gates
+
+All 4 quality gates green after patches: pytest (646 → 654 baseline +8 from 4-4 + 4-7 retroactive CR combined), ruff, mypy --strict (85 source files), boundary checker.
+
+### Status
+
+Retroactive CR complete. Story 4-4 is now **CR-cleared**. AC-9 formally deferred to Story 6-6 (worker wiring).

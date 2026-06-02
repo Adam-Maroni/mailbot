@@ -16,6 +16,7 @@ Each later story bolts onto a specific seam declared here.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Literal, cast
 
@@ -24,7 +25,6 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from mailbot_api.db.connection import fetchone
 from mailbot_api.db.queries import EMAIL_SENSITIVITY_SELECT
 from mailbot_api.observability.audit import RouterCallRow, record_router_call
-from mailbot_api.observability.timestamps import utc_z_now
 from mailbot_api.prompts import PromptResolutionError, resolve_prompt
 from mailbot_api.router.budget import (
     PER_CALL_REFUSAL_THRESHOLD_USD,
@@ -58,6 +58,8 @@ from mailbot_api.router.response_cache import (
 from mailbot_api.router.response_cache import (
     lookup as response_cache_lookup,
 )
+
+_logger = logging.getLogger(__name__)
 
 _STRICTER_PROMPT_PREFIX = (
     "Your previous reply was not valid JSON matching the schema. "
@@ -105,9 +107,7 @@ async def _maybe_cache_result(
             ttl_seconds=ttl,
         )
     except Exception as exc:  # noqa: BLE001 — cache loss acceptable, masking is not
-        import logging as _logging
-
-        _logging.getLogger(__name__).warning(
+        _logger.warning(
             "response cache insert failed",
             extra={"event": "response_cache.insert.failed", "exc_type": type(exc).__name__},
         )
@@ -317,8 +317,25 @@ async def ask_router(
                     model_used=model,
                 )
             from mailbot_api.actions.sensitivity_tokens import consume as _consume_token  # noqa: PLC0415
-            grant_id = _consume_token(confirmation_token, email_id, task_type)
-            if grant_id is None:
+            # CR-4-7-3(a): defensive wrap so any future change to consume() that
+            # makes it raise (e.g., a DB-backed registry) doesn't leak the
+            # confirmation_token value into a traceback. The exception type and
+            # message are logged WITHOUT the token value; the caller gets
+            # NEEDS_SENSITIVITY_CONFIRMATION as if the token were invalid.
+            try:
+                consume_result = _consume_token(confirmation_token, email_id, task_type)
+            except Exception as exc:  # noqa: BLE001 — guard against token-in-traceback
+                _logger.exception(
+                    "sensitivity token consume crashed; refusing dispatch",
+                    extra={
+                        "event": "sensitivity.token.consume_crash",
+                        "email_id": email_id,
+                        "task_type": task_type,
+                        "exception_type": type(exc).__name__,
+                    },
+                )
+                consume_result = None
+            if consume_result is None:
                 return RouterResult(
                     ok=False,
                     error=RouterError(
@@ -332,16 +349,27 @@ async def ask_router(
                     ),
                     model_used=model,
                 )
+            # CR-4-7-6: consume() returns (grant_id, minted_at) so the audit
+            # row records the real mint time (not consume time, which could
+            # drift up to 10 minutes — the TTL window).
+            grant_id, minted_at = consume_result
             _sensitivity_grant_id = grant_id
-            # The mint timestamp is approximated as "now" — the actual minted_at
-            # lives only in the in-memory token (which we just consumed). For
-            # audit purposes "consumed_at" is the relevant fact; same value
-            # serves both. Story 4-x can extend the consume() API to return
-            # minted_at if a forensic gap appears.
-            # CR-3-3-5: use the shared microsecond-precision helper (AR-PAT-3 +
-            # Epic 4 retro action item #3). Inline isoformat()+replace() produced
-            # second-precision values on Windows whenever microsecond==0.
-            _sensitivity_grant_minted_at = utc_z_now()
+            _sensitivity_grant_minted_at = minted_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        elif sensitivity_value == "normal" and confirmation_token is not None:
+            # CR-4-7-5: a token passed for a normal email is unexpected.
+            # The call is valid (no token needed), but the agent's behavior
+            # is worth observing — either the agent is confused about the
+            # email's sensitivity, or sensitivity was reclassified mid-flow.
+            # Do NOT log the token value itself.
+            _logger.warning(
+                "confirmation_token passed for normal email; ignoring",
+                extra={
+                    "event": "sensitivity.token.unexpected",
+                    "email_id": email_id,
+                    "task_type": task_type,
+                    "sensitivity": sensitivity_value,
+                },
+            )
 
     return await _dispatch_with_failure_chain(
         task_type=task_type,
@@ -661,6 +689,12 @@ async def _dispatch_with_failure_chain(
                 # failure terminates at SCHEMA_VALIDATION_FAILED rather than
                 # chaining qwen→haiku→opus and tripling costs.
                 escalated_policy_entry = policy_entry.model_copy(update={"escalate": False})
+                # CR-4-7-1: forward the sensitivity-grant audit columns so
+                # the escalated leg's router_calls row is forensically linked
+                # to the original token consume. Without this, a sensitive-email
+                # dispatch that escalates leaves the escalated row's
+                # sensitivity_grant_id NULL — breaking the "which API calls
+                # were made for sensitive email X" forensic query.
                 escalated = await _dispatch_with_failure_chain(
                     task_type=task_type,
                     prompt=prompt,
@@ -672,6 +706,8 @@ async def _dispatch_with_failure_chain(
                     caller_origin=caller_origin,
                     caller_verb=caller_verb,
                     email_id=email_id,
+                    sensitivity_grant_id=sensitivity_grant_id,
+                    sensitivity_grant_minted_at=sensitivity_grant_minted_at,
                 )
                 if escalated.ok:
                     outcome = "escalated"

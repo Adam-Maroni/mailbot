@@ -182,3 +182,45 @@ action_grants: 1 row
 ### Verdict: `PASS`.
 
 Every checkpoint that can be verified without a wired drainer / real Graph credentials checks out. The 3 deferred checkpoints are sound by construction — the drainer's behavior is unit-tested with `FakeGraphWriteAdapter` and the adapter's retry chain is unit-tested with `httpx.MockTransport`, both exercising the full production code path except the wiring + network round-trip. **Epic 4 closes B2 ☑.**
+
+---
+
+## Retroactive Code Review — 2026-06-02
+
+Per Epic 4 retro action item #2 (Adam, 2026-06-02): retroactive CR pass dispatched on **Stories 4-4 (drainer — load-bearing orchestrator) and 4-7 (sensitivity-token handshake — privacy invariant)** to pay down the second-pair-of-eyes debt before Epic 5 work depends on these surfaces. This completes the 4-story retroactive sweep that began with Stories 3-3 + 3-5 (see `epic-3-run-flags.md`).
+
+### Story 4-4 — Drainer + second auth check + Tier-3 ETag + lenient Tier-1/2 (load-bearing orchestrator)
+
+- **Reviewer:** claude-sonnet-4-6 via Agent dispatch
+- **Verdict:** NOTABLE — 9 findings, 8 applied (89%)
+- **HIGH:** CR-4-4-1 (rows stuck in `draining` on unexpected exception), CR-4-4-2 (`action_history` INSERT was on success path only, contradicting AC-7 + its own docstring; failed dispatches produced no audit record)
+- **MEDIUM:** CR-4-4-3 (`claimed_count` log metric was prefetch count), CR-4-4-4 (tier-dispatch `else` arm silently treated unknown tiers as Tier-3), CR-4-4-5 (Tier-2 failures → `send_urgent` stand-in; Adam chose option a + structured log fields), CR-4-4-6 (AC-9 worker integration formally deferred to Story 6-6)
+- **LOW:** CR-4-4-7 (EMAIL_LESS_ACTIONS consistency check — deferred), CR-4-4-8 (`test_batch_size_limit_honored` not specific to LIMIT), CR-4-4-9 (no Tier-2-grant-revoked-mid-flight test)
+- Story file § Retroactive Code Review captures full disposition + Adam's decisions.
+
+### Story 4-7 — Sensitivity-token handshake (privacy invariant)
+
+- **Reviewer:** claude-sonnet-4-6 via Agent dispatch
+- **Verdict:** NOTABLE — 10 findings, 9 applied (90%)
+- **HIGH:** CR-4-7-1 (escalation recursive call didn't forward `sensitivity_grant_id`/`_minted_at`; escalated leg audit rows had NULL forensic columns), CR-4-7-2 (`sweep()` defined but never called; registry grew unbounded — patched via inline-sweep at top of `mint()`), CR-4-7-3 (token leak risk if `consume()` ever raises; Adam chose option a — defensive wrap)
+- **MEDIUM:** CR-4-7-4 (missing `consumed: bool` field — accepted-no-change), CR-4-7-5 (token passed for normal email silently ignored), CR-4-7-6 (`sensitivity_grant_minted_at` recorded consume-time not mint-time; `consume()` now returns tuple), CR-4-7-7 (mint returned `EMAIL_NOT_FOUND` for unclassified; added `SENSITIVITY_NOT_CLASSIFIED` code)
+- **LOW:** CR-4-7-8 (Dev Notes grant_id collision risk mischaracterization — patched), CR-4-7-9 (no cross-test persistence proof — added), CR-4-7-10 (no test/comment for "dies on restart" invariant — added)
+- Story file § Retroactive Code Review captures full disposition + Adam's decisions.
+
+### Gates after retroactive CR
+
+- pytest: 646 → 654 (+8 net new tests across both stories)
+- ruff: clean
+- mypy --strict: clean across 85 source files
+- boundary checker: clean
+
+### Status
+
+Both Story 4-4 and Story 4-7 are now **CR-cleared**. Combined with Stories 3-3 + 3-5 (see `epic-3-run-flags.md`), all 4 surfaces flagged in Epic 4 retro action #2 have received the second pair of eyes the original ships deferred. **Epic 4 retro action #2 is COMPLETE.**
+
+### Carryover items NOT addressed by this CR pass
+
+- **AC-9 worker wiring** (Story 4-4) — formally deferred to Story 6-6 per Adam's decision. Drainer `run_loop` is shipped + tested in isolation; production wiring waits.
+- **EMAIL_LESS_ACTIONS consistency check** (CR-4-4-7) — deferred for Epic 5/6 type-system pass.
+- **`SensitivityToken.consumed: bool` field deviation from AC-1** (CR-4-7-4) — accepted-no-change; deletion-is-consumed is the shipped contract.
+- Epic 4 retro's other action items (#3 sub-second ts FIXED via separate commit; #6 Phase 3.5 codified via Story 4-0 structural pattern; #7 architecture.md doc-debt + #8 docs/DATABASE.md + #10 Hermes-aux guard test still owed before Story 5-2 / 5-3).

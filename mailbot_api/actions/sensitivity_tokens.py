@@ -4,15 +4,28 @@ Per AR-D12-1: the registry is process-local and dies on worker restart by
 design — forcing operator re-confirmation. The audit trail lives on
 `router_calls.sensitivity_grant_id` so the consume event survives.
 
+CR-4-7-10 (2026-06-02 retroactive CR): the "dies on restart" property is a
+security invariant — tokens must not survive process restarts. This module
+backs the registry with a module-level Python dict (`_REGISTRY`) initialized
+empty on import. Any refactor that introduces persistence (SQLite, Redis,
+file-backed cache) violates AR-D12-1 and must be rejected at review time.
+
 Public API:
   - mint(email_id, task_type) → SensitivityToken
-  - consume(token_value, email_id, task_type) → grant_id | None (single-use)
-  - sweep() — removes expired tokens (call periodically; bounded dict hygiene)
+  - consume(token_value, email_id, task_type) → tuple[grant_id, minted_at_iso] | None
+    (single-use; returns the original mint timestamp so the audit row records
+    real mint time, not consume time — CR-4-7-6)
+  - sweep() — removes expired tokens (called inline at the top of every
+    mint() so the registry self-cleans without needing worker wiring —
+    CR-4-7-2)
   - _clear_registry_for_tests() — wipes state between tests
 
-Tokens are cryptographic randoms (secrets.token_urlsafe(32)). The grant_id
-returned to callers is sha256(token)[:16] — short enough to log, long enough
-to uniquely identify across plausible mint rates.
+Tokens are cryptographic randoms (secrets.token_urlsafe(32) — 256 bits of
+randomness). The grant_id is sha256(token)[:16] = 64-bit truncation of a
+sha256 digest of a 256-bit random; grant_id uniqueness is sha256
+preimage-bounded (not birthday-bounded), since each grant_id is
+deterministically derived from a 256-bit cryptographic random. Collision
+risk is negligible (CR-4-7-8).
 """
 
 from __future__ import annotations
@@ -54,7 +67,14 @@ def _hash_for_grant_id(token_value: str) -> str:
 
 
 def mint(email_id: str, task_type: str) -> SensitivityToken:
-    """Mint a fresh sensitivity token for (email_id, task_type). 10-min TTL."""
+    """Mint a fresh sensitivity token for (email_id, task_type). 10-min TTL.
+
+    CR-4-7-2: sweep expired tokens inline at the top of every mint so the
+    registry self-cleans without needing worker-side scheduling. Mint rate
+    is human-paced (one per confirmation prompt), so the per-mint sweep
+    cost is amortized across rare operations.
+    """
+    sweep()  # inline self-cleaning per CR-4-7-2
     token_value = secrets.token_urlsafe(32)
     now = _utc_now()
     token = SensitivityToken(
@@ -69,9 +89,17 @@ def mint(email_id: str, task_type: str) -> SensitivityToken:
     return token
 
 
-def consume(token_value: str, email_id: str, task_type: str) -> str | None:
-    """Consume a token. Returns grant_id if (token, email_id, task_type) match
-    an unexpired unconsumed entry; returns None otherwise.
+def consume(
+    token_value: str, email_id: str, task_type: str
+) -> tuple[str, datetime] | None:
+    """Consume a token. Returns (grant_id, minted_at) if (token, email_id,
+    task_type) match an unexpired unconsumed entry; returns None otherwise.
+
+    CR-4-7-6: the return tuple now includes the original `minted_at` so the
+    caller can record real mint time on the audit row rather than approximating
+    with consume time. Previously the router used `utc_z_now()` at consume,
+    drifting up to 10 minutes from the real mint timestamp for tokens consumed
+    near TTL expiry.
 
     "Consumed" is modeled by removing the entry from the registry — frozen
     Pydantic precludes mutating .consumed on the model itself, and removal is
@@ -87,9 +115,10 @@ def consume(token_value: str, email_id: str, task_type: str) -> str | None:
         # Expired — remove + refuse.
         del _REGISTRY[token_value]
         return None
+    minted_at = token.minted_at
     grant_id = token.grant_id
     del _REGISTRY[token_value]
-    return grant_id
+    return (grant_id, minted_at)
 
 
 def sweep() -> int:

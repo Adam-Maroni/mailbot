@@ -27,6 +27,7 @@ MintSensitivityTokenErrorCode = Literal[
     "EMAIL_NOT_FOUND",
     "EMAIL_NOT_SENSITIVE",
     "SENSITIVITY_BLOCKS_API",
+    "SENSITIVITY_NOT_CLASSIFIED",
 ]
 
 
@@ -79,12 +80,20 @@ async def mint_sensitivity_token(
             ),
         )
     if sensitivity_value != "sensitive":
-        # Sensitivity not classified yet OR unknown value — defensive refusal.
+        # CR-4-7-7: distinguish "not yet classified" (NULL) from "unknown
+        # future label". The previous EMAIL_NOT_FOUND code conflated this
+        # with "row missing" and caused callers to give up rather than wait
+        # for the ingest pipeline's sensitivity step to finish.
         return MintSensitivityTokenOut(
             ok=False,
             error=MintSensitivityTokenError(
-                code="EMAIL_NOT_FOUND",
-                message=f"email_id {email_id!r} has unexpected sensitivity {sensitivity_value!r}",
+                code="SENSITIVITY_NOT_CLASSIFIED",
+                message=(
+                    "email sensitivity not yet classified; run the ingest "
+                    "pipeline's sensitivity_class step first"
+                    if sensitivity_value is None
+                    else f"unexpected sensitivity value {sensitivity_value!r}"
+                ),
             ),
         )
 

@@ -12,10 +12,11 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from mailbot_api.actions.authorization import mint_grant
+from mailbot_api.actions.authorization import mint_grant, revoke_grant
 from mailbot_api.actions.drainer import (
     PendingActionRow,
     _build_pre_state,
@@ -24,6 +25,7 @@ from mailbot_api.actions.drainer import (
 from mailbot_api.actions.graph_write import (
     FailingGraphWriteAdapter,
     FakeGraphWriteAdapter,
+    GraphApplyResult,
 )
 from mailbot_api.actions.propose import propose_action
 from mailbot_api.actions.types import ActionType
@@ -184,6 +186,45 @@ async def test_tier_2_archive_with_valid_grant_applied(
             (out.action_id,),
         ).fetchone()[0]
     assert gid == grant_out.grant_id
+
+
+async def test_tier_2_archive_grant_revoked_before_drain_reverts_to_pending_grant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CR-4-4-9: Tier-2 grant revoked AFTER propose but BEFORE drain.
+
+    Adam mints a batch grant, proposes an archive, then changes his mind and
+    revokes the grant before the drainer runs. Drainer must revert the row
+    to `pending_grant` (not apply it), because `is_grant_valid` checks
+    `revoked_at IS NULL` at drain time.
+    """
+    db_path = _setup(tmp_path, monkeypatch)
+    await _seed_email(db_path, graph_id="e-1")
+    # Mint grant, propose action.
+    grant_out = await mint_grant(
+        ActionType.ARCHIVE, ["e-1"], _hours_from_now(1), db_path=db_path,
+    )
+    assert grant_out.ok
+    assert grant_out.grant_id is not None
+    out = await propose_action("e-1", ActionType.ARCHIVE, db_path=db_path)
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE pending_actions SET status = 'pending' WHERE id = ?",
+            (out.action_id,),
+        )
+        conn.commit()
+    # Adam revokes the grant before the drainer fires.
+    revoke_out = await revoke_grant(grant_out.grant_id, db_path=db_path)
+    assert revoke_out.ok
+
+    await run_tick(db_path, FakeGraphWriteAdapter())
+    status, reason, _ = _read_status(db_path, out.action_id)
+    assert status == "pending_grant", (
+        f"revoked grant must not authorize drain; got status={status!r}"
+    )
+    assert reason is None
+    # The action wasn't applied — no notification.
+    assert _notifications_count(tmp_path) == 0
 
 
 # ---- Tier-3 grant + ETag flows ------------------------------------------------
@@ -354,15 +395,20 @@ async def test_atomic_claim_skips_already_draining_rows(
 async def test_batch_size_limit_honored(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """CR-4-4-8: prove the batch_size parameter is honored independently of
+    the default. The original 30-seed / batch_size=25 test would also pass
+    if DEFAULT_BATCH_SIZE were silently changed to 30. By using a small
+    explicit batch (5) against a larger seed (10), the assertion is now
+    SPECIFIC to the batch_size parameter rather than coincidentally true."""
     db_path = _setup(tmp_path, monkeypatch)
-    # Seed 30 emails + 30 Tier-1 propose calls.
-    for i in range(30):
+    # Seed 10 emails + 10 Tier-1 propose calls.
+    for i in range(10):
         await _seed_email(db_path, graph_id=f"e-{i}")
         await propose_action(f"e-{i}", ActionType.MARK_READ, db_path=db_path)
 
-    processed = await run_tick(db_path, FakeGraphWriteAdapter(), batch_size=25)
-    assert processed == 25
-    # 5 rows still pending.
+    # Drain with batch_size=5 → exactly 5 transition; 5 remain.
+    processed = await run_tick(db_path, FakeGraphWriteAdapter(), batch_size=5)
+    assert processed == 5
     with get_connection(db_path) as conn:
         n_pending = conn.execute(
             "SELECT COUNT(*) FROM pending_actions WHERE status = 'pending'"
@@ -371,7 +417,112 @@ async def test_batch_size_limit_honored(
             "SELECT COUNT(*) FROM pending_actions WHERE status = 'applied'"
         ).fetchone()[0]
     assert n_pending == 5
-    assert n_applied == 25
+    assert n_applied == 5
+
+    # Second tick with the same batch size drains the remaining 5.
+    processed_2 = await run_tick(db_path, FakeGraphWriteAdapter(), batch_size=5)
+    assert processed_2 == 5
+    with get_connection(db_path) as conn:
+        n_applied_after = conn.execute(
+            "SELECT COUNT(*) FROM pending_actions WHERE status = 'applied'"
+        ).fetchone()[0]
+    assert n_applied_after == 10
+
+
+async def test_action_history_row_exists_after_failure_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CR-4-4-2: action_history INSERT happens BEFORE adapter.apply, so a
+    failed dispatch still leaves an audit record.
+
+    Story 4-8's reverter queries `action_history` by `action_id`; if a
+    failed action has no history row, the reverter cannot recover anything.
+    The original implementation wrote history only on the success path.
+    """
+    db_path = _setup(tmp_path, monkeypatch)
+    await _seed_email(db_path, graph_id="e-1")
+    out = await propose_action("e-1", ActionType.MARK_READ, db_path=db_path)
+
+    # Drain with the Failing adapter — dispatch will return ok=False.
+    await run_tick(db_path, FailingGraphWriteAdapter(error="graph_5xx"))
+
+    status, _reason, _ = _read_status(db_path, out.action_id)
+    assert status == "failed"
+
+    # action_history MUST have a row even though the dispatch failed.
+    with get_connection(db_path) as conn:
+        n_history = conn.execute(
+            "SELECT COUNT(*) FROM action_history WHERE action_id = ?",
+            (out.action_id,),
+        ).fetchone()[0]
+    assert n_history == 1, (
+        "action_history row must exist on the failure path so the reverter "
+        "can recover; AC-7 + CR-4-4-2"
+    )
+
+
+async def test_action_history_row_exists_after_adapter_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CR-4-4-2: history is also written even when the adapter raises.
+
+    The adapter contract is 'return GraphApplyResult', but defensive coding
+    in the drainer catches synchronous exceptions and marks the row failed.
+    The history row must still be present.
+    """
+
+    class _RaisingAdapter:
+        async def apply(self, row: PendingActionRow) -> GraphApplyResult:  # pragma: no cover
+            raise RuntimeError("simulated adapter bug")
+
+    db_path = _setup(tmp_path, monkeypatch)
+    await _seed_email(db_path, graph_id="e-1")
+    out = await propose_action("e-1", ActionType.MARK_READ, db_path=db_path)
+
+    await run_tick(db_path, _RaisingAdapter())  # type: ignore[arg-type]
+
+    status, reason, _ = _read_status(db_path, out.action_id)
+    assert status == "failed"
+    assert reason is not None and "adapter_exception" in reason
+
+    with get_connection(db_path) as conn:
+        n_history = conn.execute(
+            "SELECT COUNT(*) FROM action_history WHERE action_id = ?",
+            (out.action_id,),
+        ).fetchone()[0]
+    assert n_history == 1
+
+
+async def test_pre_dispatch_crash_marks_failed_not_stuck_in_draining(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CR-4-4-1: an unexpected exception in a per-tier check / history
+    write / send-cap query MUST NOT leave the row stuck in `draining`.
+
+    Patches `_insert_history` to raise on a fresh proposal. After the tick:
+      - row status is `failed` with reason `drainer_internal_error:*`
+      - row is NOT in `draining`
+    The defensive try/except in run_tick recovers the claim.
+    """
+    db_path = _setup(tmp_path, monkeypatch)
+    await _seed_email(db_path, graph_id="e-1")
+    out = await propose_action("e-1", ActionType.MARK_READ, db_path=db_path)
+
+    # Force an exception inside _process_claimed_row by monkeypatching
+    # _insert_history (called before adapter.apply).
+    from mailbot_api.actions import drainer as _drainer_mod
+
+    async def _crash(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr(_drainer_mod, "_insert_history", _crash)
+
+    await run_tick(db_path, FakeGraphWriteAdapter())
+
+    status, reason, _ = _read_status(db_path, out.action_id)
+    assert status == "failed", f"row stuck in {status!r} — CR-4-4-1 regression"
+    assert reason is not None
+    assert reason.startswith("drainer_internal_error:"), reason
 
 
 # ---- Pre-state snapshot -------------------------------------------------------

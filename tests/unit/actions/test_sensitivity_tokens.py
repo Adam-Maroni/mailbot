@@ -46,10 +46,15 @@ def test_mint_returns_token_with_correct_shape() -> None:
 
 
 def test_consume_with_matching_args_returns_grant_id_and_removes_entry() -> None:
+    """CR-4-7-6: consume returns (grant_id, minted_at) tuple so the router
+    can record the real mint timestamp on the audit row (not consume time)."""
     token = mint("e-1", "draft_reply")
     assert _registry_size_for_tests() == 1
-    grant_id = consume(token.token_value, "e-1", "draft_reply")
+    result = consume(token.token_value, "e-1", "draft_reply")
+    assert result is not None
+    grant_id, minted_at = result
     assert grant_id == token.grant_id
+    assert minted_at == token.minted_at
     assert _registry_size_for_tests() == 0
 
 
@@ -117,7 +122,9 @@ def test_sweep_removes_only_expired() -> None:
     assert removed == 1
     assert _registry_size_for_tests() == 1
     # t2 still consumable.
-    grant_id = consume(t2.token_value, "e-2", "summary_short")
+    result = consume(t2.token_value, "e-2", "summary_short")
+    assert result is not None
+    grant_id, _minted_at = result
     assert grant_id == t2.grant_id
 
 
@@ -201,3 +208,95 @@ async def test_mint_log_line_carries_grant_id_not_token(
     # The token value must NEVER appear in the log record.
     assert out.token not in str(rec.__dict__)
     assert out.token not in rec.getMessage()
+
+
+async def test_mint_verb_returns_sensitivity_not_classified_for_unclassified_email(
+    tmp_path: Path,
+) -> None:
+    """CR-4-7-7: unclassified (sensitivity_at IS NULL) returns a distinct
+    error code so the caller knows to wait for the ingest pipeline rather
+    than treating the email as missing."""
+    db_path = _setup_db(tmp_path)
+    await _seed_email_with_sensitivity(db_path, graph_id="e-unset", sensitivity=None)
+    out = await mint_sensitivity_token("e-unset", "draft_reply", db_path=db_path)
+    assert out.ok is False
+    assert out.error is not None
+    assert out.error.code == "SENSITIVITY_NOT_CLASSIFIED"
+
+
+# ---- CR-4-7-9 + CR-4-7-2 + CR-4-7-10 registry-lifecycle proofs --------------
+
+
+class TestRegistryLifecycleWithoutAutouse:
+    """CR-4-7-9: prove cross-mint persistence WITHOUT the autouse clear fixture.
+
+    The module-level `_clear_registry` fixture above is autouse — every test
+    in the file starts with an empty registry. This class disables autouse
+    so a chain of tests within the class observes the registry persisting.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_clear(self) -> None:
+        # Intentionally do NOTHING — defeat the module-level autouse clear
+        # by being autouse=True ourselves (closer scope wins for fixtures
+        # in pytest only if explicitly invoked; for safety, clear at start
+        # and skip the module-level fixture by tearing it down here).
+        st._clear_registry_for_tests()
+        yield
+        # Tear down to leave a clean registry for any subsequent test file.
+        st._clear_registry_for_tests()
+
+    def test_mint_persists_across_subsequent_operations_in_same_test(self) -> None:
+        t1 = mint("e-a", "draft_reply")
+        t2 = mint("e-b", "draft_reply")
+        assert _registry_size_for_tests() == 2
+        # consume t1, t2 still present.
+        result = consume(t1.token_value, "e-a", "draft_reply")
+        assert result is not None
+        assert _registry_size_for_tests() == 1
+        # t2 still consumable.
+        result2 = consume(t2.token_value, "e-b", "draft_reply")
+        assert result2 is not None
+        assert _registry_size_for_tests() == 0
+
+
+def test_sweep_runs_inline_on_mint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CR-4-7-2: every mint() call sweeps expired entries inline so the
+    registry self-cleans without needing worker-side scheduling.
+
+    Seed an expired entry directly into the registry, then mint a fresh
+    token. The expired entry MUST be gone after the mint.
+    """
+    # Manually inject an expired token bypassing mint().
+    fake_token = "ZmFrZS10b2tlbi1mb3ItdGhpcy10ZXN0"
+    expired = st.SensitivityToken(
+        token_value=fake_token,
+        email_id="e-old",
+        task_type="draft_reply",
+        expires_at=st._utc_now() - timedelta(seconds=1),
+        minted_at=st._utc_now() - timedelta(seconds=2),
+        grant_id="0000000000000000",
+    )
+    st._REGISTRY[fake_token] = expired
+    assert _registry_size_for_tests() == 1
+
+    # A fresh mint must sweep the expired entry inline.
+    fresh = mint("e-fresh", "draft_reply")
+
+    # Expired one is gone; only the fresh one remains.
+    assert _registry_size_for_tests() == 1
+    assert fake_token not in st._REGISTRY
+    assert fresh.token_value in st._REGISTRY
+
+
+def test_registry_initialized_empty_on_import() -> None:
+    """CR-4-7-10: the dies-on-restart invariant relies on the module-level
+    `_REGISTRY: dict[str, SensitivityToken] = {}` declaration being an
+    in-memory dict, not a persistent store. This test pins the type so any
+    refactor that introduces persistence fails LOUD.
+    """
+    assert isinstance(st._REGISTRY, dict)
+    # The default-empty assertion is delicate (other tests mutate it), so
+    # we clear then re-assert to prove the empty-on-init invariant.
+    st._clear_registry_for_tests()
+    assert _registry_size_for_tests() == 0

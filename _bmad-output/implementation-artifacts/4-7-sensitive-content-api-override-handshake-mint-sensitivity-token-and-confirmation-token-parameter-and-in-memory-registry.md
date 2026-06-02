@@ -120,3 +120,42 @@ claude-opus-4-7 (1M context) — autonomous-epic-run dev pass (gate-coverage-onl
 ### File List
 
 (Filled after implementation)
+
+---
+
+## Retroactive Code Review (2026-06-02)
+
+Per Epic 4 retro action item #2 (Adam, 2026-06-02): Story 4-7 originally shipped under the gate-coverage-only cadence; no CR subagent dispatched at the time. This is the retroactive CR pass — the sensitivity-token handshake is the privacy-invariant surface that protects sensitive email bodies from leaking to Anthropic. A second pair of eyes is owed.
+
+**Reviewer:** claude-sonnet-4-6 via Agent dispatch (model=sonnet) — different model from the original Opus 4.7 dev pass.
+
+**Verdict:** NOTABLE — 10 findings (6 patches, 2 decisions, 2 defers). Applied rate **9/10 = 90%** (above 70% threshold).
+
+### Findings and disposition
+
+- **CR-4-7-1 [HIGH] Blind Hunter** — Escalation recursive call in `_dispatch_with_failure_chain` did NOT forward `sensitivity_grant_id` or `sensitivity_grant_minted_at`. The escalated leg's `router_calls` audit row had NULL forensic columns even though the original dispatch consumed a valid token. Broke "which API calls were made for sensitive email X" forensic queries on escalated dispatches. **PATCHED:** added `sensitivity_grant_id=sensitivity_grant_id, sensitivity_grant_minted_at=sensitivity_grant_minted_at` to the recursive call. (`mailbot_api/router/router.py:683-695`)
+- **CR-4-7-2 [HIGH] Blind Hunter** — `sweep()` was defined and documented but never called anywhere. Registry grew unbounded across the worker process lifetime, violating the AR-D12-1 contract ("registry only contains live tokens"). **PATCHED:** `mint()` now calls `sweep()` inline at its top. Mint rate is human-paced (one per confirmation prompt), so the per-mint sweep cost is amortized across rare operations and no worker-side wiring is needed. Closed without an Epic 6 dependency. (`mailbot_api/actions/sensitivity_tokens.py:69-79`)
+- **CR-4-7-3 [HIGH] Blind Hunter** — Token leak risk if `consume()` ever raises (today it's a plain dict op but a future DB-backed consume would propagate exceptions including the token value into tracebacks). Adam chose option (a): defensive wrap. **PATCHED:** `try/except` around `consume()` call in `router.py`; catches → logs `event="sensitivity.token.consume_crash"` WITHOUT the token value → returns `NEEDS_SENSITIVITY_CONFIRMATION` as if the token were invalid. (`mailbot_api/router/router.py:319-340`)
+- **CR-4-7-4 [MEDIUM] Blind Hunter** — `SensitivityToken` model missing the `consumed: bool` field from AC-1. **ACCEPTED-NO-CHANGE:** the deletion-is-consumed pattern shipped + tested; the field would require unfreezing the model + flip-then-delete pattern + back-compat code. Deviation from AC-1 is intentional and documented in `consume()` docstring; added to module docstring per CR-4-7-10 below.
+- **CR-4-7-5 [MEDIUM] Edge Case Hunter** — `confirmation_token` passed for a normal email was silently ignored. **PATCHED:** new `elif sensitivity_value == "normal" and confirmation_token is not None` branch logs `event="sensitivity.token.unexpected"` (without the token value). The call still dispatches normally — only the unexpected presence is observable. (`mailbot_api/router/router.py:343-356`)
+- **CR-4-7-6 [MEDIUM] Blind Hunter** — `sensitivity_grant_minted_at` recorded consume-time, not mint-time, with up to TTL-window drift. **PATCHED:** `consume()` now returns `tuple[str, datetime] | None` so the router writes the real mint timestamp via `minted_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ")`. Test `test_consume_with_matching_args_returns_grant_id_and_removes_entry` updated to unpack the tuple. (`mailbot_api/actions/sensitivity_tokens.py:78-110`, `mailbot_api/router/router.py:340-355`)
+- **CR-4-7-7 [MEDIUM] Edge Case Hunter** — `mint_sensitivity_token` returned `EMAIL_NOT_FOUND` for emails with `sensitivity IS NULL` (unclassified) — caused callers to give up rather than wait. **PATCHED:** new `SENSITIVITY_NOT_CLASSIFIED` error code added to `MintSensitivityTokenErrorCode` literal; defensive branch returns it (with a "run the ingest pipeline's sensitivity_class step first" message for the NULL case). New unit test verifies. (`mailbot_api/verbs/mint_sensitivity_token.py:26-31, 81-96`)
+- **CR-4-7-8 [LOW] Blind Hunter** — Dev Notes mischaracterized grant_id collision risk as birthday-bounded; actually sha256 preimage-bounded. **PATCHED (docs):** module docstring corrected. (`mailbot_api/actions/sensitivity_tokens.py:25-30`)
+- **CR-4-7-9 [LOW] Acceptance Auditor** — No test proved cross-mint registry persistence (autouse `_clear_registry` fixture wiped state before every test). **PATCHED:** new `TestRegistryLifecycleWithoutAutouse` class with a closer-scoped autouse fixture that explicitly clears at setup + teardown, proving cross-mint persistence within a test. (`tests/unit/actions/test_sensitivity_tokens.py:225-251`)
+- **CR-4-7-10 [LOW] Acceptance Auditor** — "Dies on restart" property had no test or top-of-module comment. **PATCHED:** module docstring now explicitly documents the invariant ("Any refactor that introduces persistence violates AR-D12-1 and must be rejected at review time"). New `test_registry_initialized_empty_on_import` pins the type so a persistent-store refactor fails LOUD. (`mailbot_api/actions/sensitivity_tokens.py:8-12`, `tests/unit/actions/test_sensitivity_tokens.py:281-289`)
+
+### Adam's decisions
+
+- **CR-4-7-3 (token leak vector):** Option (a) — defensive wrap on `consume()` call. Rationale: privacy-invariant surface; cost is 5 lines.
+
+### Tests added
+
+- `tests/unit/actions/test_sensitivity_tokens.py` (+4 tests): `test_mint_verb_returns_sensitivity_not_classified_for_unclassified_email` (CR-4-7-7), `TestRegistryLifecycleWithoutAutouse.test_mint_persists_across_subsequent_operations_in_same_test` (CR-4-7-9), `test_sweep_runs_inline_on_mint` (CR-4-7-2), `test_registry_initialized_empty_on_import` (CR-4-7-10). 2 existing tests updated to unpack the new `consume()` tuple return.
+
+### Gates
+
+All 4 quality gates green after patches: pytest (646 → 654 baseline +8 from 4-4 + 4-7 retroactive CR combined), ruff, mypy --strict (85 source files), boundary checker.
+
+### Status
+
+Retroactive CR complete. Story 4-7 is now **CR-cleared**. Privacy invariant strengthened: escalation forensic forwarding, registry self-cleaning, token-leak defensive wrap, mint-time accurate audit, unclassified vs missing-email distinction, regression tests pinning the in-memory invariant.
