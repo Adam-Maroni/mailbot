@@ -2117,6 +2117,56 @@ So that the Epic 5 capstone demonstrates the integration between the conversatio
 
 This epic completes the trust surface: `mailbot status` returns the full picture in 10 seconds, the four-tier notification system (urgent / important / informational / silent) is wired end-to-end through Discord, anti-fatigue mechanics keep MailBot quiet under normal conditions and urgent-only when Adam stops responding, the 08:00 daily digest arrives, and the `/spend` chart command renders matplotlib-PNG charts of cost-per-task posted to Discord. The cron split lands (Hermes for agent-involving jobs; mailbot-api internal scheduler for LLM-free critical infra). VPS operator scripts (`setup_vps.sh`, `deploy.sh`, `backup.sh`, `restore.sh`) ship so Adam can deploy from scratch to a fresh Hostinger box with one command.
 
+**Sequencing (per Epic 5 retro 2026-06-02):** `6.0 → 6.6 → 6.6.5 → 6.1 → 6.2 → 6.7 → 6.3 → 6.4 → 6.5 → 6.8`. The reorder front-loads Hermes-independent work while Story 6.0 closes the F3/F4/F5 Hermes runtime mismatch surfaced in Epic 5 Phase 3.5 Section B. **Closure gate between 6.7 and 6.3:** F3/F4/F5 must be marked RESOLVED in `epic-5-run-flags.md` before any Hermes-dependent story (6.3 / 6.4 / 6.5) starts.
+
+### Story 6.0: Hermes runtime corrective — close F3 / F4 / F5 carry-forward from Epic 5
+
+As Adam,
+I want the Hermes-side runtime gap surfaced in Epic 5 Phase 3.5 Section B (F3: image runs interactive TUI not daemon; F4: docker `command:` override swallowed by s6 supervisor; F5: `hermes-config/config.yaml` schema fabricated without consulting Hermes docs) closed before any Hermes-dependent Epic 6 story (6.3 / 6.4 / 6.5) starts,
+So that Epic 6's notification dispatcher, anti-fatigue mechanics, and daily digest can actually deliver to Discord — and the docker-compose architecture (AR-DEPLOY-1) is preserved rather than replaced by a native-install workaround.
+
+**Acceptance Criteria:**
+
+**Given** Adam's retro decision against Option A (native install — would break docker-compose architecture)
+**When** the corrective work begins
+**Then** the approach is C-then-B: first mirror Hermes docs via `docs-archiver`, then probe the container's s6 service definition — combining the *intended* contract (docs) with the *actual* contract (image)
+**And** a re-litigation trigger is documented: if Hermes docs explicitly state "Docker image is interactive-only by design; native install required for daemon use," halt and bring the architectural decision back to Adam before proceeding to schema rewrite
+
+**Given** phase 6.0a — docs mirror
+**When** the `docs-archiver` skill is invoked against `hermes-agent.nousresearch.com/docs/`
+**Then** the mirror lands at `docs/external/hermes-agent/` with `SITE-MAP.md` + `PAGE-GRADING.md` + page tree
+**And** the configuration page, messaging page, deployment page, gateway page, and MCP-client page are all present in the mirror
+
+**Given** phase 6.0b — docs read
+**When** the mirrored Hermes docs are read end-to-end
+**Then** a notes file `docs/external/hermes-agent/RECONCILIATION-NOTES.md` is produced documenting: the real `config.yaml` schema (provider / auxiliary / fallback / gateway / mcp_clients fields with their actual names and shapes); the documented deployment shape for containerized Hermes (likely env-var-driven daemon mode); the documented `hermes gateway` command for Discord daemon use
+**And** any divergence from the schema Story 5-4 invented is explicitly listed
+
+**Given** phase 6.0c — image probe
+**When** `docker run --entrypoint sh -it nousresearch/hermes-agent:latest` is run interactively
+**Then** the s6 service definition at `/etc/services.d/main-hermes/run` (or equivalent path) is read and transcribed into the reconciliation notes
+**And** the env-vars the supervised process reads (HERMES_CONFIG_PATH, gateway mode flag, etc.) are documented
+**And** the divergence between (6.0b docs-says) and (6.0c image-says) is the finding — if they agree, fix-forward proceeds; if they diverge, the divergence itself is the architectural question
+
+**Given** phase 6.0d — config + compose rewrite
+**When** the reconciliation is complete
+**Then** `hermes-config/config.yaml` is rewritten against the real Hermes schema (Story 5-4's invented blocks discarded or relabeled per real field names)
+**And** `docker-compose.yml` is updated for the documented deployment shape (likely env-var-driven daemon mode, not `command:` override — F4's no-op override is no longer needed because the documented path doesn't require it)
+**And** `scripts/check_hermes_config.py` is updated to verify against the real schema, not the invented one
+**And** all `epic-5-run-flags.md` notes referencing F3 / F4 / F5 are amended to "RESOLVED — see Story 6.0 walk record"
+
+**Given** phase 6.0e — Phase 3.5 walk against corrected stack
+**When** Adam walks Phase 3.5 CP3 (config-shape verifier) + CP4 (persona files loaded at runtime) + CP5 (slash registry + MCP tool set) against the rebuilt stack
+**Then** the Hermes container reaches steady state under `docker compose up -d` and stays running (no restart loop, no TUI exit on detached stdin)
+**And** `hermes-config/config.yaml` parses cleanly under the real schema
+**And** Hermes's MCP client connects to `http://mailbot-api:8000/mcp` and discovers all 16 tools
+**And** Adam DMs the bot "hello" and gets a response routed through the mailbot-api Router (proves the Story 5-4 → Story 5-9 chain end-to-end at the Hermes boundary)
+**And** the walk record is appended to `epic-5-run-flags.md` (or a new `epic-6-run-flags.md` if Story 6.0 closes the Epic-5 carry-forward record)
+
+**Given** Story 6.0 completes
+**When** sprint-status is updated
+**Then** the closure gate documented in the Epic 6 sequencing note (above) is cleared — Stories 6.3 / 6.4 / 6.5 are now unblocked
+
 ### Story 6.1: `mailbot status` CLI returning the full picture in 10 seconds
 
 As Adam,
@@ -2287,20 +2337,34 @@ So that the digest is response-cached against the input hash (cheap to re-run wi
 **Then** populated digest contains all sections in order; empty digest sends the documented terse fallback
 **And** the response cache is hit on a re-run within 10 minutes (verifiable via `router_calls` showing `model_chosen_reason="response_cache_hit"` for the second `compose_digest` call)
 
-### Story 6.6: Internal scheduler — sync, cache warmer, ingest, drainer, anomaly check + `worker_health` heartbeats
+### Story 6.6: Worker-process integration — wire all dormant background work into worker.py
+
+**Renamed + scope-expanded per Epic 5 retro 2026-06-02** (was: *Internal scheduler — sync, cache warmer, ingest, drainer, anomaly check + worker_health heartbeats*). The rename reflects that the story integrates 8 dormant background processes into the worker, not just "schedules" them. Three components added to scope to unblock Story 5-9's capstone and Story 4-0's deferred Phase 3.5 CPs: the `pending_actions` drainer (Story 4.4), the cooling-off ticker (Story 4.6), and the Outlook write-back adapter (Story 4.5) wired into the drainer's dispatch.
 
 As Adam,
-I want a single `mailbot_api/observability/scheduler.py` module in the worker process that owns all LLM-free critical-infra cron jobs (sync every 4 min, cache warmer every 4 min, ingest pipeline every 5 min, pending_actions drainer as a continuous loop, hourly anomaly check, daily engagement-metric tick at 07:00), each writing `worker_health` heartbeats on every successful iteration,
-So that Hermes uptime is decoupled from the inbox-availability promise (PRD §1.3 "availability trust: sync runs continuously") — and the AR-D13-1 cron split between Hermes and mailbot-api is concretely implemented.
+I want a single `mailbot_api/observability/scheduler.py` module in the worker process that owns all LLM-free critical-infra cron jobs AND wires the dormant action-pipeline components (drainer + cooling-off ticker + Outlook adapter) into the worker so they actually run, each component writing `worker_health` heartbeats on every successful iteration,
+So that Hermes uptime is decoupled from the inbox-availability promise (PRD §1.3 "availability trust: sync runs continuously"), the AR-D13-1 cron split between Hermes and mailbot-api is concretely implemented, AND the action pipeline shipped in Epic 4 finally runs end-to-end inside the worker process (unblocking Story 5-9's capstone and Story 4-0's deferred Phase 3.5 CPs).
 
 **Acceptance Criteria:**
 
 **Given** Story 1.8's worker process and `worker_health` table are in place
 **When** `mailbot_api/observability/scheduler.py` is implemented
-**Then** the scheduler runs as part of the worker process and registers all LLM-free interval tasks: sync (Story 1.8, every 4 min), cache warmer (Story 2.7, every 4 min), ingest pipeline batch (Story 3.6, every 5 min), anomaly check (Story 2.9, hourly), engagement-metric daily tick (Story 6.4, daily at 07:00 local), notification-outbox delivery (Story 6.3, every 10 seconds)
-**And** the pending_actions drainer (Story 4.4) remains a continuous loop — not on the scheduler, runs its own poll cycle
+**Then** the scheduler runs as part of the worker process and registers all LLM-free interval tasks: sync (Story 1.8, every 4 min), cache warmer (Story 2.7, every 4 min), ingest pipeline batch (Story 3.6, every 5 min), anomaly check (Story 2.9, hourly), engagement-metric daily tick (Story 6.4, daily at 07:00 local), notification-outbox delivery (Story 6.3, every 10 seconds), cooling-off ticker (Story 4.6, every N seconds per its env-configurable window)
 **And** every successful task iteration writes a row to `worker_health` with `(component=<task>, last_heartbeat_at=now(), last_outcome="ok", last_error=NULL)`
 **And** task failures write `last_outcome="failed"` with sanitized error message; the scheduler continues running other tasks (no single-task failure exits the worker)
+
+**Given** the `pending_actions` drainer (Story 4.4) ships as `run_loop` but is NOT wired into the worker process at Epic 5 close
+**When** the worker process starts
+**Then** the drainer continuous loop is launched as an asyncio task alongside the scheduler (drainer runs its own poll cycle, not on the scheduler's tick — its claim-and-drain semantics are continuous, not periodic)
+**And** the drainer's dispatch table is wired to the `OutlookGraphWriteAdapter` (Story 4.5) — *this is the wiring that activates Story 5-9's capstone send path end-to-end*
+**And** the drainer writes its own `worker_health` heartbeats per drain iteration (component=`"actions_drainer"`)
+**And** the local-only short-circuit (ADD/REMOVE_LOCAL_CATEGORY) works without touching the Outlook adapter — verified by integration test
+
+**Given** Story 3.5's pipeline orchestrator (`run_batch`) ships as a callable but Story 3.6's backpressure module needs the periodic invocation
+**When** the worker process boots
+**Then** the ingest pipeline is wired via Story 3.6's `ingest_pipeline_interval_task` stub — now non-stubbed, calling `pipeline.run_batch()` with backpressure checks
+**And** the pipeline writes `worker_health` heartbeats per batch (component=`"ingest_pipeline"`)
+**And** the backpressure ceiling (500 unprocessed → sleep 5s) is honored end-to-end
 
 **Given** the cron split between Hermes and mailbot-api is documented in AR-D13-1
 **When** `hermes-config/cron/jobs.json` is finalized
@@ -2309,15 +2373,61 @@ So that Hermes uptime is decoupled from the inbox-availability promise (PRD §1.
 **And** the split is documented in `docs/architecture-notes.md` so future maintainers understand the deliberate Rule X relaxation
 
 **Given** the scheduler is running
-**When** any task takes longer than 2 minutes (excluding the continuous drainer)
+**When** any task takes longer than 2 minutes (excluding the continuous drainer and the continuous ingest poller)
 **Then** a structured warning log is emitted (`event="scheduler.slow_task"`) — investigate signal
 **And** the next scheduled tick still fires on schedule (no cascading backup)
 
 **Given** `tests/integration/test_scheduler.py` is implemented
 **When** the test runs against a mocked clock
-**Then** sync runs at 4-min intervals; cache warmer runs at 4-min intervals; ingest runs at 5-min intervals; anomaly check runs hourly; engagement check runs at 07:00 local
+**Then** sync runs at 4-min intervals; cache warmer runs at 4-min intervals; ingest runs at 5-min intervals; anomaly check runs hourly; engagement check runs at 07:00 local; cooling-off ticker runs at its configured cadence
 **And** a deliberately-failing task does not crash the scheduler (other tasks continue to tick)
 **And** `worker_health` reflects per-component status accurately after a synthetic mix of successes and failures
+
+**Given** `tests/integration/test_worker_drainer_wiring.py` is implemented (NEW — covers the drainer + adapter wiring)
+**When** the worker boots with `FakeGraphWriteAdapter` (Tier-1) and the real `OutlookGraphWriteAdapter` (Tier-2/3 against `httpx.MockTransport`)
+**Then** a propose_action → cool-off → drain → applied round-trip completes through the worker process (not direct module invocation)
+**And** the drainer's heartbeat is visible in `worker_health` post-drain
+**And** a Tier-3 send proposal flows through cooling-off → drainer → adapter → applied with `budget_consumed=true` and a `router_calls`-equivalent row in `action_history`
+
+### Story 6.6.5: Epic 5 capstone carry-forward walk — verify the wiring resurrects the dormant capstone
+
+**Created by Epic 5 retro 2026-06-02.** Single-purpose Phase 3.5 closure for the Story 5-9 capstone and Story 4-0 deferred CPs. The structural-backstop lesson from Epic 4 retro action #6: explicit story file = explicit Phase 3.5 record. Story 4-0 worked precisely *because* it was its own story with its own structural requirements; folding "verify the wiring" into Story 6.6 ACs short-changes the verification.
+
+As Adam,
+I want a dedicated Phase 3.5 walk against the now-wired stack (post-Story 6.6) that proves Story 5-9's draft-reply capstone runs end-to-end against a real Outlook test account AND clears Story 4-0's deferred checkpoints (drainer end-to-end, real Graph write-back, 20-send/day cap live),
+So that the Epic 5 carry-forward is closed under a Phase 3.5 walk record — not under a "we wired it, looks fine" claim folded into another story's ACs.
+
+**Acceptance Criteria:**
+
+**Given** Story 6.6 has wired the drainer + cooling-off ticker + Outlook adapter into `worker.py`
+**When** Adam (with Amelia walking through agent-side checkpoints first) runs the capstone walk against a real Outlook test account
+**Then** the Story 5-9 happy path completes end-to-end: DM "draft a reply to that" (normal email) → reference resolution → tone_style_mirror (cached) → draft_reply (Opus) → defender presents draft → Adam replies "send" → propose_action SEND_REPLY → 60s cooling-off → drainer claims and dispatches via `OutlookGraphWriteAdapter` → real Graph send → reply lands in the test recipient's inbox
+**And** the corresponding `pending_actions` row reaches `status="applied"` with `budget_consumed=true`
+**And** the day's send count increments by 1 (verified by querying the 20-send cap state)
+**And** `/cost month` reflects the Opus draft_reply call in the breakdown
+
+**Given** the sensitive-email path
+**When** Adam walks the path: DM "draft a reply to that" on a `sensitive`-classified email → defender requests `/confirm` → `mint_sensitivity_token(email_id, "draft_reply")` succeeds → token passed → draft_reply runs with the F1 task_type-binding fix (token passed to draft_reply Router call but NOT to tone_style_mirror)
+**Then** the draft generates successfully against real Anthropic
+**And** the `router_calls` row carries `sensitivity_grant_id` + `sensitivity_grant_minted_at`
+**And** the consume-aware Router precondition layer accepted the token and emitted the audit pair
+
+**Given** the confidential-email path
+**When** Adam walks the path: DM "draft a reply to that" on a `confidential`-classified email
+**Then** the defender refuses without dispatching any Anthropic call
+**And** `router_calls` has no new row for the refusal (per Story 4.7 design)
+
+**Given** Story 4-0's deferred Phase 3.5 CPs (drainer end-to-end, real Graph write-back, 20-send/day cap live) wait on this wiring
+**When** the capstone walk completes
+**Then** all three deferred CPs are marked PASS in the walk record
+**And** the 20-send/day cap is exercised: 20 successful sends (or simulated quick budget burn) → the 21st returns `BUDGET_CAP_HIT` and the drainer refuses without dispatching to the adapter
+**And** a midnight-UTC rollover (clock-frozen test or live wait) confirms the cap resets
+
+**Given** the walk completes
+**When** the walk record is written
+**Then** the record is appended to `_bmad-output/implementation-artifacts/epic-6-run-flags.md` (or wherever Epic 6 keeps its Phase 3.5 evidence) with: real recipient address (redacted), real reply body (redacted), the `pending_actions.id` and `router_calls` IDs walked, the budget burn observed, any findings
+**And** the Epic 5 capstone carry-forward is explicitly closed in `epic-5-run-flags.md`: F-deferred items linked to this walk record
+**And** if any finding surfaces, it is filed as either an Epic 6 story amendment or a backlog item — *no silent close*
 
 ### Story 6.7: VPS operator scripts — `setup_vps.sh`, `deploy.sh`, `backup.sh`, `restore.sh`
 

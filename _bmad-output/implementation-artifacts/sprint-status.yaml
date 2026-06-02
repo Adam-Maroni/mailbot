@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-05-31
-last_updated: 2026-06-02  # EPIC 5 closed at mailbot-api boundary (Phase 3.5 Option C). 845 tests, +131 net from baseline. Hermes-side runtime carry-forward to Epic 6 documented. Retrospective is optional + runs manually + interactively in a future session per autonomous-epic-run contract.
+last_updated: 2026-06-02  # EPIC 5 closed at mailbot-api boundary (Phase 3.5 Option C). 845 tests, +131 net from baseline. Hermes-side runtime carry-forward to Epic 6 documented. Retrospective completed 2026-06-02 (Adam-scoped to Hermes runtime + Epic 6 integration); see epic-5-retro-2026-06-02.md.
 project: MailBot
 project_key: NOKEY
 tracking_system: file-system
@@ -106,17 +106,22 @@ development_status:
   5-7-chat-input-redactor-and-memory-export-redactor: done  # 2026-06-02 — chat redactor primitive (6 patterns: SSH/anthropic/openai/JWT/hex/Bearer) + per-match structured logging + 22 tests. CR (Sonnet 4.6, MANDATORY-CR for privacy-invariant surface) 6/6 actionable applied (100%) — biggest catch: Bearer regex `\b` truncated base64 `==` padding leaving credential fragments; fixed via lookahead. 817 tests, +22 net, 4 gates green.
   5-8-conversational-reference-resolution-built-and-instrumented-fr-4-3-validated-in-epic-7: done  # 2026-06-02 — reference-resolution orchestrator (DiscordTurn/ReferenceContext/ReferenceResolutionResult + builder + resolve_reference async) dispatches via ask_router(task_type="reference_resolution") for Epic 7 FR-4.3 validation; cold-start memory + Router-failure paths handled. CR (Sonnet 4.6, MANDATORY-CR) 6/6 actionable applied (100%) — biggest catches: 4-state result-matrix contract clarification (ok=T+ambiguous=T allows non-empty ids per Story 5-3 SYSTEM); null-field "unknown" sentinels prevent FR-4.3 accuracy degradation; router_call_id forward-compat canary. 831 tests, +14 net, 4 gates green.
   5-9-draft-reply-flow-end-to-end-capstone: done  # 2026-06-02 — Epic 5 capstone. Chat orchestrator (handle_draft_reply sensitivity gate → optional tone_style_mirror → draft_reply + accept_draft propose_action SEND_REPLY) scoped to cooling_off transition per Epic 6 dependency. CR (Sonnet 4.6, MANDATORY-CR — 3 §5.12 criteria) 7/7 applied (100%) — F1 CRITICAL caught: token task_type binding (tokens scoped to draft_reply broke when sent to tone_style_mirror); fix passes confirmation_token=None to tone (not privacy-sensitive). 845 tests, +14 net, 4 gates green. EPIC 5 COMPLETE.
-  epic-5-retrospective: optional
+  epic-5-retrospective: done  # 2026-06-02 — retrospective completed (interactive, Adam-scoped to F3/F4/F5 + Epic 6 integration only); see epic-5-retro-2026-06-02.md. 4 prep action items for Epic 6: (1) Story 6-0 Hermes runtime corrective (C-then-B with Option-A escape hatch); (2) Epic 6 sprint reorder to 6-0 → 6-6 → 6-6.5 → 6-1 → 6-2 → 6-7 → 6-3 → 6-4 → 6-5 → 6-8 with closure gate between 6-7 and 6-3; (3) Story 6-6 rename to "Worker-process integration" + scope expansion (adds pending_actions drainer + cooling-off ticker + Outlook adapter); (4) Story 6-6.5 NEW story — Epic 5 capstone carry-forward walk. Epic 4 retro action #2 (retroactive CR on 4 stories) was honored in Epic 5 — first cross-epic action item to ship. CR cadence v2 held at 100% applied rate (38/38) via memory + reference-doc enforcement (skill amendment not needed). Phase 3.5 cadence held two epics running — formal skill-level gate may be redundant.
 
   # Epic 6: Observability & Trust Signals
+  # SEQUENCING (per Epic 5 retro 2026-06-02): 6-0 → 6-6 → 6-6-5 → 6-1 → 6-2 → 6-7 → 6-3 → 6-4 → 6-5 → 6-8
+  # CLOSURE GATE between 6-7 and 6-3: F3/F4/F5 must be marked RESOLVED in epic-5-run-flags.md before any Hermes-dependent story (6-3 / 6-4 / 6-5) starts.
   epic-6: backlog
+  6-0-hermes-runtime-corrective-close-f3-f4-f5-carry-forward-from-epic-5: backlog  # NEW per Epic 5 retro 2026-06-02 — C-then-B with Option-A escape hatch. Phases 6-0a (docs-archiver mirror) → 6-0b (read configuration/messaging/deployment/gateway/MCP) → 6-0c (docker run --entrypoint sh, read s6 service def) → 6-0d (rewrite hermes-config/config.yaml + docker-compose.yml against real schema) → 6-0e (Phase 3.5 CP3/CP4/CP5 walk against corrected stack). FIRST STORY OF EPIC 6.
+  6-6-worker-process-integration-wire-all-dormant-background-work-into-worker-py: backlog  # RENAMED + SCOPE-EXPANDED per Epic 5 retro 2026-06-02 (was: internal-scheduler-sync-cache-warmer-ingest-drainer-anomaly-check-and-worker-health-heartbeats). Added: pending_actions drainer (Story 4-4), cooling-off ticker (Story 4-6), Outlook write-back adapter (Story 4-5) wired into drainer dispatch. Existing scope retained: sync loop, cache warmer, ingest pipeline, anomaly check, worker_health heartbeats.
+  6-6-5-epic-5-capstone-carry-forward-walk: backlog  # NEW per Epic 5 retro 2026-06-02 — dedicated Phase 3.5 closure for Story 5-9 capstone (propose → cool-off → drain → real Graph send) + Story 4-0 deferred CPs (drainer e2e, real Graph write-back, 20-send/day cap live). Single-purpose story; structural-backstop lesson from Epic 4 retro action #6.
   6-1-mailbot-status-cli-returning-the-full-picture-in-10-seconds: backlog
   6-2-mailbot-logs-mailbot-pause-mailbot-resume-cli: backlog
+  6-7-vps-operator-scripts-setup-vps-sh-deploy-sh-backup-sh-restore-sh: backlog
+  # --- CLOSURE GATE: F3/F4/F5 must be RESOLVED before 6-3 starts ---
   6-3-notification-tier-dispatcher-and-discord-delivery: backlog
   6-4-anti-fatigue-mechanics-quiet-hours-dedup-mute-self-reflection-urgent-only-posture: backlog
   6-5-daily-digest-at-08-00-compose-digest-verb-and-hermes-agent-intro: backlog
-  6-6-internal-scheduler-sync-cache-warmer-ingest-drainer-anomaly-check-and-worker-health-heartbeats: backlog
-  6-7-vps-operator-scripts-setup-vps-sh-deploy-sh-backup-sh-restore-sh: backlog
   6-8-spend-chart-command-matplotlib-rendered-png-analytics-verb: backlog
   epic-6-retrospective: optional
 
