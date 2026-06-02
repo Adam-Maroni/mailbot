@@ -758,3 +758,67 @@ ACTION_HISTORY_SELECT_BY_ACTION_ID = (
 ACTION_HISTORY_MARK_REVERTED = (
     "UPDATE action_history SET reverted_at = ? WHERE action_id = ? AND reverted_at IS NULL"
 )
+
+
+# --- read-side verbs (Story 5-1) ---
+
+# Projection field list (Rule J — no body fields). Kept as a string fragment so
+# both FIND_EMAILS_PROJECTION_SELECT and GET_THREAD_PROJECTION_SELECT pull the
+# same column shape — staying parallel matters because the Python verbs map
+# both to the same EmailProjection Pydantic model.
+EMAIL_PROJECTION_COLUMNS = (
+    "graph_id, received_at, from_address, from_display_name, subject, "
+    "summary_short, class_coarse, importance_score, sensitivity, has_attachments"
+)
+
+# Base SELECT for find_emails — WHERE clause is built dynamically by the verb,
+# always parameterized via ? placeholders. The verb starts from
+# FIND_EMAILS_SELECT_BASE and appends `AND col = ?` clauses + ORDER BY + LIMIT.
+# noqa S608: the f-string only interpolates the fixed-string EMAIL_PROJECTION_COLUMNS
+# constant defined above. No user input is concatenated here; user input only
+# enters via parameterized `?` placeholders at the verb call site.
+FIND_EMAILS_SELECT_BASE = (
+    f"SELECT {EMAIL_PROJECTION_COLUMNS} FROM emails WHERE deleted_at IS NULL"  # noqa: S608
+)
+
+# Base SELECT for count_emails — parallel to FIND_EMAILS_SELECT_BASE but counts.
+COUNT_EMAILS_SELECT_BASE = "SELECT COUNT(*) FROM emails WHERE deleted_at IS NULL"
+
+# hydrate_email — single-row SELECT by graph_id. Returns the full hydration shape.
+HYDRATE_EMAIL_SELECT = (
+    "SELECT graph_id, received_at, from_address, from_display_name, subject, "
+    "body_preview, summary_short, summary_short_at, class_coarse, class_coarse_at, "
+    "class_fine, class_fine_at, importance_score, importance_score_at, "
+    "sensitivity, sensitivity_at, action_extraction, action_extraction_at, "
+    "has_attachments, thread_id, deleted_at "
+    "FROM emails WHERE graph_id = ?"
+)
+
+# get_thread — projections for every email in a thread, ordered ASC.
+# Same noqa rationale as FIND_EMAILS_SELECT_BASE above.
+GET_THREAD_PROJECTION_SELECT = (
+    f"SELECT {EMAIL_PROJECTION_COLUMNS} FROM emails "  # noqa: S608
+    "WHERE thread_id = ? AND deleted_at IS NULL ORDER BY received_at ASC"
+)
+
+# Threads metadata for get_thread (continuity note only).
+# CR finding 7: threads.message_count is intentionally NOT selected here — the
+# get_thread verb returns a LIVE count of non-soft-deleted emails computed at
+# the verb boundary. The cached threads.message_count includes soft-deleted
+# rows, so the two would diverge. Co-locating the divergence here prevents a
+# future reader from re-introducing the cached value silently.
+GET_THREAD_META_SELECT = (
+    "SELECT thread_continuity_note FROM threads WHERE id = ?"
+)
+
+# get_sender_summary — exact-match by sender_address against senders + an
+# aggregate of message_count / last_seen_at from emails. The senders table is
+# keyed by lowercased address (per 001_init).
+GET_SENDER_BASE_SELECT = (
+    "SELECT id, display_name, sender_reputation_summary FROM senders WHERE id = ?"
+)
+
+GET_SENDER_AGGREGATE_SELECT = (
+    "SELECT COUNT(*), MAX(received_at) FROM emails "
+    "WHERE LOWER(from_address) = ? AND deleted_at IS NULL"
+)
