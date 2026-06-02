@@ -612,3 +612,149 @@ CALL_VOLUME_BASELINE_UPSERT = (
     "  sample_count = excluded.sample_count, "
     "  last_updated = excluded.last_updated"
 )
+
+
+# --- pending_actions (Story 4-2) ---
+
+PENDING_ACTION_INSERT = (
+    "INSERT INTO pending_actions ("
+    "  email_id, action_type, tier, payload, proposed_at, "
+    "  proposed_by_grant_id, change_marker_at_propose, status"
+    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+)
+
+PENDING_ACTION_SELECT_BY_ID = (
+    "SELECT id, email_id, action_type, tier, payload, proposed_at, "
+    "proposed_by_grant_id, change_marker_at_propose, status, retry_count, "
+    "failure_reason, terminal_at, budget_consumed "
+    "FROM pending_actions WHERE id = ?"
+)
+
+# Read-only lookup of change_marker + deleted_at for propose-time capture.
+# Returns (change_marker, deleted_at) or None if the email_id doesn't exist.
+EMAIL_MARKER_AND_DELETED_AT_SELECT = (
+    "SELECT change_marker, deleted_at FROM emails WHERE graph_id = ?"
+)
+
+
+# --- action_grants (Story 4-3) ---
+
+ACTION_GRANT_INSERT = (
+    "INSERT INTO action_grants (action_type, email_ids, expires_at, minted_at) "
+    "VALUES (?, ?, ?, ?)"
+)
+
+# Returns (id, email_ids JSON) rows for grants matching the action_type that
+# haven't expired and aren't revoked. The caller (is_grant_valid) parses
+# email_ids and checks whether the target email_id is in the list (or whether
+# the list is empty, for email-less grants).
+ACTION_GRANT_FIND_VALID = (
+    "SELECT id, email_ids FROM action_grants "
+    "WHERE action_type = ? AND expires_at > ? AND revoked_at IS NULL "
+    "ORDER BY id ASC"
+)
+
+ACTION_GRANT_REVOKE = (
+    "UPDATE action_grants SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL"
+)
+
+
+# --- drainer (Story 4-4) ---
+
+# Select up to N pending-status rows in priority order (tier ASC = Tier-1 first;
+# proposed_at ASC = FIFO within tier).
+PENDING_ACTIONS_SELECT_DRAINABLE = (
+    "SELECT id, email_id, action_type, tier, payload, proposed_at, "
+    "proposed_by_grant_id, change_marker_at_propose, status, retry_count, "
+    "failure_reason, terminal_at, budget_consumed "
+    "FROM pending_actions WHERE status = 'pending' "
+    "ORDER BY tier ASC, proposed_at ASC LIMIT ?"
+)
+
+# Atomic claim: flip pending → draining only if still pending. rowcount=1 means
+# we own the row; rowcount=0 means a concurrent drainer beat us to it.
+PENDING_ACTION_CLAIM_DRAINING = (
+    "UPDATE pending_actions SET status = 'draining' "
+    "WHERE id = ? AND status = 'pending'"
+)
+
+PENDING_ACTION_MARK_APPLIED = (
+    "UPDATE pending_actions SET status = 'applied', terminal_at = ?, budget_consumed = ? "
+    "WHERE id = ?"
+)
+
+# Identical to MARK_APPLIED but also writes proposed_by_grant_id — used on the
+# Tier-2/3 success path when the drainer resolved a valid grant before dispatch.
+PENDING_ACTION_MARK_APPLIED_WITH_GRANT = (
+    "UPDATE pending_actions SET status = 'applied', terminal_at = ?, "
+    "budget_consumed = ?, proposed_by_grant_id = ? WHERE id = ?"
+)
+
+PENDING_ACTION_MARK_FAILED = (
+    "UPDATE pending_actions SET status = 'failed', failure_reason = ?, "
+    "terminal_at = ?, budget_consumed = ? WHERE id = ?"
+)
+
+# Used when a Tier-2/3 row is being drained but the grant isn't yet valid —
+# revert to pending_grant so the cooling-off/grant flow can complete it later.
+PENDING_ACTION_REVERT_TO_PENDING_GRANT = (
+    "UPDATE pending_actions SET status = 'pending_grant', "
+    "proposed_by_grant_id = ? WHERE id = ?"
+)
+
+# Pre-state snapshot for revert (Story 4-8 consumes). For Story 4-4 the
+# pre_state JSON is empty `{}` for every action_type — the emails table
+# doesn't carry the per-action fields (is_read, folder_id, categories) that
+# revert would need. Story 4-8 will either (a) add those columns to emails
+# via a migration, OR (b) re-read the field from the live Graph row at
+# revert time. Either path is the reverter's choice.
+ACTION_HISTORY_INSERT = (
+    "INSERT INTO action_history (action_id, pre_state, applied_at) VALUES (?, ?, ?)"
+)
+
+
+# --- replay (Story 4-5 mailbot replay CLI) ---
+
+# Resets a terminal-failed row back to pending for re-drain by the worker.
+# Conditional WHERE clause ensures we only replay rows that ARE failed (not
+# applied or already pending).
+PENDING_ACTION_REPLAY_RESET = (
+    "UPDATE pending_actions SET status = 'pending', retry_count = 0, "
+    "terminal_at = NULL, failure_reason = NULL "
+    "WHERE id = ? AND status = 'failed'"
+)
+
+
+# --- cooling-off + cancel (Story 4-6) ---
+
+# Promotes cooling_off rows whose proposed_at is older than the window.
+# Per AC-1: atomic UPDATE with status='cooling_off' guard is race-safe vs cancel.
+COOLING_OFF_PROMOTE_DUE = (
+    "UPDATE pending_actions SET status = 'pending' "
+    "WHERE status = 'cooling_off' AND proposed_at <= ?"
+)
+
+# Atomic cancel: only flips if still in cooling_off (race with promote).
+PENDING_ACTION_CANCEL_FROM_COOLING_OFF = (
+    "UPDATE pending_actions SET status = 'cancelled', terminal_at = ? "
+    "WHERE id = ? AND status = 'cooling_off'"
+)
+
+# Count of SEND-family rows that consumed budget since today's UTC midnight.
+# Used by Story 4-6's hard 20-send/day cap enforcement.
+SEND_FAMILY_BUDGET_CONSUMED_TODAY_COUNT = (
+    "SELECT COUNT(*) FROM pending_actions WHERE budget_consumed = 1 "
+    "AND action_type IN ('send_reply', 'send_new_email', 'send_forward', 'reply_to_inactive_thread') "
+    "AND terminal_at >= ?"
+)
+
+
+# --- revert (Story 4-8) ---
+
+ACTION_HISTORY_SELECT_BY_ACTION_ID = (
+    "SELECT pre_state, applied_at, reverted_at FROM action_history WHERE action_id = ?"
+)
+
+ACTION_HISTORY_MARK_REVERTED = (
+    "UPDATE action_history SET reverted_at = ? WHERE action_id = ? AND reverted_at IS NULL"
+)

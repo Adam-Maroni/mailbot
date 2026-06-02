@@ -1,0 +1,20 @@
+"""Fixture: correct ActionType enum usage — must NOT trigger any boundary
+violation when scanned by scripts/check_boundaries.py."""
+
+from __future__ import annotations
+
+from enum import Enum
+
+
+# Fake enum reference (the real one is defined in mailbot_api/actions/types.py
+# — fixture is path-agnostic; the point is the bare strings DO NOT appear in
+# call sites).
+class _FakeActionType(str, Enum):
+    PLACEHOLDER = "placeholder_not_an_action_type"
+
+
+def propose_action_correctly(email_id: str) -> None:
+    _ = email_id
+    # No bare string action_type passed — always go through the enum elsewhere.
+    payload = {"hard": True}
+    _ = payload

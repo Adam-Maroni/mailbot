@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -128,6 +129,8 @@ async def _record(
     caller_verb: str | None,
     caller_origin: str,
     email_id: str | None,
+    sensitivity_grant_id: str | None = None,
+    sensitivity_grant_minted_at: str | None = None,
 ) -> None:
     row = RouterCallRow(
         task_type=task_type,
@@ -143,6 +146,8 @@ async def _record(
         caller_verb=caller_verb,
         caller_origin=caller_origin,
         email_id=email_id,
+        sensitivity_grant_id=sensitivity_grant_id,
+        sensitivity_grant_minted_at=sensitivity_grant_minted_at,
     )
     await record_router_call(row, db_path=db_path)
 
@@ -158,6 +163,7 @@ async def ask_router(
     caller_origin: str = "unknown-internal",
     caller_verb: str | None = None,
     email_id: str | None = None,
+    confirmation_token: str | None = None,
 ) -> RouterResult:
     """The single agent-facing LLM entry point. See module docstring.
 
@@ -254,18 +260,23 @@ async def ask_router(
             model_chosen_reason = "degraded"
 
     # Story 3-3 AC-5: FR-2.3 hard invariant — sensitivity precondition layer.
+    # Story 4-7: extended with confirmation_token handshake for sensitive emails.
+    #
     # Applies to every email-scoped Router call EXCEPT sensitivity_class itself
-    # (which IS the gate). Ad-hoc Router calls with email_id=None (Hermes-aux
-    # compression, cache-warmer, sender-reputation, etc.) bypass the gate.
+    # (which IS the gate). Ad-hoc Router calls with email_id=None bypass the gate.
+    #
+    # Token-handshake semantics (Story 4-7):
+    #   - sensitive + API-bound model + no token → SENSITIVITY_BLOCKS_API (handshake required)
+    #   - sensitive + API-bound model + invalid/expired/consumed token → NEEDS_SENSITIVITY_CONFIRMATION
+    #   - sensitive + API-bound model + valid token → consume → dispatch + populate grant_id on router_calls
+    #   - confidential + API-bound model → SENSITIVITY_BLOCKS_API regardless of token (NFR-PRIV-2)
     #
     # No router_calls row is written when the gate refuses — the precondition
-    # is a routing-side decision, not a dispatch outcome. The audit table
-    # captures actual provider interaction.
-    #
-    # TODO Epic 4: accept a `confirmation_token` kwarg and validate it here so
-    # the SENSITIVITY_BLOCKS_API path admits Adam-confirmed sensitive-to-API
-    # dispatches. Stub for now — every API-bound sensitive/confidential email
-    # without a token refuses unconditionally.
+    # is a routing-side decision, not a dispatch outcome. On consume-success,
+    # the grant_id is captured into `_sensitivity_grant_id` and threaded
+    # through to `record_router_call` so the audit row carries it.
+    _sensitivity_grant_id: str | None = None
+    _sensitivity_grant_minted_at: str | None = None
     if task_type != "sensitivity_class" and email_id is not None:
         sensitivity_row = await fetchone(db_path, EMAIL_SENSITIVITY_SELECT, (email_id,))
         if sensitivity_row is None or sensitivity_row[1] is None:
@@ -280,17 +291,54 @@ async def ask_router(
                 ),
             )
         sensitivity_value, _sensitivity_at = sensitivity_row
-        if sensitivity_value in ("sensitive", "confidential") and _API_BOUND_MODEL_RE.match(model) is not None:
+        if sensitivity_value == "confidential" and _API_BOUND_MODEL_RE.match(model) is not None:
+            # Per NFR-PRIV-2: confidential admits no override even with a token.
             return RouterResult(
                 ok=False,
                 error=RouterError(
                     code=ErrorCode.SENSITIVITY_BLOCKS_API,
-                    message="email sensitivity blocks API dispatch; needs confirmation token",
+                    message="confidential emails admit no API override",
                     retryable=False,
                     model_attempted=[model],
                 ),
                 model_used=model,
             )
+        if sensitivity_value == "sensitive" and _API_BOUND_MODEL_RE.match(model) is not None:
+            # Token handshake — Story 4-7.
+            if confirmation_token is None:
+                return RouterResult(
+                    ok=False,
+                    error=RouterError(
+                        code=ErrorCode.SENSITIVITY_BLOCKS_API,
+                        message="sensitive email requires per-session confirmation token to escalate to API",
+                        retryable=False,
+                        model_attempted=[model],
+                    ),
+                    model_used=model,
+                )
+            from mailbot_api.actions.sensitivity_tokens import consume as _consume_token  # noqa: PLC0415
+            grant_id = _consume_token(confirmation_token, email_id, task_type)
+            if grant_id is None:
+                return RouterResult(
+                    ok=False,
+                    error=RouterError(
+                        code=ErrorCode.NEEDS_SENSITIVITY_CONFIRMATION,
+                        message=(
+                            "confirmation token invalid, expired, already "
+                            "consumed, or mismatched (email_id/task_type)"
+                        ),
+                        retryable=False,
+                        model_attempted=[model],
+                    ),
+                    model_used=model,
+                )
+            _sensitivity_grant_id = grant_id
+            # The mint timestamp is approximated as "now" — the actual minted_at
+            # lives only in the in-memory token (which we just consumed). For
+            # audit purposes "consumed_at" is the relevant fact; same value
+            # serves both. Story 4-x can extend the consume() API to return
+            # minted_at if a forensic gap appears.
+            _sensitivity_grant_minted_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     return await _dispatch_with_failure_chain(
         task_type=task_type,
@@ -304,6 +352,8 @@ async def ask_router(
         caller_verb=caller_verb,
         email_id=email_id,
         force=force,
+        sensitivity_grant_id=_sensitivity_grant_id,
+        sensitivity_grant_minted_at=_sensitivity_grant_minted_at,
     )
 
 
@@ -320,6 +370,8 @@ async def _dispatch_with_failure_chain(
     caller_verb: str | None,
     email_id: str | None,
     force: bool = False,
+    sensitivity_grant_id: str | None = None,
+    sensitivity_grant_minted_at: str | None = None,
 ) -> RouterResult:
     """Inner dispatch + failure chain. Recursive on escalation."""
 
@@ -691,6 +743,8 @@ async def _dispatch_with_failure_chain(
             caller_verb=caller_verb,
             caller_origin=caller_origin,
             email_id=email_id,
+            sensitivity_grant_id=sensitivity_grant_id,
+            sensitivity_grant_minted_at=sensitivity_grant_minted_at,
         )
 
 

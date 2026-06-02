@@ -16,6 +16,12 @@ Bans enforced:
     boundary) outside `mailbot_api/observability/audit.py` AND
     `mailbot_api/db/queries.py` AND `mailbot_api/db/migrations_runner.py`.
     The migration file itself is `.sql`, not scanned by this Python AST pass.
+  - Bare action-type string literals (Story 4-1 AC-5 — FR-5.6 enforcement at
+    lint time). `propose_action("delete", ...)` and similar bypass attempts
+    are caught — callers must use `ActionType.DELETE` from
+    `mailbot_api/actions/types.py`. Only `mailbot_api/actions/types.py`
+    (where the enum is defined) is allowlisted; the `tests/` tree is
+    inherently outside this script's scan (we only scan `mailbot_api/`).
 
 Output: one line per violation, non-zero exit code on any violation.
 """
@@ -95,6 +101,52 @@ _EMBEDDING_WRITE_ALLOW = frozenset(
 )
 _IDEMPOTENCY_KEY_REQUIRED_NAMES = frozenset({"prompt_version", "model", "task_type"})
 
+# Story 4-1 AC-5: bare-string action-type literals are banned outside the
+# canonical type module. The set covers Tier 1/2/3 — the user-visible action
+# surface where FR-5.6 (agent cannot promote tier) actually matters. Tier 0
+# values (`ask_router`, `read_sql`, etc.) are NOT in this set because they
+# collide with Python symbol names like the `ask_router` function — the
+# boundary risk there is zero (Tier-0 verbs never enter pending_actions per
+# Story 4-2 AC), and including them would generate noise on every `__all__`
+# list. `tests/unit/actions/test_types.py` asserts this set equals the
+# Tier-1/2/3 subset of ActionType so drift fails the regression suite.
+_ACTION_TYPE_STRING_LITERAL_ALLOW = frozenset(
+    {
+        "mailbot_api/actions/types.py",
+        # Story 4-5: outlook_adapter.py uses Microsoft Graph well-known-folder
+        # names ("archive", "inbox") that incidentally collide with
+        # ActionType.ARCHIVE.value / MOVE_TO_INBOX context. The collision is
+        # semantic — these are Graph folder identifiers, not bare action-type
+        # literals. Adding to the allowlist accepts that trade-off.
+        "mailbot_api/actions/outlook_adapter.py",
+    }
+)
+_ACTION_TYPE_VALUES = frozenset(
+    {
+        # Tier 1
+        "mark_read",
+        "mark_unread",
+        "add_local_category",
+        "remove_local_category",
+        "move_to_triage_folder",
+        # Tier 2
+        "archive",
+        "mark_junk",
+        "move_to_user_folder",
+        "unsubscribe",
+        "move_to_inbox",
+        # Tier 3
+        "delete",
+        "send_reply",
+        "send_new_email",
+        "send_forward",
+        "reply_to_inactive_thread",
+        "modify_inbox_rule",
+        "modify_outlook_filter",
+        "touch_delegated_mailbox",
+    }
+)
+
 # Raw-SQL heuristic: SQL verb followed by an identifier-shaped token. Tightened
 # from a bare verb match to reduce false positives on docstrings that mention
 # the word "UPDATE" / "INSERT" without an accompanying identifier.
@@ -132,6 +184,25 @@ _EMBEDDING_WRITE_RE = re.compile(
     r"|INSERT\s+INTO\s+emails\s*\([^)]*\bembedding\b)",
     flags=re.IGNORECASE | re.DOTALL,
 )
+
+
+def _collect_docstring_node_ids(tree: ast.AST) -> set[int]:
+    """Return the `id()` of every `ast.Constant` node that serves as a docstring.
+
+    A docstring is the first statement of a Module / FunctionDef / AsyncFunctionDef
+    / ClassDef body when that statement is `ast.Expr(value=ast.Constant(value=str))`.
+    Used by the action-type-literal scan (Story 4-1 AC-5) to avoid flagging
+    docstrings that happen to contain action-type-like words.
+    """
+    docstring_ids: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            body = getattr(node, "body", None)
+            if body and isinstance(body[0], ast.Expr):
+                expr_value = body[0].value
+                if isinstance(expr_value, ast.Constant) and isinstance(expr_value.value, str):
+                    docstring_ids.add(id(expr_value))
+    return docstring_ids
 
 
 def _is_sqlite_connect(call: ast.Call) -> bool:
@@ -248,6 +319,13 @@ def check_file(path: Path, repo_root: Path) -> list[str]:
 
     def _violation(line: int, pattern: str, allow: frozenset[str]) -> str:
         return f"{rel}:{line}: BOUNDARY: {pattern} is forbidden outside {sorted(allow)}"
+
+    # Pre-collect docstring node ids so the action-type-literal scan doesn't
+    # false-positive on a docstring that mentions an action name. Other scans
+    # (raw SQL, router_calls insert, etc.) are also tolerant to docstrings by
+    # being heuristic — only the precise action-value equality check needs
+    # this defense because module docstrings legitimately discuss actions.
+    docstring_node_ids = _collect_docstring_node_ids(tree)
 
     for node in ast.walk(tree):
         # Import bans.
@@ -392,6 +470,35 @@ def check_file(path: Path, repo_root: Path) -> list[str]:
                         _IDEMPOTENCY_KEY_ALLOW,
                     )
                 )
+
+        # Story 4-1 AC-5: bare-string action-type literals are banned outside
+        # `mailbot_api/actions/types.py`. Fires only when the literal value is
+        # EXACTLY one of the 23 ActionType values — action values are specific
+        # enough (`send_reply`, `reply_to_inactive_thread`, `mark_junk`, etc.)
+        # that incidental collisions are rare. Docstrings are pre-filtered via
+        # `docstring_node_ids` so module/class/function docstrings discussing
+        # actions don't false-positive.
+        #
+        # Tolerated by design:
+        #   - The `mailbot_api/actions/types.py` allowlist (the enum DEFINES
+        #     these literals).
+        #   - Docstrings anywhere (filtered above).
+        #   - F-strings with `{action_type.value}` (no bare constant literal
+        #     to flag — the value is computed).
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and node.value in _ACTION_TYPE_VALUES
+            and rel not in _ACTION_TYPE_STRING_LITERAL_ALLOW
+            and id(node) not in docstring_node_ids
+        ):
+            violations.append(
+                f"{rel}:{getattr(node, 'lineno', 0)}: BOUNDARY: "
+                f'bare action-type string literal "{node.value}" — use '
+                f"ActionType.{node.value.upper()} from "
+                f"mailbot_api.actions.types is forbidden outside "
+                f"{sorted(_ACTION_TYPE_STRING_LITERAL_ALLOW)}"
+            )
 
         # Story 2-1 review fix R5: f-strings (ast.JoinedStr) can construct the
         # forbidden literal at runtime — e.g.,

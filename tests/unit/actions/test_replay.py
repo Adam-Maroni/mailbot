@@ -1,0 +1,127 @@
+"""Story 4-5 — replay_action unit tests.
+
+Real on-disk SQLite. Refusal coverage: not-found, not-failed, window-expired,
+grant-invalid for Tier-2/3. Happy path: re-queue + status flip back to pending.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from mailbot_api.actions.authorization import mint_grant
+from mailbot_api.actions.propose import propose_action
+from mailbot_api.actions.replay import REPLAY_WINDOW, replay_action
+from mailbot_api.actions.types import ActionType
+from mailbot_api.db.connection import execute_write, get_connection
+from mailbot_api.db.migrations_runner import apply_pending_migrations
+
+
+def _setup(tmp_path: Path) -> str:
+    db_path = str(tmp_path / "test.db")
+    apply_pending_migrations(db_path)
+    return db_path
+
+
+async def _seed_email(db_path: str, *, graph_id: str = "e-1") -> None:
+    await execute_write(
+        db_path,
+        "INSERT INTO emails (graph_id, received_at, subject, from_address, "
+        "change_marker, deleted_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (graph_id, "2026-06-02T00:00:00Z", "Subject", "alice@example.com", "cm-v1", None),
+    )
+
+
+async def _mark_failed(
+    db_path: str, action_id: int, *, terminal_at: str,
+) -> None:
+    await execute_write(
+        db_path,
+        "UPDATE pending_actions SET status = 'failed', failure_reason = 'test', "
+        "terminal_at = ? WHERE id = ?",
+        (terminal_at, action_id),
+    )
+
+
+async def test_replay_nonexistent_action_refused(tmp_path: Path) -> None:
+    db_path = _setup(tmp_path)
+    out = await replay_action(99999, db_path=db_path)
+    assert out.ok is False
+    assert out.error is not None
+    assert out.error.code == "ACTION_NOT_FOUND"
+
+
+async def test_replay_pending_action_refused_with_not_failed(tmp_path: Path) -> None:
+    db_path = _setup(tmp_path)
+    await _seed_email(db_path)
+    out = await propose_action("e-1", ActionType.MARK_READ, db_path=db_path)
+    # Don't mark failed — leave in 'pending'.
+    res = await replay_action(out.action_id, db_path=db_path)
+    assert res.ok is False
+    assert res.error.code == "ACTION_NOT_FAILED"
+
+
+async def test_replay_within_7_days_tier_1_happy_path(tmp_path: Path) -> None:
+    db_path = _setup(tmp_path)
+    await _seed_email(db_path)
+    out = await propose_action("e-1", ActionType.MARK_READ, db_path=db_path)
+    # Mark failed with terminal_at = today.
+    now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    await _mark_failed(db_path, out.action_id, terminal_at=now_iso)
+
+    res = await replay_action(out.action_id, db_path=db_path)
+    assert res.ok is True
+    assert res.action_id == out.action_id
+    # Verify status flipped back.
+    with get_connection(db_path) as conn:
+        status, terminal_at, failure_reason, retry_count = conn.execute(
+            "SELECT status, terminal_at, failure_reason, retry_count "
+            "FROM pending_actions WHERE id = ?",
+            (out.action_id,),
+        ).fetchone()
+    assert status == "pending"
+    assert terminal_at is None
+    assert failure_reason is None
+    assert retry_count == 0
+
+
+async def test_replay_outside_7_day_window_refused(tmp_path: Path) -> None:
+    db_path = _setup(tmp_path)
+    await _seed_email(db_path)
+    out = await propose_action("e-1", ActionType.MARK_READ, db_path=db_path)
+    old_iso = (
+        datetime.now(timezone.utc) - REPLAY_WINDOW - timedelta(hours=1)
+    ).isoformat().replace("+00:00", "Z")
+    await _mark_failed(db_path, out.action_id, terminal_at=old_iso)
+
+    res = await replay_action(out.action_id, db_path=db_path)
+    assert res.ok is False
+    assert res.error.code == "REPLAY_WINDOW_EXPIRED"
+
+
+async def test_replay_tier_3_without_valid_grant_refused(tmp_path: Path) -> None:
+    db_path = _setup(tmp_path)
+    await _seed_email(db_path)
+    out = await propose_action("e-1", ActionType.DELETE, db_path=db_path)
+    now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    await _mark_failed(db_path, out.action_id, terminal_at=now_iso)
+    # No grant exists → replay refused with GRANT_INVALID.
+    res = await replay_action(out.action_id, db_path=db_path)
+    assert res.ok is False
+    assert res.error.code == "GRANT_INVALID"
+
+
+async def test_replay_tier_3_with_valid_grant_succeeds(tmp_path: Path) -> None:
+    db_path = _setup(tmp_path)
+    await _seed_email(db_path)
+    out = await propose_action("e-1", ActionType.DELETE, db_path=db_path)
+    now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    await _mark_failed(db_path, out.action_id, terminal_at=now_iso)
+    # Mint a fresh grant.
+    await mint_grant(
+        ActionType.DELETE, ["e-1"],
+        datetime.now(timezone.utc) + timedelta(hours=1),
+        db_path=db_path,
+    )
+    res = await replay_action(out.action_id, db_path=db_path)
+    assert res.ok is True

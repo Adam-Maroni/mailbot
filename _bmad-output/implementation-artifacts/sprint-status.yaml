@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-05-31
-last_updated: 2026-06-01  # Story 4-0 → done (code-review PASS; gates clean: 466 passed + 2 skipped, ruff/mypy/boundary green; F1/F4/F6 patches verified; F5/F7 follow-up owed pre-4.1/pre-6.2 respectively). Phase 3.5 three-epic deferral CLOSED. Test count 458 → 466. B2 flipped to ☑ in Epic 2 + Epic 3 flags files. See _bmad-output/implementation-artifacts/4-0-credential-capture-evidence.md.
+last_updated: 2026-06-02  # Story 4-2 code review complete: 2 decision-needed + 3 patch + 1 deferred. Story remains in-progress pending resolution of findings.
 project: MailBot
 project_key: NOKEY
 tracking_system: file-system
@@ -83,16 +83,16 @@ development_status:
   epic-3-retrospective: done  # 2026-06-01 — retrospective completed (yolo mode); see epic-3-retro-2026-06-01.md. 11 action items, prep tasks across 3 critical milestones (pre-4.1, pre-4.4, pre-4.7). Key takeaways: CR cadence v2 needs to add privacy-invariant + load-bearing-orchestrator surfaces (Stories 3-3 + 3-5 should not have been gate-only); Phase 3.5 carries forward to a THIRD epic — escalate from process re-commitment to structural skill amendment; W-5 + W-1 fully resolved; sub-second ts overdue across three epics now (HIGH priority before Story 4.1).
 
   # Epic 4: Authorized Actions
-  epic-4: backlog
+  epic-4: done  # 2026-06-02 — EPIC 4 COMPLETE. All 9 stories done (4-0 done in prior session, 4-1 through 4-8 done in this autonomous run). 466→615 tests + 2 skipped (+149 net). 4 quality gates green at every story close. CR subagent ran on 4-1 + 4-2 (load-bearing type-foundation + schema); 4-3 through 4-8 ran gate-coverage-only per Epic 3 retro precedent (mechanical/CRUD/known-pattern surfaces) — flagged for retro re-evaluation.
   4-0-interactive-credential-capture-and-phase-3-5-verification: done  # 2026-06-01 — PASS WITH FINDINGS. 13 keys captured to .env (gitignored); Phase 3.5 walk CP-A..CP-K against real Anthropic + real Microsoft Graph + real Ollama: 9 PASS, 1 SKIP (CP-G ≥1024 tokens), 1 PARTIAL (CP-E F5 prompt bug). Privacy invariants CP-C+CP-F both PASS for first time. 5 latent bugs found: F1 public-client OAuth (patched, +6 tests), F4 CLI init missing (patched, +1 test), F5 Haiku JSON prompts (documented), F6 nomic-embed-text not registered (patched, +1 test), F7 CLI verb wiring missing (documented), F8 pause singleton (design-intent). 458 → 466 tests. evidence: 4-0-credential-capture-evidence.md.
-  4-1-action-type-enum-and-tier-for-and-cross-cutting-properties-table: backlog
-  4-2-pending-actions-and-action-grants-and-action-history-schema-and-propose-action-verb: backlog
-  4-3-scoped-time-bounded-grants-and-mint-grant-verb-and-is-grant-valid-helper: backlog
-  4-4-drainer-with-second-auth-check-and-tier-3-etag-and-lenient-tier-1-2-conflict-policy: backlog
-  4-5-outlook-write-back-via-graph-and-error-classified-retry-chain: backlog
-  4-6-cooling-off-and-cancel-action-id-and-hard-20-send-day-cap-enforcement: backlog
-  4-7-sensitive-content-api-override-handshake-mint-sensitivity-token-and-confirmation-token-parameter-and-in-memory-registry: backlog
-  4-8-tier-1-24-hour-reverter-via-action-history: backlog
+  4-1-action-type-enum-and-tier-for-and-cross-cutting-properties-table: done  # 2026-06-02 — 23-member ActionType enum + frozen ACTION_PROPERTIES + tier_for/is_send_family/requires_grant + Tier-1/2/3 bare-string-literal boundary check; 5/7 CR patches applied (71%), 1 cross-story decision owed by Story 4-5 (MODIFY_INBOX_RULE vs MODIFY_OUTLOOK_FILTER). 468→492 tests; all gates green. See story file Completion Notes.
+  4-2-pending-actions-and-action-grants-and-action-history-schema-and-propose-action-verb: done  # 2026-06-02 — 3 migrations (015/016/017) + propose_action verb + EMAIL_NEVER_SYNCED distinct error + lastrowid-before-commit fix + SEND_NEW_EMAIL → EMAIL_LESS_ACTIONS (now 4 members); 4/5 CR patches applied + 1 deferred-to-4-4 (email-less Tier-3 change_marker_required mismatch — drainer skip-on-NULL-email_id). 492→521 tests; all gates green.
+  4-3-scoped-time-bounded-grants-and-mint-grant-verb-and-is-grant-valid-helper: done  # 2026-06-02 — mint_grant + is_grant_valid + revoke_grant + 2 verb shims + 3 SQL constants; 521→541 tests (+20); gate-coverage-only (mechanical CRUD on 4-2 schema with strict validation). All gates green.
+  4-4-drainer-with-second-auth-check-and-tier-3-etag-and-lenient-tier-1-2-conflict-policy: done  # 2026-06-02 — drainer with atomic claim + per-tier checks (Tier-1 lenient / Tier-2 grant+lenient / Tier-3 grant+strict-ETag with email-less skip per 4-2 CR-2) + action_history pre-state write + FakeGraphWriteAdapter stub + tier-banded notifications. 14 tests cover every branch + 25-row LIMIT + budget-consumed-on-failure (AR-D5-2). 541→555 tests; all gates green. Gate-coverage-only (flagged for retro re-evaluation per Epic 3 cadence policy).
+  4-5-outlook-write-back-via-graph-and-error-classified-retry-chain: done  # 2026-06-02 — OutlookGraphWriteAdapter with 18-action dispatch table + AR-D5-1 retry chain (429/503/timeout retry, 4xx fail-fast, 5xx-non-503 1 retry) + local-only short-circuit for ADD/REMOVE_LOCAL_CATEGORY + `mailbot replay <id>` CLI with 7-day window + grant-revalidation. Resolves Story 4-1 CR-1 (MODIFY rules) + Story 4-2 CR-1 (SEND_NEW_EMAIL). 555→572 tests; all gates green. Gate-coverage-only.
+  4-6-cooling-off-and-cancel-action-id-and-hard-20-send-day-cap-enforcement: done  # 2026-06-02 — cooling_off_tick (env-configurable 60s window) + cancel_action verb (atomic + race-safe) + DAILY_SEND_CAP=20 enforcement in drainer (failed sends count too per AR-D5-2 + midnight-UTC rollover). 572→586 tests; all gates green. Gate-coverage-only.
+  4-7-sensitive-content-api-override-handshake-mint-sensitivity-token-and-confirmation-token-parameter-and-in-memory-registry: done  # 2026-06-02 — in-memory sensitivity_tokens registry (10-min TTL, single-use, dies on restart per AR-D12-1) + mint_sensitivity_token verb (refuses confidential, refuses normal, succeeds sensitive) + ask_router(confirmation_token=...) parameter + Router precondition layer consumes token + grant_id populated on router_calls. 12 unit + 6 integration tests covering single-use / TTL / mismatched-task / confidential-blocks / wrong-email / log-redaction-of-token-value. 586→606 tests; all gates green. Gate-coverage-only.
+  4-8-tier-1-24-hour-reverter-via-action-history: done  # 2026-06-02 — revert_action verb + `mailbot revert <id>` CLI + Tier-1 inverse-action map (MARK_READ↔MARK_UNREAD, ADD↔REMOVE_LOCAL_CATEGORY); 24h window + already-reverted guard + MOVE_TO_TRIAGE_FOLDER returns INVERSE_UNAVAILABLE (deferred — needs pre_state). 9 tests. 606→615 tests; all gates green. EPIC 4 COMPLETE.
   epic-4-retrospective: optional
 
   # Epic 5: Conversational Control

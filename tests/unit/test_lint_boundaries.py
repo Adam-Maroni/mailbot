@@ -162,6 +162,13 @@ def test_utcnow_triggers_dtz003(tmp_path: Path) -> None:
             "mailbot_api/router",
             "UPDATE emails SET ... embedding",
         ),
+        # Story 4-1 AC-5: bare action-type string literals outside the
+        # `mailbot_api/actions/types.py` allowlist.
+        (
+            "violates_bare_action_string_outside_types.py.fixture",
+            "mailbot_api/verbs",
+            "bare action-type string literal",
+        ),
     ],
 )
 def test_boundary_violations_caught_by_check_boundaries(
@@ -260,6 +267,69 @@ def test_yaml_safe_load_in_allowlisted_policy_path_passes(tmp_path: Path) -> Non
     assert code == 0, (
         f"Expected boundary check to pass when yaml fixture is at the "
         f"allowlisted policy path. Got exit={code}, output: {output}"
+    )
+
+
+def test_bare_action_string_in_allowlisted_types_path_passes(tmp_path: Path) -> None:
+    """Story 4-1 AC-7 positive-pass coverage: the bare-action-string fixture
+    placed AT `mailbot_api/actions/types.py` must NOT trigger the boundary
+    rule (the enum legitimately declares these literals)."""
+    target_dir = tmp_path / "mailbot_api" / "actions"
+    _copy_fixture(
+        "violates_bare_action_string_outside_types.py.fixture",
+        target_dir,
+        "types.py",  # the allowlisted filename
+    )
+    code, output = _run_boundary_check_on(tmp_path)
+    assert code == 0, (
+        f"Expected boundary check to pass when bare-action-string fixture is at "
+        f"the allowlisted types.py path. Got exit={code}, output: {output}"
+    )
+
+
+def test_correct_action_enum_use_does_not_trigger_action_boundary(tmp_path: Path) -> None:
+    """Story 4-1 AC-7 specificity: a file that uses the ActionType enum
+    correctly (no bare action-value literals) must NOT trigger the boundary
+    rule, even placed in a non-allowlisted path."""
+    target = tmp_path / "mailbot_api" / "verbs"
+    _copy_fixture("good_action_enum_use.py.fixture", target, "uses_enum.py")
+
+    code, output = _run_boundary_check_on(tmp_path)
+    assert code == 0, (
+        f"Expected boundary check to pass for correct enum use. "
+        f"Got exit={code}, output: {output}"
+    )
+    assert "bare action-type" not in output, (
+        f"Correct enum use must not match the action-type boundary: {output}"
+    )
+
+
+def test_action_type_docstring_does_not_trigger_action_boundary(tmp_path: Path) -> None:
+    """Story 4-1 AC-5: a docstring that mentions an action-type value (e.g.,
+    a module docstring describing the action surface) must NOT trip the rule.
+    The check pre-filters docstring `ast.Constant` nodes."""
+    target = tmp_path / "mailbot_api" / "verbs"
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "doc_only.py").write_text(
+        '''"""This module is about delete and send_reply actions.
+
+It does NOT contain any bare-string action-type literal — it only mentions
+them in the docstring. Should not trigger Story 4-1's boundary rule.
+"""
+
+from __future__ import annotations
+
+
+def f() -> None:
+    """Operate on mark_read events."""
+    pass
+''',
+        encoding="utf-8",
+    )
+    code, output = _run_boundary_check_on(tmp_path)
+    assert code == 0, (
+        f"Expected boundary check to pass for docstring-only action mentions. "
+        f"Got exit={code}, output: {output}"
     )
 
 

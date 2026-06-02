@@ -87,6 +87,34 @@ def _execute_write_sync(db_path: str, query: str, params: tuple[Any, ...]) -> in
             raise
 
 
+def _execute_insert_returning_id_sync(db_path: str, query: str, params: tuple[Any, ...]) -> int:
+    """Run an INSERT inside BEGIN IMMEDIATE / COMMIT, returning lastrowid.
+
+    Used by `pending_actions` / `action_grants` INSERTs that need the new
+    AUTOINCREMENT id back. Story 4-2 introduced this wrapper because the
+    standard `execute_write` returns rowcount, not lastrowid.
+
+    CR-4 (4-2 review): the lastrowid None-check runs BEFORE commit so a
+    RuntimeError leaves no orphan row behind. With sqlite3 + INTEGER PRIMARY
+    KEY AUTOINCREMENT this branch is defensive (lastrowid is always populated
+    after a successful INSERT), but if a future caller passes an UPSERT that
+    can no-op on conflict, the defensive check matters and the
+    rollback-on-RuntimeError semantics make it correct.
+    """
+    with get_connection(db_path) as conn:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(query, params)
+            new_id = cur.lastrowid
+            if new_id is None:
+                raise RuntimeError("INSERT did not produce a lastrowid")
+            conn.commit()
+            return new_id
+        except Exception:
+            conn.rollback()
+            raise
+
+
 async def fetchone(
     db_path: str, query: str, params: tuple[Any, ...] = ()
 ) -> tuple[Any, ...] | None:
@@ -112,3 +140,15 @@ async def execute_write(
     """
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _execute_write_sync, db_path, query, params)
+
+
+async def execute_insert_returning_id(
+    db_path: str, query: str, params: tuple[Any, ...] = ()
+) -> int:
+    """Async wrapper for INSERTs that need the new AUTOINCREMENT id back.
+
+    Dispatches through run_in_executor. Same transaction semantics as
+    execute_write (BEGIN IMMEDIATE / COMMIT).
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _execute_insert_returning_id_sync, db_path, query, params)

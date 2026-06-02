@@ -1,9 +1,11 @@
-"""Operator CLI host. Stories 1-7 + 3-8 ship the subcommands. Epic 6 ships the
-full surface (status, logs, pause/resume, replay, revert).
+"""Operator CLI host. Stories 1-7 + 3-8 + 4-5 + 4-8 ship the subcommands. Epic 6
+ships the full surface (status, logs, pause/resume, replay, revert).
 
 Usage:
     python scripts/mailbot.py sync-now
     python scripts/mailbot.py rederive --task=coarse_class --since=2026-04-01
+    python scripts/mailbot.py replay 42
+    python scripts/mailbot.py revert 42
 """
 
 from __future__ import annotations
@@ -227,6 +229,32 @@ def main() -> int:
         help="SQLite path. Defaults to $MAILBOT_DB_PATH.",
     )
 
+    # Story 4-5: re-queue a terminal-failed pending_actions row.
+    replay = sub.add_parser(
+        "replay",
+        help="Re-queue a failed pending_actions row for re-drain (Story 4-5)",
+    )
+    replay.add_argument("action_id", type=int, help="pending_actions.id to replay")
+    replay.add_argument(
+        "--db-path",
+        dest="db_path",
+        default=None,
+        help="SQLite path. Defaults to $MAILBOT_DB_PATH.",
+    )
+
+    # Story 4-8: revert an applied Tier-1 action within 24h.
+    revert = sub.add_parser(
+        "revert",
+        help="Revert an applied Tier-1 pending_actions row within 24h (Story 4-8)",
+    )
+    revert.add_argument("action_id", type=int, help="pending_actions.id to revert")
+    revert.add_argument(
+        "--db-path",
+        dest="db_path",
+        default=None,
+        help="SQLite path. Defaults to $MAILBOT_DB_PATH.",
+    )
+
     args = parser.parse_args()
 
     if args.cmd == "sync-now":
@@ -241,6 +269,53 @@ def main() -> int:
                 db_path_arg=args.db_path,
             )
         )
+    if args.cmd == "replay":
+        return asyncio.run(
+            _cmd_replay(action_id=args.action_id, db_path_arg=args.db_path)
+        )
+    if args.cmd == "revert":
+        return asyncio.run(
+            _cmd_revert(action_id=args.action_id, db_path_arg=args.db_path)
+        )
+    return 2
+
+
+async def _cmd_revert(*, action_id: int, db_path_arg: str | None) -> int:
+    """Revert an applied Tier-1 pending_actions row within 24h (Story 4-8)."""
+    from mailbot_api.actions.reverter import revert_action
+
+    db_path = db_path_arg or get_secret_optional("MAILBOT_DB_PATH")
+    if not db_path:
+        print("FATAL: --db-path or $MAILBOT_DB_PATH required", file=sys.stderr)  # noqa: T201
+        return 2
+
+    result = await revert_action(action_id, db_path=db_path)
+    if result.ok:
+        print(  # noqa: T201
+            f"action {action_id} reverted; revert_action_id={result.revert_action_id} "
+            "queued for drain",
+        )
+        return 0
+    assert result.error is not None
+    print(f"REFUSED: {result.error.code}: {result.error.message}", file=sys.stderr)  # noqa: T201
+    return 2
+
+
+async def _cmd_replay(*, action_id: int, db_path_arg: str | None) -> int:
+    """Re-queue a failed pending_actions row (Story 4-5)."""
+    from mailbot_api.actions.replay import replay_action
+
+    db_path = db_path_arg or get_secret_optional("MAILBOT_DB_PATH")
+    if not db_path:
+        print("FATAL: --db-path or $MAILBOT_DB_PATH required", file=sys.stderr)  # noqa: T201
+        return 2
+
+    result = await replay_action(action_id, db_path=db_path)
+    if result.ok:
+        print(f"action {action_id} re-queued for drain")  # noqa: T201
+        return 0
+    assert result.error is not None
+    print(f"REFUSED: {result.error.code}: {result.error.message}", file=sys.stderr)  # noqa: T201
     return 2
 
 

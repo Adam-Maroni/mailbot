@@ -1,0 +1,20 @@
+"""Fixture: bare action-type string literal outside mailbot_api/actions/types.py.
+
+Story 4-1 AC-5: callers must use `ActionType.DELETE` instead of "delete".
+Must trigger a BOUNDARY: bare action-type string literal violation when
+scanned by scripts/check_boundaries.py from a non-allowlisted path.
+"""
+
+from __future__ import annotations
+
+
+def propose_action_oops(email_id: str) -> None:
+    # Tier promotion via bare string is what FR-5.6 + Story 4-1 AC-5 forbid.
+    _ = email_id
+    payload = ("delete", {"hard": True})  # bad: bare "delete" literal
+    _ = payload
+
+
+def another_bad_call() -> None:
+    action_type = "send_reply"  # bad: bare Tier-3 literal
+    _ = action_type
