@@ -822,3 +822,35 @@ GET_SENDER_AGGREGATE_SELECT = (
     "SELECT COUNT(*), MAX(received_at) FROM emails "
     "WHERE LOWER(from_address) = ? AND deleted_at IS NULL"
 )
+
+
+# --- chat orchestrator (Story 5-9) ---
+
+# Story 5-9 AC-2: orchestrator-side sensitivity check before dispatching
+# tone_style_mirror / draft_reply. The Router precondition layer (Story 3-3)
+# would catch sensitivity violations anyway, but the orchestrator short-circuits
+# at the chat surface to avoid even the cache-warmed Opus call.
+EMAIL_SENSITIVITY_BY_GRAPH_ID = (
+    "SELECT sensitivity, subject, body_preview, from_address "
+    "FROM emails WHERE graph_id = ? AND deleted_at IS NULL"
+)
+
+
+# --- notification_mutes (Story 5-6) ---
+
+# Pre-write read used to determine `previously_muted` for the verb response.
+NOTIFICATION_MUTES_SELECT_BY_CATEGORY = (
+    "SELECT category, muted_until, muted_at FROM notification_mutes WHERE category = ?"
+)
+
+# UPSERT: insert new row or overwrite the existing one's muted_until + muted_at.
+# Story 5-6 AC-2: calling /mute on an already-muted category overwrites the
+# previous muted_until value with the new one (so Adam can extend or shorten
+# the window without manually unmuting first).
+NOTIFICATION_MUTES_UPSERT = (
+    "INSERT INTO notification_mutes (category, muted_until, muted_at) "
+    "VALUES (?, ?, ?) "
+    "ON CONFLICT(category) DO UPDATE SET "
+    "muted_until = excluded.muted_until, "
+    "muted_at = excluded.muted_at"
+)

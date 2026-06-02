@@ -1,9 +1,18 @@
-"""MCP server exposing MailBot verbs as tools — Story 5-2.
+"""MCP server exposing MailBot verbs as tools — Story 5-2; extended in Story 5-6.
 
-Builds a ``FastMCP`` instance and registers 11 of the project's verbs as MCP
-tools (``find_emails``, ``hydrate_email``, ``get_thread``, ``count_emails``,
-``get_sender_summary``, ``propose_action``, ``mint_grant``, ``revoke_grant``,
-``cancel_action``, ``revert_action``, ``mint_sensitivity_token``).
+Builds a ``FastMCP`` instance and registers 16 of the project's verbs as MCP
+tools.
+
+The 11 baseline tools (Story 5-2): ``find_emails``, ``hydrate_email``,
+``get_thread``, ``count_emails``, ``get_sender_summary``, ``propose_action``,
+``mint_grant``, ``revoke_grant``, ``cancel_action``, ``revert_action``,
+``mint_sensitivity_token``.
+
+The 5 slash-command surface tools added in Story 5-6 (closing Story 5-2's
+deferral): ``cost_breakdown`` (slash: /cost), ``reset_degraded_mode``
+(/budget reset), ``pause_router`` (/pause), ``resume_router`` (/resume), and
+the new ``mute_category`` (/mute). Each maps to a Discord slash command
+declared in ``hermes-config/config.yaml#gateway.discord.slash_commands``.
 
 Per AR-D7-1 the server runs as part of the ``uvicorn mailbot_api.main:app``
 process on port 8000 under path ``/mcp`` (FastMCP's default ``streamable_http_path``).
@@ -20,16 +29,16 @@ auto-resets the per-session counter after ``_HYDRATION_TURN_RESET_SECONDS``
 Rule J discipline without depending on the transport exposing a turn-boundary
 event.
 
-Verbs intentionally NOT registered (see story 5-2 AC-1):
+Verbs intentionally NOT registered:
 
 - ``ask_router``: Hermes-as-agent's inference path is the OpenAI
   ``/v1/chat/completions`` endpoint (Story 2-10). Re-exposing ``ask_router``
   as a tool would bypass the cost-discipline center.
-- ``cost_breakdown`` / ``reset_degraded_mode`` / ``pause_router`` /
-  ``resume_router``: deferred to Story 5-6 alongside the slash-command
-  dispatcher where tier/authorization wiring is finalized.
 - ``reset_hydration_count``: server-internal lifecycle helper, called by
   this module's ``_hydrate_email_wrapper``.
+
+Previously-deferred verbs (cost/reset_degraded_mode/pause_router/resume_router)
+are now registered as of Story 5-6.
 """
 
 from __future__ import annotations
@@ -60,14 +69,23 @@ from mailbot_api.verbs import (
 from mailbot_api.verbs import (
     reset_hydration_count as _reset_hydration_count,
 )
+from mailbot_api.verbs.budget_admin import reset_degraded_mode as _reset_degraded_mode
 from mailbot_api.verbs.cancel_action import cancel_action as _cancel_action
+from mailbot_api.verbs.cost import cost_breakdown as _cost_breakdown
 from mailbot_api.verbs.mint_grant import mint_grant as _mint_grant
 from mailbot_api.verbs.mint_sensitivity_token import (
     mint_sensitivity_token as _mint_sensitivity_token,
 )
+from mailbot_api.verbs.mute_category import mute_category as _mute_category
 from mailbot_api.verbs.propose_action import propose_action as _propose_action
 from mailbot_api.verbs.revert_action import revert_action as _revert_action
 from mailbot_api.verbs.revoke_grant import revoke_grant as _revoke_grant
+from mailbot_api.verbs.router_control import (
+    pause_router as _pause_router,
+)
+from mailbot_api.verbs.router_control import (
+    resume_router as _resume_router,
+)
 from mailbot_api.verbs.schemas import FindEmailsFilter
 
 _logger = logging.getLogger(__name__)
@@ -131,7 +149,8 @@ def _session_id_from_ctx(ctx: Context[Any, Any, Any]) -> str:
 
 
 def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
-    """Construct the 11 tool wrappers closed over the given _ServerContext.
+    """Construct the 16 tool wrappers closed over the given _ServerContext.
+    (11 Story-5-2 baseline + 5 Story-5-6 slash-command surface.)
 
     Returned dict maps verb-name → wrapper coroutine. The wrappers each take
     only agent-supplied kwargs (db_path / session_id never appear in their
@@ -401,6 +420,114 @@ def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
             _log_ok("mint_sensitivity_token", sid, latency_ms)
         return out
 
+    # ---- Story 5-6: router-control + mute_category ----
+    #
+    # These five verbs are the slash-command surface for /cost, /pause, /resume,
+    # /budget reset, and /mute. The Hermes Discord adapter dispatches each
+    # slash command to its corresponding tool here per
+    # hermes-config/config.yaml#gateway.discord.slash_commands.
+
+    async def cost_breakdown(
+        ctx: Context[Any, Any, Any], period: str = "today"
+    ) -> Any:
+        # Story 5-6 CR-1 fix: default to "today" so the slash command's
+        # `required: false` period option works end-to-end. Without the default,
+        # invoking /cost with no period argument would fail at the MCP boundary
+        # with a missing-parameter error.
+        sid = _session_id_from_ctx(ctx)
+        t0 = time.perf_counter()
+        try:
+            # The verb signature is Literal["today", "month"]; runtime validation
+            # at the Pydantic-input layer keeps the boundary clean. The verb
+            # itself raises ValueError for any other string (CR-2 defensive guard).
+            out = await _cost_breakdown(period, db_path=server_ctx.require_db_path())  # type: ignore[arg-type]
+        except Exception as exc:  # noqa: BLE001
+            _log_crash("cost_breakdown", sid, exc, int((time.perf_counter() - t0) * 1000))
+            raise
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        code = _maybe_error_code(out)
+        if code:
+            _log_error_as_data("cost_breakdown", sid, code, latency_ms)
+        else:
+            _log_ok("cost_breakdown", sid, latency_ms)
+        return out
+
+    async def reset_degraded_mode(
+        ctx: Context[Any, Any, Any], reason: str = "manual_reset"
+    ) -> Any:
+        sid = _session_id_from_ctx(ctx)
+        t0 = time.perf_counter()
+        try:
+            out = await _reset_degraded_mode(
+                db_path=server_ctx.require_db_path(), reason=reason
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log_crash("reset_degraded_mode", sid, exc, int((time.perf_counter() - t0) * 1000))
+            raise
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        code = _maybe_error_code(out)
+        if code:
+            _log_error_as_data("reset_degraded_mode", sid, code, latency_ms)
+        else:
+            _log_ok("reset_degraded_mode", sid, latency_ms)
+        return out
+
+    async def pause_router(ctx: Context[Any, Any, Any], reason: str = "unspecified") -> Any:
+        sid = _session_id_from_ctx(ctx)
+        t0 = time.perf_counter()
+        try:
+            out = await _pause_router(db_path=server_ctx.require_db_path(), reason=reason)
+        except Exception as exc:  # noqa: BLE001
+            _log_crash("pause_router", sid, exc, int((time.perf_counter() - t0) * 1000))
+            raise
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        code = _maybe_error_code(out)
+        if code:
+            _log_error_as_data("pause_router", sid, code, latency_ms)
+        else:
+            _log_ok("pause_router", sid, latency_ms)
+        return out
+
+    async def resume_router(ctx: Context[Any, Any, Any]) -> Any:
+        sid = _session_id_from_ctx(ctx)
+        t0 = time.perf_counter()
+        try:
+            out = await _resume_router(db_path=server_ctx.require_db_path())
+        except Exception as exc:  # noqa: BLE001
+            _log_crash("resume_router", sid, exc, int((time.perf_counter() - t0) * 1000))
+            raise
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        code = _maybe_error_code(out)
+        if code:
+            _log_error_as_data("resume_router", sid, code, latency_ms)
+        else:
+            _log_ok("resume_router", sid, latency_ms)
+        return out
+
+    async def mute_category(
+        category: str,
+        ctx: Context[Any, Any, Any],
+        muted_until: str | None = None,
+    ) -> Any:
+        sid = _session_id_from_ctx(ctx)
+        t0 = time.perf_counter()
+        try:
+            out = await _mute_category(
+                category,
+                db_path=server_ctx.require_db_path(),
+                muted_until=muted_until,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log_crash("mute_category", sid, exc, int((time.perf_counter() - t0) * 1000))
+            raise
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        code = _maybe_error_code(out)
+        if code:
+            _log_error_as_data("mute_category", sid, code, latency_ms)
+        else:
+            _log_ok("mute_category", sid, latency_ms)
+        return out
+
     return {
         "find_emails": find_emails,
         "hydrate_email": hydrate_email,
@@ -413,6 +540,12 @@ def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
         "cancel_action": cancel_action,
         "revert_action": revert_action,
         "mint_sensitivity_token": mint_sensitivity_token,
+        # Story 5-6 — slash-command verbs.
+        "cost_breakdown": cost_breakdown,
+        "reset_degraded_mode": reset_degraded_mode,
+        "pause_router": pause_router,
+        "resume_router": resume_router,
+        "mute_category": mute_category,
     }
 
 
@@ -466,10 +599,33 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
         "Sensitive emails only; ephemeral 10-min token (AR-D12-1). "
         "Confidential refused unconditionally; normal needs no token."
     ),
+    # Story 5-6 — slash-command verbs (registration closes Story 5-2's deferral).
+    "cost_breakdown": (
+        "Return Router cost breakdown for the period (today | month). "
+        "Per-task / per-model / per-caller_origin aggregations + cache hit rate. "
+        "Slash-command surface: /cost (Story 5-6)."
+    ),
+    "reset_degraded_mode": (
+        "Flip degraded_mode_state to inactive and clear the in-memory flag. "
+        "Slash-command surface: /budget reset (Story 5-6)."
+    ),
+    "pause_router": (
+        "Pause the Router lane scheduler with a reason. "
+        "Slash-command surface: /pause (Story 5-6)."
+    ),
+    "resume_router": (
+        "Resume the Router lane scheduler. "
+        "Slash-command surface: /resume (Story 5-6)."
+    ),
+    "mute_category": (
+        "Mute a notification category until a timestamp (or indefinitely). "
+        "Slash-command surface: /mute (Story 5-6); "
+        "Epic 6's dispatcher reads from notification_mutes."
+    ),
 }
 
 
-_EXPECTED_TOOL_COUNT = 11
+_EXPECTED_TOOL_COUNT = 16
 
 
 # ---------------------------------------------------------------------------
@@ -478,7 +634,9 @@ _EXPECTED_TOOL_COUNT = 11
 
 
 def build_mcp_server(*, db_path: str | None = None) -> FastMCP:
-    """Build and configure a FastMCP server with all 11 MailBot tools registered.
+    """Build and configure a FastMCP server with all 16 MailBot tools registered.
+    (11 Story-5-2 baseline read+write verbs + 5 Story-5-6 slash-command surface
+    verbs.)
 
     ``db_path`` may be passed eagerly (production binds it from the FastAPI
     lifespan once ``MAILBOT_DB_PATH`` is resolved) or left None and bound
@@ -495,6 +653,10 @@ def build_mcp_server(*, db_path: str | None = None) -> FastMCP:
             "projection-first per Rule J. Write verbs (propose_action, "
             "mint_grant, revoke_grant, cancel_action, revert_action, "
             "mint_sensitivity_token) follow the second-auth-check pattern. "
+            "Slash-command-surface verbs (cost_breakdown, reset_degraded_mode, "
+            "pause_router, resume_router, mute_category) are the verb side of "
+            "Discord slash commands; agent invocations are allowed but should "
+            "cite the user intent in the reasoning trace. "
             "Always inspect `result.error` after every tool call — verbs return "
             "error-as-data and never raise across the MCP boundary."
         ),

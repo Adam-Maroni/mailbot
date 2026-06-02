@@ -51,3 +51,13 @@ mailbot.db-*
 
 # Database files (broad wildcard per AC-1; more specific patterns above)
 *.db
+
+# Hermes runtime artifacts written to /opt/data (Story 5-4 Phase 3.5 fix).
+# Hermes treats /opt/data as its HOME dir and writes cron state + other
+# runtime artifacts. The persona docs + config.yaml are Adam-owned (kept
+# tracked); anything else Hermes writes here is runtime state.
+hermes-config/cron/
+hermes-config/data/
+hermes-config/state/
+hermes-config/logs/
+hermes-config/.hermes/

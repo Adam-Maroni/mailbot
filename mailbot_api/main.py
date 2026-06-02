@@ -217,9 +217,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             mcp_mount = Mount("/mcp", app=streamable_app)
             _app.router.routes.append(mcp_mount)
             _app.state.mcp_server = mcp_server
+            # Story 5-6 follow-up (Phase 3.5 finding): pull the count from the
+            # canonical source rather than hardcoding. Story 5-6 bumped 11->16
+            # but missed this observability line.
+            from mailbot_api.mcp_server import _EXPECTED_TOOL_COUNT
             logger.info(
                 "mcp server live",
-                extra={"event": "mcp.startup.live", "tools": 11, "path": "/mcp"},
+                extra={"event": "mcp.startup.live", "tools": _EXPECTED_TOOL_COUNT, "path": "/mcp"},
             )
         elif _app is not None and not skip_mcp:
             # CR-6: surface misconfiguration. skip_mcp=False but db_path=None

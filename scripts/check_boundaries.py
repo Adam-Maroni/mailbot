@@ -154,9 +154,27 @@ _VERBS_IMPORT_ALLOW = frozenset(
         "mailbot_api/verbs/budget_admin.py",
         "mailbot_api/verbs/router_control.py",
         "mailbot_api/verbs/cost.py",
+        # Story 5-6: notification mute write-side; reads from
+        # notification_mutes happen in Epic 6's dispatcher.
+        "mailbot_api/verbs/mute_category.py",
+        # Story 5-8: reference-resolution orchestrator. Consumes EmailProjection
+        # from verbs.schemas to type the candidate_projections context field;
+        # itself an agent-facing surface (chat surface) so the verb-import
+        # boundary's intent (only agent-facing modules consume) is preserved.
+        "mailbot_api/chat/reference.py",
+        # Story 5-9: draft-reply chat orchestrator. Consumes propose_action verb
+        # to fire SEND_REPLY into the pending_actions queue; the chat surface IS
+        # the agent-facing module by Rule P.
+        "mailbot_api/chat/orchestrator.py",
         # Story 5-2: mcp_server.py legitimately consumes every verb to register
         # them as MCP tools — it IS the agent-facing surface.
         "mailbot_api/mcp_server.py",
+        # Story 5-3: intent_parsing_chat's OUTPUT_SCHEMA nests FindEmailsFilter
+        # so the agent's intent-parse turn can carry a parsed filter forward
+        # to find_emails / count_emails. The prompt module IS the agent-facing
+        # schema for that turn; reaching `verbs.schemas.FindEmailsFilter`
+        # rather than duplicating the model preserves the single-source-of-truth.
+        "mailbot_api/prompts/intent_parsing_chat/v1.py",
     }
 )
 # Story 5-2 AC-7: FastMCP import isolation. Only mcp_server.py may import

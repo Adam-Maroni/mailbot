@@ -112,3 +112,44 @@ tasks:
     lane: "interactive"
     sensitivity: "any"
     notes: "Hermes-aux pass-through via /v1/chat/completions. force_model is overridden by the request body; this entry exists so policy.tasks['hermes_aux'] resolves."
+
+  # --- Story 5-3: chat-side prompts ---
+
+  intent_parsing_chat:
+    model: "qwen2.5:3b-instruct-q4_K_M"
+    prompt_version: "v1"
+    escalate: true
+    max_tokens_out: 384
+    lane: "interactive"
+    sensitivity: "any"
+    notes: "Discord message -> intent + filter. Qwen-first per Rule N (cost discipline); Haiku escalation handles ambiguous parses via Story 2-4 schema-fail-retry. Interactive lane - chat latency matters."
+
+  reference_resolution:
+    model: "qwen2.5:3b-instruct-q4_K_M"
+    prompt_version: "v1"
+    escalate: true
+    max_tokens_out: 384
+    lane: "interactive"
+    sensitivity: "any"
+    notes: "Resolve 'that one' / 'the lawyer' references against recent Discord context + sender_reputation_summary + Hermes persistent memory. Qwen-first; Haiku escalation. FR-4.3 >= 90% threshold validated in Epic 7 (Story 7-7) per Story 5-8."
+
+  tone_style_mirror:
+    model: "claude-opus-4-7"
+    prompt_version: "v1"
+    escalate: false
+    max_tokens_out: 512
+    lane: "interactive"
+    sensitivity: "any"
+    response_cache_ttl_seconds: 2592000  # 30 days; tone evolves slowly
+    notes: "Per-recipient tone fingerprint. Invoked ONCE per recipient (cache-keyed on recipient_address) per Story 5-3 AC-5; cache hit avoids the Opus call entirely on subsequent draft_reply turns."
+    demotion_hypothesis: "Haiku may suffice for tone fingerprinting - demote when Epic 7 measures recipient-level tone accuracy parity."
+
+  multi_turn_refinement:
+    model: "claude-opus-4-7"
+    prompt_version: "v1"
+    escalate: false
+    max_tokens_out: 1500
+    lane: "interactive"
+    sensitivity: "any"
+    notes: "Iterative draft refinement (Story 5-9). Routes to Opus per FR-4.4. No response cache - refinements are turn-specific."
+    demotion_hypothesis: "Haiku may suffice for small-delta refinements (e.g., 'make this shorter'); demote when Epic 7 measures refinement quality parity."

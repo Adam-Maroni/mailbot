@@ -6,15 +6,50 @@ services:
   mailbot-hermes:
     image: nousresearch/hermes-agent:latest  # per architecture AR-DEPLOY-1; image pin tracked in retro flags
     container_name: mailbot-hermes
+    # Story 5-4 / Epic 5 Phase 3.5 architectural finding (F3-F5, see
+    # _bmad-output/implementation-artifacts/epic-5-run-flags.md):
+    # this image is supervised by s6-overlay and runs the interactive TUI
+    # (`hermes`) as its managed service. It is NOT designed for compose-
+    # detached daemon-mode operation. The default entrypoint exits cleanly
+    # on detached stdin ("Welcome to Hermes Agent! ... Goodbye! ⚕").
+    # A `command:` override at the docker level is swallowed by s6.
+    # Per the upstream README the gateway daemon is `hermes gateway start`,
+    # but reaching it under the supervised image needs a different
+    # mechanism we have not identified. Carry-forward: Epic 6 owns
+    # discovering the correct deploy shape (env-var override, profile
+    # config, or replacing the image with a from-source install).
+    # Until then mailbot-hermes is expected to restart-loop; the rest
+    # of the stack (mailbot-api / ollama) is unaffected.
     networks:
       - mailbot-net
     volumes:
       - mailbot_hermes_data:/data
       - mailbot_logs:/var/log/mailbot
+      # Story 5-4 AC-2: bind-mount hermes-config/ at /opt/data per
+      # architecture.md §"Complete Project Directory Structure" (line 1031).
+      # Hermes reads SOUL.md, AGENTS.md, skills/mailbot/SKILL.md, config.yaml,
+      # and cron/jobs.json from this tree.
+      #
+      # NOTE on read-write: Story 5-4 originally specced :ro. Phase 3.5 walk
+      # surfaced that Hermes treats /opt/data as its HOME directory and needs
+      # to `mkdir cron/` (and likely other dirs) on first run — read-only mount
+      # crashes the container with `OSError: [Errno 30] Read-only file system`.
+      # The mount is read-write so Hermes can initialize. Files written by
+      # Hermes (state, runtime artifacts) should be added to .gitignore as they
+      # appear; the persona docs + config.yaml are Adam-owned and should not
+      # be modified by Hermes — observe the diff before committing.
+      - ./hermes-config:/opt/data
     environment:
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}
       # Hermes routes its LLM calls through mailbot-api per AR-D2-1
       - MAILBOT_API_BASE_URL=http://mailbot-api:8000/v1
+      # Story 5-4 AC-1: same bearer key mailbot-api validates; Hermes propagates
+      # as Authorization: Bearer <token> when calling /v1/chat/completions.
+      - MAILBOT_ROUTER_KEY=${MAILBOT_ROUTER_KEY:-}
+      # Story 5-4 AC-1: NFR-OPS-6 emergency-only fallback to api.anthropic.com
+      # when mailbot-api is hard-down. Bypasses Router cost discipline by design
+      # — see hermes-config/config.yaml#fallback_providers + .env.example.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     depends_on:
       mailbot-api:
         condition: service_healthy

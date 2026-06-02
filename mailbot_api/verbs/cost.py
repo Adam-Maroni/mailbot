@@ -38,7 +38,14 @@ def _period_start_iso(period: Literal["today", "month"]) -> str:
     now = datetime.now(timezone.utc)
     if period == "today":
         return now.strftime("%Y-%m-%dT00:00:00Z")
-    return now.strftime("%Y-%m-01T00:00:00Z")
+    if period == "month":
+        return now.strftime("%Y-%m-01T00:00:00Z")
+    # Story 5-6 CR-2 fix: defensive guard. The Literal annotation + the
+    # `# type: ignore[arg-type]` at the MCP wrapper boundary (Story 5-6
+    # cost_breakdown wrapper) means a wrong-string period would silently
+    # take the month branch under the original two-branch implementation.
+    # Surface the bad input loudly instead.
+    raise ValueError(f"cost_breakdown: invalid period {period!r}; expected 'today' or 'month'")
 
 
 async def cost_breakdown(period: Literal["today", "month"], *, db_path: str) -> CostBreakdownOut:

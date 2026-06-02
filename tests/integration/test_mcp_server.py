@@ -173,13 +173,17 @@ def _parse_tool_result(result: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def test_build_mcp_server_registers_11_tools_with_expected_names(tmp_path: Path) -> None:
+def test_build_mcp_server_registers_16_tools_with_expected_names(tmp_path: Path) -> None:
+    """Story 5-6 extended Story 5-2's 11-tool baseline by 5 slash-command verbs
+    (cost_breakdown / reset_degraded_mode / pause_router / resume_router /
+    mute_category). The expected set is now 16."""
     server = build_mcp_server(db_path=str(tmp_path / "x.db"))
     # FastMCP exposes the registered tools via list_tools (async); use the
     # tool manager directly for a sync snapshot.
     tool_names = sorted(server._tool_manager._tools.keys())  # type: ignore[attr-defined]
     expected = sorted(
         [
+            # Story 5-2 baseline (11).
             "find_emails",
             "hydrate_email",
             "get_thread",
@@ -191,25 +195,29 @@ def test_build_mcp_server_registers_11_tools_with_expected_names(tmp_path: Path)
             "cancel_action",
             "revert_action",
             "mint_sensitivity_token",
+            # Story 5-6 additions (5).
+            "cost_breakdown",
+            "reset_degraded_mode",
+            "pause_router",
+            "resume_router",
+            "mute_category",
         ]
     )
     assert tool_names == expected, f"unexpected tool set: {tool_names}"
-    assert len(tool_names) == 11
+    assert len(tool_names) == 16
 
 
 def test_internal_verbs_are_not_registered(tmp_path: Path) -> None:
-    """ask_router, cost_breakdown, reset_degraded_mode, pause_router,
-    resume_router, reset_hydration_count are deliberately not MCP-exposed.
-    Re-exposing any of them is a cost-discipline regression (ask_router)
-    or a Story-5-6 scope creep (slash-command-side verbs)."""
+    """ask_router and reset_hydration_count are deliberately not MCP-exposed.
+    Re-exposing ask_router is a cost-discipline regression (cost-discipline
+    center bypass); reset_hydration_count is a server-internal lifecycle helper.
+
+    Story 5-6 closed the cost/pause/resume/reset_degraded_mode deferral — those
+    are NOW registered and are no longer in the forbidden set."""
     server = build_mcp_server(db_path=str(tmp_path / "x.db"))
     tool_names = set(server._tool_manager._tools.keys())  # type: ignore[attr-defined]
     forbidden = {
         "ask_router",
-        "cost_breakdown",
-        "reset_degraded_mode",
-        "pause_router",
-        "resume_router",
         "reset_hydration_count",
     }
     overlap = tool_names & forbidden
@@ -257,7 +265,8 @@ async def test_list_tools_returns_constraint_phrases(tmp_path: Path) -> None:
         await client.initialize()
         listed = await client.list_tools()
     by_name = {t.name: t for t in listed.tools}
-    assert len(by_name) == 11
+    # Story 5-6 bumped the registered tool count from 11 to 16.
+    assert len(by_name) == 16
     # find_emails must mention the 100-cap + Rule J.
     assert "100" in by_name["find_emails"].description
     assert "Rule J" in by_name["find_emails"].description
@@ -269,6 +278,12 @@ async def test_list_tools_returns_constraint_phrases(tmp_path: Path) -> None:
     assert "Rule J" in by_name["get_thread"].description
     assert "10-min" in by_name["mint_sensitivity_token"].description
     assert "Tier-1" in by_name["revert_action"].description
+    # Story 5-6 additions name their slash-command surface.
+    assert "/cost" in by_name["cost_breakdown"].description
+    assert "/budget reset" in by_name["reset_degraded_mode"].description
+    assert "/pause" in by_name["pause_router"].description
+    assert "/resume" in by_name["resume_router"].description
+    assert "/mute" in by_name["mute_category"].description
 
 
 @pytest.mark.asyncio
