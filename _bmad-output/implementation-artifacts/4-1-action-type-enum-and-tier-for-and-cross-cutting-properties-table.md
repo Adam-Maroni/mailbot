@@ -497,3 +497,12 @@ Tier 0 still gets `requires_grant() == False` and `tier_for() == 0` correctly; t
 - Code-review (sonnet-4.6, 3-layer adversarial) found 7 issues: 5 patched (CR-3 `del _PROPS`, CR-4 hasattr guards, CR-5 JSON deserialization round-trip + rename, CR-6 `test_types_boundary.py` discoverability re-import, CR-2 DELETE rationale strengthening), 1 deferred-with-disposition-owed-by-4-5 (CR-1 MODIFY_INBOX_RULE vs MODIFY_OUTLOOK_FILTER semantic question), 1 documented (CR-2 DELETE sensitivity-token rationale). 7/7 addressed; applied rate 5/7 = 71% (over 70% target).
 - Test delta: 468 baseline → 492 passed (+24 net). All 4 gates green: pytest, ruff, mypy (68 source files), boundary check.
 - Cross-story decisions owed: Story 4-5 must resolve MODIFY_INBOX_RULE vs MODIFY_OUTLOOK_FILTER (collapse-with-discriminator OR document distinct semantics). Flagged in epic-run-flags.md for downstream tracking.
+
+### 2026-06-02 — CR-2 RESOLVED (Adam decision, Epic 4 retro)
+
+- Story 4-1 CR-2 (`DELETE.requires_sensitivity_token=False`) was originally documented-with-rationale per the original CR pass. Adam's Epic 4 retro decision (2026-06-02 post-retro conversation, decision 13.2): **flip to `True`** — belt-and-suspenders. Destruction of a sensitive email is irreversible and deserves the same confirmation handshake as sending its contents to an API.
+- **Patched:** `mailbot_api/actions/types.py:237` — `requires_sensitivity_token=True` on the DELETE `ActionProperties` entry. Docstring rationale paragraph at `types.py:80-115` rewritten to reflect the expanded framing ("extra confirmation on any high-consequence touch of a sensitive email" — not just "content-leak prevention").
+- **Test updated:** `tests/unit/actions/test_types.py:test_sensitivity_token_invariant` — expected set is now `EXPECTED_SEND_FAMILY | {ActionType.DELETE}` (5 members, not 4).
+- **Verb propagation:** `propose_action` refusal arm propagates automatically via the `ACTION_PROPERTIES` registry lookup — no verb-layer code changes needed. `mint_sensitivity_token` (Story 4-7) already supports any task_type binding, so the DELETE-via-handshake flow uses the same mint→consume pattern as the SEND-family flow.
+- **Gates:** all 4 green; pytest 654 stable (no test count delta — one assertion updated in place); ruff / mypy --strict (85 source files) / boundary checker clean.
+- Memory: persisted to `project_delete_requires_sensitivity_token.md` so this rule binds future sessions.

@@ -124,14 +124,17 @@ def test_send_family_budget_invariant() -> None:
 
 
 def test_sensitivity_token_invariant() -> None:
-    """AC-6 §9 — only SEND-family actions require the Story 4-7 handshake.
+    """AC-6 §9 — the SEND-family actions AND DELETE require the Story 4-7 handshake.
 
-    DELETE is Tier-3 with change_marker_required=True but does NOT generate
-    outbound content, so requires_sensitivity_token is False. The handshake
-    is about content leaving the mailbox to a sensitive recipient/topic.
+    The 4 SEND-family actions need the handshake because outbound content
+    from a sensitive email goes through Anthropic. DELETE was added per
+    Adam's Epic 4 retro decision (2026-06-02, Story 4-1 CR-2) — destruction
+    of a sensitive email is irreversible and deserves the same confirmation
+    gate as sending its contents. Belt-and-suspenders.
     """
     actual = {at for at in ActionType if ACTION_PROPERTIES[at].requires_sensitivity_token}
-    assert actual == EXPECTED_SEND_FAMILY
+    expected = EXPECTED_SEND_FAMILY | {ActionType.DELETE}
+    assert actual == expected
 
 
 def test_registry_completeness() -> None:

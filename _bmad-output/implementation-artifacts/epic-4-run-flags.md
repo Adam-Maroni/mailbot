@@ -76,14 +76,14 @@ Story 4-4's `_build_pre_state(row)` returns `{}` for every action because the em
 - **MOVE_TO_TRIAGE_FOLDER cannot be reverted** — its inverse needs the previous folder_id. Story 4-8 returns `INVERSE_UNAVAILABLE` for this case. Documented as known limitation.
 - **Future stories** (e.g., a Tier-2 reverter, or a richer revert UX) will need pre_state filled. A future migration could add `emails.is_read` / `emails.folder_id` / `emails.categories` columns; OR the reverter could read live state from Graph at revert time.
 
-### WARNING — Story 4-1 CR-2 (DELETE sensitivity-token rationale) documented but not flipped
+### ~~WARNING~~ — Story 4-1 CR-2 (DELETE sensitivity-token rationale) — **RESOLVED 2026-06-02**
 
-The DELETE action has `requires_sensitivity_token=False` even though it's Tier-3 with `change_marker_required=True`. Documented rationale in `mailbot_api/actions/types.py` ActionProperties docstring: the sensitivity handshake is scoped to LLM calls (AR-D12-1), not destructive actions. **If retro decides this is wrong**, flipping the flag to `True` is a one-bool-cell change + the verb refusal arm propagates automatically. Tests would need to update.
+~~The DELETE action has `requires_sensitivity_token=False` even though it's Tier-3 with `change_marker_required=True`.~~ **Adam's Epic 4 retro decision (decision 13.2, 2026-06-02): flipped to `True`.** Belt-and-suspenders — destruction of a sensitive email is irreversible and deserves the same confirmation handshake as sending its contents. `types.py:237` bool flip + docstring rewrite + `test_sensitivity_token_invariant` updated to `EXPECTED_SEND_FAMILY | {DELETE}`. All 4 gates green; verb propagation automatic via `ACTION_PROPERTIES` registry lookup.
 
 ## Aggregated deferred items (Epic 4)
 
 - **Story 4-1 CR-1** (MODIFY_INBOX_RULE vs MODIFY_OUTLOOK_FILTER) — **RESOLVED in 4-5**: both dispatch to the same Graph endpoint; payload distinguishes via optional `payload["rule_kind"]`.
-- **Story 4-1 CR-2** (DELETE requires_sensitivity_token=False) — DOCUMENTED in types.py docstring; awaiting retro validation.
+- **Story 4-1 CR-2** (DELETE requires_sensitivity_token) — **RESOLVED 2026-06-02 — Adam decision (Epic 4 retro decision 13.2): flipped to True.** See story 4-1 Completion Notes + commit (TBD).
 - **Story 4-2 CR-1** (SEND_NEW_EMAIL email-less) — **RESOLVED in 4-2 patch**: added to EMAIL_LESS_ACTIONS + cooling_off routing for email-less SEND family.
 - **Story 4-2 CR-2** (email-less Tier-3 change_marker_required mismatch) — **RESOLVED in 4-4**: drainer skips ETag check when `email_id IS NULL`.
 - **Story 4-2 deferred (regex robustness)** — AC-14 regex parsing `CHECK(action_type IN (...))` could break if action values ever contain `)`. Pre-existing test design; no current bug.

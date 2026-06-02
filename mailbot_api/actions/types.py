@@ -86,26 +86,35 @@ class ActionProperties(BaseModel):
       - change_marker_required: True for Tier 3 only (AR-D4-1 strict ETag)
       - budget_against: "daily_send_cap_20" for the 4 SEND-family actions
                         (FR-5.4 hard cap), None otherwise
-      - requires_sensitivity_token: True for the 4 SEND-family actions
-                                    (outbound content from a sensitive email
-                                    needs the Story 4-7 handshake); False
-                                    otherwise.
+      - requires_sensitivity_token: True for DELETE + the 4 SEND-family
+                                    actions. The 4 SEND actions need the
+                                    handshake because outbound content from a
+                                    sensitive email goes out the door; DELETE
+                                    needs it because destruction of a
+                                    sensitive email is irreversible and
+                                    deserves the same confirmation gate as
+                                    sending its contents. False otherwise.
 
-    DELETE-rationale (CR-2 resolution): DELETE is Tier-3 with
-    change_marker_required=True but requires_sensitivity_token=False because
-    AR-D12-1 scopes the sensitivity-handshake registry to Router LLM calls
-    (mint_sensitivity_token → consume → record_router_call.sensitivity_grant_id),
-    NOT to action verbs. A sensitive-email DELETE is still protected by three
-    independent layers: (a) Tier-3 grant required via mint_grant + is_grant_valid
-    at drain time (Story 4-3/4-4); (b) strict ETag match (AR-D4-1) refuses on
-    state drift; (c) 60s cooling-off + /cancel for SEND family doesn't apply
-    here, but the Tier-3 grant itself requires the operator to invoke
-    mint_grant first — there's no auto-promotion path. The handshake is about
-    content leaving the mailbox to a sensitive recipient/topic via an LLM
-    call, not about destructive action authorization. If Adam later decides
-    sensitive-email destructive actions ALSO need the handshake, this field
-    flips to True here — verbs/mint_grant.py would refuse without a token —
-    no downstream code changes elsewhere.
+    DELETE-rationale (CR-2 resolution, Adam decision 2026-06-02 — Epic 4
+    retro action item / decision 13.2): DELETE requires_sensitivity_token=True.
+    The original Story 4-1 ship had it False on the rationale that AR-D12-1
+    scoped the handshake to Router LLM calls (content-leak protection), not
+    to destructive action authorization. Adam decided in the Epic 4 retro
+    to expand the handshake's role to "extra confirmation on any
+    high-consequence touch of a sensitive email" — belt-and-suspenders.
+    DELETE on a sensitive email now requires the same mint/consume
+    handshake as sending its contents to Anthropic. The propose_action
+    verb refusal arm propagates automatically via the ACTION_PROPERTIES
+    registry lookup; no verb-layer code changes needed. mint_sensitivity_token
+    (Story 4-7) already supports any task_type binding, so the
+    DELETE-via-handshake flow uses the same mint→consume pattern as SEND_*.
+
+    Prior protection layers (still in effect, now with the handshake as a
+    fourth): (a) Tier-3 grant required via mint_grant + is_grant_valid at
+    drain time (Story 4-3/4-4); (b) strict ETag match (AR-D4-1) refuses on
+    state drift; (c) the Tier-3 grant itself requires the operator to
+    invoke mint_grant first — there's no auto-promotion path; (d) NEW:
+    sensitivity-token handshake when the email is sensitive (this field).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -234,7 +243,7 @@ _PROPS: dict[ActionType, ActionProperties] = {
         reversibility_window_hours=None,
         change_marker_required=True,
         budget_against=None,
-        requires_sensitivity_token=False,
+        requires_sensitivity_token=True,  # Story 4-1 CR-2 — Adam decision 2026-06-02 (belt-and-suspenders)
     ),
     ActionType.SEND_REPLY: ActionProperties(
         tier=3,
