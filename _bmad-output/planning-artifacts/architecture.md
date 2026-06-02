@@ -511,6 +511,24 @@ These extend the schema implied by FR-1..8 — full table inventory lands in the
 - **`oauth_state`** (new): single row keyed by `provider`; `(refresh_token, access_token, access_expires_at, last_rotated_at, rotation_count)`.
 - **`worker_health`** (new): `(component, last_heartbeat_at, last_outcome, last_error)` — components: `sync`, `cache_warmer`, `drainer`, `ingest_pipeline`.
 
+#### Embedding-column binary contract (W-5 resolution, Epic 2 §13 postscript)
+
+The `emails.embedding` column stores nomic-embed-text vectors as raw bytes (768-dim float32 = 3072 bytes per row). The byte representation is **load-bearing** because cross-architecture portability matters (dev box may be x86_64, VPS may be aarch64; SQLite files travel between them via backup/restore). The contract:
+
+- **Storage format:** little-endian float32 (`numpy.dtype("<f4")`). NumPy's native byte order on x86_64 IS little-endian, but the dtype string is fixed regardless of host so the same bytes round-trip identically on any architecture.
+- **Companion metadata columns:** `embedding_dtype TEXT NOT NULL` and `embedding_shape TEXT NOT NULL` (JSON-encoded shape tuple, e.g. `"[768]"`). Stored alongside every embedding row so the reader can validate the contract before deserializing. Added in migration 011 (renumbered from spec's 010 due to cumulative migration-chain shift — see migration-numbering policy below).
+- **Writer monopoly:** `mailbot_api/ingest/embedding.py` is the SOLE writer of `emails.embedding` (`write_embedding(email_id, vector)`); the boundary checker (`scripts/check_boundaries.py` `_EMBEDDING_WRITE_ALLOW`) enforces this with positive-pass + f-string-bypass + keyword-arg-bypass coverage per the writer-monopoly canonical pattern (Rule G).
+- **Portability test (Story 3-4):** `test_write_embedding_cross_architecture_portability` asserts `numpy.asarray([1.0, 2.0, 3.0], dtype="<f4").tobytes()` round-trips byte-for-byte through the writer → SQLite TEXT → reader path. If this test fails, the W-5 contract is broken; STOP and reconcile before any production deploy.
+- **Rationale:** SQLite stores blobs without interpretation; "byte-exact" cross-architecture parity is the only contract that doesn't require parsing on every read. The dtype + shape companion columns make the contract self-describing — a future story changing the embedding model + dimensionality only touches the columns (not migration or reader code).
+
+#### Migration numbering policy
+
+- **Files:** `mailbot_api/db/migrations/NNN_short_kebab_description.sql`, 3-digit zero-padded prefix, monotonically increasing across all epics. The `_migrations` table records `applied_at` per prefix.
+- **Renumber discipline:** if an epic spec assigns numbers `006–010` but a prior epic's late story (e.g., 1-10 retro patch) lands a migration in the same range first, the next epic's migrations **shift up by the cumulative offset**. The shift is recorded inline in each affected story's "Disposition" section + the epic spec's preamble. No story has been retroactively renumbered; the migration order in `mailbot_api/db/migrations/` is the canonical source.
+- **Gap tolerance:** the `_migrations` table accepts gaps cleanly. A skipped or deleted prefix (e.g., a migration written but rolled back before commit) does NOT corrupt the runner — `apply_pending_migrations()` reads filesystem and applies any prefix not in `_migrations` regardless of gaps.
+- **CHECK-constraint enum sync:** any migration that adds a `CHECK(col IN ('a', 'b', ...))` constraint MUST have a unit test (e.g., `tests/integration/test_action_schema.py`) that asserts the constraint's value set matches the Python enum's value set. A drift between Python enum and SQL CHECK is a silent data-corruption surface (insert succeeds in Python tests, fails in production).
+- **Cumulative numbering observed in MailBot through Epic 4:** Epic 1 = 001–005 (final 005 actually shipped as 005_immutable_id_and_change_marker_rename + 1-10's 004_worker_health, ordering inverted at ship time but both run idempotently). Epic 2 = 006–010. Epic 3 = 011–014. Epic 4 = 015–017. Total chain: 17 migrations.
+
 ### New stable error codes introduced
 
 Added to the Router's stable code set (FR-3.4 extension):
@@ -735,6 +753,45 @@ class RouterError(BaseModel):
 - **All notifications default to silent** unless they match an explicit tier rule in `mailbot_api/notifications/tiers.py` (FR-7.4).
 - **All sensitivity defaults to `sensitive`** when classifier confidence is below threshold (NFR-PRIV-1 cautious-bias).
 
+**Writer-monopoly canonical pattern (Rule G):**
+
+A "writer-monopoly" boundary exists when exactly ONE module in the codebase is allowed to write to a specific resource — a SQL column, a YAML file, an action's `pending_actions.tier` field, a `router_calls` audit row — and every other module is structurally forbidden from doing so. Established in MailBot by Story 2-1 (`router_calls` writer = `observability/audit.py`), Story 3-1 (idempotency-key formula = `ingest/idempotency.py`), Story 3-4 (`emails.embedding` writer = `ingest/embedding.py`), Story 4-1 (Tier-1/2/3 action_type bare-string-literal lint).
+
+Every writer-monopoly ships with the same 5-part recipe:
+
+1. **The writer module** — a single Python module that owns the resource. Exports the write function (e.g., `write_embedding`, `record_router_call`, `compute_idempotency_key`). No other public surface.
+2. **The boundary check** — an entry in `scripts/check_boundaries.py` (typically a path allowlist set like `_EMBEDDING_WRITE_ALLOW`) + an AST walker that flags any occurrence of the resource's signature pattern (e.g., a `cursor.execute` whose first positional arg matches `r"^\s*UPDATE\s+emails\s+SET\s+embedding"`) outside the allowlisted paths. Both positional and keyword arguments must be scanned (post-CR-5 on Story 3-1).
+3. **A violation fixture** — a deliberately-violating fixture under `tests/fixtures/lint_violations/violates_<resource>.py.fixture` that the boundary check is asserted to FAIL on. Without this, "the check works" is unprovable.
+4. **A positive-pass test** — a fixture (or the writer module itself) where the resource IS written correctly + the boundary check is asserted to PASS. Without this, a broken check that flags EVERYTHING (false positive on the writer itself) ships green.
+5. **A specificity test** — a benign call that LOOKS like the resource pattern but is semantically different (e.g., `hashlib.sha256(...)` outside the idempotency-key formula context; an f-string that constructs an UPDATE-looking string but never executes it). The boundary check MUST allow these. Without this, the check is too coarse and developers will start adding the resource module to the allowlist for unrelated reasons.
+
+Additional invariants (learned the hard way through Epic 2/3/4):
+
+- **F-string bypass coverage** — the AST walker must descend into `ast.JoinedStr` nodes; a writer pattern wrapped in an f-string is otherwise invisible to the lint.
+- **Docstring tolerance** — module/class/function docstrings frequently contain the resource pattern as an example; the walker must pre-filter docstring nodes (collected via `_collect_docstring_node_ids`) or the boundary check false-positives on its own documentation.
+- **Sync-check test** — when the writer monopoly's value set is derived from an enum (e.g., the Tier-1/2/3 action_type lint draws values from `ActionType`), an explicit test asserts the lint's hardcoded set equals the enum's subset. Drift between them silently breaks enforcement.
+
+**Defense-in-depth pattern for invariants (Rule H):**
+
+When the system MUST enforce an invariant — privacy ("sensitive bodies never reach Anthropic without a confirmation handshake", FR-2.5 + AR-D12-1), authorization ("the agent cannot promote an action's tier", FR-5.6), data shape ("the embedding column always carries little-endian float32") — the enforcement is layered across THREE independent layers, each independently sufficient.
+
+The three layers, in order from outermost (closest to the developer/agent) to innermost (closest to the data):
+
+1. **Lint / boundary layer.** A `scripts/check_boundaries.py` rule, a ruff rule, an mypy `--strict` setting, or a writer-monopoly (Rule G) entry that refuses the violation at static-analysis time. Catches the violation BEFORE the code runs. Example: bare-string `"delete"` outside `mailbot_api/actions/types.py` is a lint failure (Story 4-1).
+2. **Verb / boundary-input layer.** A runtime guard inside the verb function (or other boundary-input handler) that validates the input and refuses with `<Verb>Out(ok=False, error=...)`. Catches the violation when the call IS made but BEFORE it touches state. Example: `propose_action` rejects any payload containing a `tier` field with `TIER_PROMOTION_ATTEMPT` BEFORE the tier is computed (Story 4-2).
+3. **Data / SQL layer.** A SQL `CHECK` constraint, a Pydantic `frozen=True` model, a Python `MappingProxyType`-wrapped dict, a database trigger. Catches the violation if it somehow reaches the data layer. Example: `pending_actions.tier CHECK (tier IN (1,2,3))` — Tier-0 cannot enter the queue even if Layers 1 and 2 are bypassed (Story 4-2 migration 015).
+
+Why all three: any single layer can be bypassed (linter not run; verb routed around via a direct SQL write; SQL constraint dropped in a migration). Three independent layers means three independent things have to fail before the invariant breaks. Each layer is also independently testable, so a regression in one is caught in isolation rather than by the combined effect.
+
+Currently-defended invariants and their three layers:
+
+- **FR-2.5 (Qwen-only sensitivity classification):** Lint = none (policy is data, not code); Verb = `_assert_qwen_only_per_call()` in `mailbot_api/sensitivity/classifier.py` reads the dispatch-time policy snapshot and refuses if the model isn't Qwen; Data = `mailbot_api/main.py` lifespan calls `assert_qwen_only(policy)` at startup to fail-fast on a drifted `policy.yaml`. (Two of three layers; the lint layer is N/A because the binding is data, not code.)
+- **FR-2.3 (sensitivity precondition hard invariant):** Lint = none; Verb = `mailbot_api/router/router.py` precondition layer at `ask_router` entry refuses any non-sensitivity-task call on `email_id` where `sensitivity_at IS NULL`; Data = `emails.sensitivity_at` column is the canonical source — no parallel store can disagree.
+- **FR-5.6 (agent cannot promote action tier):** Lint = `scripts/check_boundaries.py` rejects bare-string Tier-1/2/3 action_type literals outside `mailbot_api/actions/types.py`; Verb = `propose_action` rejects any payload containing a `tier` field with `TIER_PROMOTION_ATTEMPT`; Data = `pending_actions.tier CHECK (tier IN (1,2,3))` migration 015.
+- **AR-D12-1 (sensitivity-token handshake):** Lint = none (registry is in-memory, not code); Verb = `mint_sensitivity_token` refuses confidential + refuses normal; `ask_router(confirmation_token=...)` re-validates against the registry with email-id + task-type binding + single-use + 10-min TTL; Data = `router_calls.sensitivity_grant_id` audit row records every consume.
+
+When adding a new invariant: identify the layer that fits each enforcement axis (some invariants have N/A layers — privacy invariants typically lack a lint layer because the binding is runtime state, not code), add a guard at each non-N/A layer, ship a regression test per layer. **Three layers, each independently sufficient, no single point of failure.**
+
 ### Enforcement
 
 **All AI agents (and human contributors) MUST:**
@@ -749,6 +806,8 @@ class RouterError(BaseModel):
 8. Use the central action types enum (`ActionType`). String action_type values fail review.
 9. Match prompt module structure exactly (`VERSION`, `SYSTEM`, `USER_TEMPLATE`, `OUTPUT_SCHEMA`).
 10. Run `ruff check` + `ruff format` + `mypy --strict` clean before committing.
+11. Ship every new writer-monopoly with the full 5-part recipe (writer module + boundary check + violation fixture + positive-pass test + specificity test + f-string-bypass coverage + docstring tolerance + sync-check test if enum-derived). See Rule G.
+12. When introducing or modifying enforcement of an invariant (privacy / authorization / data shape), enumerate the three Rule H layers (lint / verb / data) — add guards at each non-N/A layer + a regression test per layer.
 
 **Enforcement mechanism:**
 

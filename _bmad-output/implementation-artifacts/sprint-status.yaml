@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-05-31
-last_updated: 2026-06-02  # Epic 4 retro action #1 (CR cadence v2 codified as posture-audit §5.12) + Story 4-1 CR-2 RESOLVED (DELETE requires_sensitivity_token=True, Adam decision 13.2). 654 tests stable; all 4 gates green. Epic 4 retro action items #1 + #2 + #3 all DONE.
+last_updated: 2026-06-02  # Epic 4 retro action items #7 (architecture.md doc-debt — 4 paragraphs landed: AR-SCHEMA-2 embedding contract + migration-numbering policy + Rule G writer-monopoly canonical recipe + Rule H defense-in-depth) + #8 (docs/DATABASE.md — 17 migrations, 10 tables, cross-linked) + #10 (Hermes-aux cache double-wrap guard test) all DONE. 655 tests (+1 net); all 4 gates green. Epic 4 retro action items #1 + #2 + #3 + #7 + #8 + #10 + Story 4-1 CR-2 all CLOSED before Epic 5. Remaining retro items: #5 (epic-3-run-flags content migration partial), #6 (Phase 3.5 structural backstop — partially structural via Story X-0 pattern), #9 + #11 + #12 (deferred decisions for future stories).
 project: MailBot
 project_key: NOKEY
 tracking_system: file-system

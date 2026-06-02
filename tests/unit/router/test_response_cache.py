@@ -1,4 +1,15 @@
-"""Unit tests for mailbot_api/router/response_cache.py (Story 2-7)."""
+"""Unit tests for mailbot_api/router/response_cache.py (Story 2-7).
+
+CR-3-2-CR-8 guard test (added 2026-06-02, Epic 3 retro action #10): the
+`hermes_aux` task MUST NOT have `response_cache_ttl_seconds > 0` in the
+production `router/policy.yaml`. Story 3-2's CR-8 found that enabling TTL
+on `hermes_aux` triggers a latent double-wrap of the cache result (the
+Hermes layer caches its own outputs separately, and the Router layer
+would cache them again — the two TTLs interact unpredictably + downstream
+consumers parse the doubly-wrapped JSON wrong). The bug is non-triggerable
+today because `hermes_aux` has no TTL set; this guard ensures future
+edits to `policy.yaml` cannot silently re-enable it.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from mailbot_api.db.migrations_runner import apply_pending_migrations
+from mailbot_api.router.policy import load_policy
 from mailbot_api.router.response_cache import (
     compute_cache_key,
     insert,
@@ -102,3 +114,49 @@ async def test_lookup_expired_returns_none(tmp_path: Path) -> None:
 
     await asyncio.sleep(1.1)
     assert await lookup(db_path, "key-3") is None
+
+
+# ---------------------------------------------------------------------------
+# CR-3-2-CR-8 guard — hermes_aux must NOT enable response_cache_ttl_seconds
+# ---------------------------------------------------------------------------
+
+
+def _production_policy_path() -> Path:
+    """Resolve the production router/policy.yaml relative to this test file.
+
+    Layout: <repo>/router/policy.yaml; this file is at
+    <repo>/tests/unit/router/test_response_cache.py → up three levels.
+    """
+    return Path(__file__).resolve().parents[3] / "router" / "policy.yaml"
+
+
+def test_hermes_aux_has_no_response_cache_ttl_in_production_policy() -> None:
+    """CR-3-2-CR-8 / Epic 3 retro action #10 — guard the latent double-wrap.
+
+    If a future `policy.yaml` edit sets `hermes_aux.response_cache_ttl_seconds`
+    to a non-zero value, the Router will start caching Hermes-aux pass-through
+    responses on top of Hermes's own caching layer. The two TTLs interact
+    unpredictably and downstream consumers parse the doubly-wrapped JSON wrong.
+
+    The fix when this test fails is NOT "raise the threshold" — it's "remove
+    the response_cache_ttl_seconds line from hermes_aux in policy.yaml" OR fix
+    the double-wrap inside `mailbot_api/router/response_cache.py` so caching
+    `hermes_aux` becomes safe (the fix is open; see Epic 3 retro action #10).
+    """
+    policy_path = _production_policy_path()
+    assert policy_path.exists(), (
+        f"Production policy.yaml not found at {policy_path} — "
+        "test resolves the path relative to this file's location; check the layout."
+    )
+    policy = load_policy(policy_path)
+    assert "hermes_aux" in policy.tasks, (
+        "hermes_aux task entry is missing from policy.yaml — Story 2-10 added "
+        "it specifically so policy.tasks['hermes_aux'] resolves. Restore it "
+        "before relying on this guard."
+    )
+    entry = policy.tasks["hermes_aux"]
+    assert entry.response_cache_ttl_seconds == 0, (
+        f"hermes_aux has response_cache_ttl_seconds={entry.response_cache_ttl_seconds}; "
+        "must be 0 to avoid the latent double-wrap bug (Story 3-2 CR-8). "
+        "See Epic 3 retro action #10 + the module docstring for the fix scope."
+    )
