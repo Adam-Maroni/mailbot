@@ -11,9 +11,9 @@ Verb-side handlers live in ``mailbot_api/verbs/router_control.py``.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 
 from mailbot_api.db import connection, queries
+from mailbot_api.observability.timestamps import utc_z_now
 
 _log = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ class PauseState:
         return self._reason
 
     async def pause(self, db_path: str, *, reason: str) -> None:
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_iso = utc_z_now()
         await connection.execute_write(
             db_path, queries.PAUSE_STATE_PAUSE, (reason, now_iso)
         )
@@ -49,7 +49,7 @@ class PauseState:
         )
 
     async def resume(self, db_path: str) -> None:
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_iso = utc_z_now()
         await connection.execute_write(
             db_path, queries.PAUSE_STATE_RESUME, (now_iso,)
         )

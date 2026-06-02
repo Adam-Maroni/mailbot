@@ -26,7 +26,6 @@ import asyncio
 import json
 import logging
 import sys
-from datetime import datetime, timezone
 from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict
@@ -47,6 +46,7 @@ from mailbot_api.db.queries import (
 )
 from mailbot_api.ingest.embedding import EmbedEmailResult, embed_email, read_embedding
 from mailbot_api.ingest.idempotency import compute_idempotency_key
+from mailbot_api.observability.timestamps import utc_z_now
 from mailbot_api.router import ask_router
 from mailbot_api.router.errors import ErrorCode, RouterError, RouterResult
 from mailbot_api.router.policy import snapshot_for_dispatch
@@ -85,7 +85,7 @@ _TASK_UPDATE_QUERIES: Final[dict[str, str]] = {
 
 
 def _utc_iso8601_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return utc_z_now()
 
 
 class ProcessEmailResult(BaseModel):

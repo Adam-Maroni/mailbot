@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from datetime import datetime, timezone
 from typing import Any
 
 # Sanitizer patterns per AC-4 live in observability/_redaction.py (extracted
@@ -24,6 +23,7 @@ from mailbot_api.observability._redaction import (
     SK_KEY_RE,
     URL_TOKEN_QUERY_RE,
 )
+from mailbot_api.observability.timestamps import utc_z_now
 
 
 def sanitize(value: Any) -> Any:
@@ -47,8 +47,12 @@ def sanitize(value: Any) -> Any:
 
 
 def _utc_iso8601() -> str:
-    """Return the current UTC time as ISO-8601 with Z suffix (AR-PAT-3)."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """Return the current UTC time as ISO-8601 with Z suffix (AR-PAT-3).
+
+    Microsecond-precision since 2026-06-02 (Epic 4 retro action item #3) —
+    delegates to the shared :func:`mailbot_api.observability.timestamps.utc_z_now`.
+    """
+    return utc_z_now()
 
 
 class JsonFormatter(logging.Formatter):

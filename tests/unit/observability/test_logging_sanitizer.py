@@ -143,7 +143,9 @@ def test_ts_is_utc_iso8601_with_z_suffix() -> None:
     record = _make_record("anything")
     payload = _capture_one(record)
     assert payload["ts"].endswith("Z")
-    assert len(payload["ts"]) == 20  # YYYY-MM-DDTHH:MM:SSZ
+    # Microsecond-precision since 2026-06-02 (Epic 4 retro action item #3):
+    # `YYYY-MM-DDTHH:MM:SS.ffffffZ` = 27 chars.
+    assert len(payload["ts"]) == 27
 
 
 def test_level_lowercase() -> None:

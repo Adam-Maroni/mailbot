@@ -22,7 +22,6 @@ SENSITIVITY_BLOCKS_API because embeddings are local-only per FR-2.5.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from typing import Final
 
 import numpy as np
@@ -34,6 +33,7 @@ from mailbot_api.db.queries import (
     EMAIL_EMBEDDING_SELECT,
     EMAIL_EMBEDDING_UPDATE,
 )
+from mailbot_api.observability.timestamps import utc_z_now
 from mailbot_api.router.errors import ErrorCode, RouterError
 from mailbot_api.router.router import dispatch_embedding
 
@@ -54,7 +54,7 @@ _EMBEDDING_PROMPT_V_SENTINEL: Final[str] = "v1"
 
 
 def _utc_iso8601_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return utc_z_now()
 
 
 class EmbedEmailResult(BaseModel):

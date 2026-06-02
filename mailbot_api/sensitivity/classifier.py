@@ -22,7 +22,6 @@ Reference: epics.md lines 1157–1191 (Story 3.3 spec).
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Final
 
 from pydantic import BaseModel, ConfigDict
@@ -32,6 +31,7 @@ from mailbot_api.db.queries import (
     EMAIL_BODY_FOR_SENSITIVITY_SELECT,
     EMAIL_SENSITIVITY_UPDATE,
 )
+from mailbot_api.observability.timestamps import utc_z_now
 from mailbot_api.prompts.sensitivity_class.v1 import VERSION as SENSITIVITY_PROMPT_V
 from mailbot_api.prompts.sensitivity_class.v1 import SensitivityClassOutput
 from mailbot_api.router.errors import ErrorCode, RouterError
@@ -78,8 +78,11 @@ class SensitivityResult(BaseModel):
 
 
 def _utc_iso8601_now() -> str:
-    """Per AR-PAT-3: UTC ISO-8601 with Z suffix."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """Per AR-PAT-3: UTC ISO-8601 with Z suffix.
+
+    Microsecond-precision since 2026-06-02 (Epic 4 retro action item #3).
+    """
+    return utc_z_now()
 
 
 def _assert_qwen_only_per_call() -> RouterError | None:

@@ -12,16 +12,16 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 
 from mailbot_api.config import get_secret_optional
+from mailbot_api.observability.timestamps import utc_z_now
 
 logger = logging.getLogger(__name__)
 
 
 def _utc_iso8601() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return utc_z_now()
 
 
 def _logs_dir() -> Path:

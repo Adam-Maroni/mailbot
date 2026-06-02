@@ -22,7 +22,6 @@ Both functions:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Final
 
 from pydantic import BaseModel, ConfigDict
@@ -36,6 +35,7 @@ from mailbot_api.db.queries import (
     THREAD_CONTINUITY_SELECT,
     THREAD_CONTINUITY_UPDATE,
 )
+from mailbot_api.observability.timestamps import utc_z_now
 from mailbot_api.prompts.sender_reputation_summary.v1 import (
     VERSION as SENDER_PROMPT_V,
 )
@@ -57,7 +57,7 @@ _BODY_PREVIEW_TRUNCATE: Final[int] = 200
 
 
 def _utc_iso8601_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return utc_z_now()
 
 
 class EnrichSenderResult(BaseModel):

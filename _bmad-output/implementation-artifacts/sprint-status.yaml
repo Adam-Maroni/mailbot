@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-05-31
-last_updated: 2026-06-02  # Story 4-2 code review complete: 2 decision-needed + 3 patch + 1 deferred. Story remains in-progress pending resolution of findings.
+last_updated: 2026-06-02  # Epic 4 retrospective complete (yolo mode); see epic-4-retro-2026-06-02.md. 13 action items, prep tasks across 3 critical milestones (pre-5-1, pre-5-2, pre-5-3/5-9). Key: Phase 3.5 cadence finally executed; CR cadence v2 still needs structural-vs-operational decision; sub-second ts overdue FIVE epics.
 project: MailBot
 project_key: NOKEY
 tracking_system: file-system
@@ -93,7 +93,7 @@ development_status:
   4-6-cooling-off-and-cancel-action-id-and-hard-20-send-day-cap-enforcement: done  # 2026-06-02 — cooling_off_tick (env-configurable 60s window) + cancel_action verb (atomic + race-safe) + DAILY_SEND_CAP=20 enforcement in drainer (failed sends count too per AR-D5-2 + midnight-UTC rollover). 572→586 tests; all gates green. Gate-coverage-only.
   4-7-sensitive-content-api-override-handshake-mint-sensitivity-token-and-confirmation-token-parameter-and-in-memory-registry: done  # 2026-06-02 — in-memory sensitivity_tokens registry (10-min TTL, single-use, dies on restart per AR-D12-1) + mint_sensitivity_token verb (refuses confidential, refuses normal, succeeds sensitive) + ask_router(confirmation_token=...) parameter + Router precondition layer consumes token + grant_id populated on router_calls. 12 unit + 6 integration tests covering single-use / TTL / mismatched-task / confidential-blocks / wrong-email / log-redaction-of-token-value. 586→606 tests; all gates green. Gate-coverage-only.
   4-8-tier-1-24-hour-reverter-via-action-history: done  # 2026-06-02 — revert_action verb + `mailbot revert <id>` CLI + Tier-1 inverse-action map (MARK_READ↔MARK_UNREAD, ADD↔REMOVE_LOCAL_CATEGORY); 24h window + already-reverted guard + MOVE_TO_TRIAGE_FOLDER returns INVERSE_UNAVAILABLE (deferred — needs pre_state). 9 tests. 606→615 tests; all gates green. EPIC 4 COMPLETE.
-  epic-4-retrospective: optional
+  epic-4-retrospective: done  # 2026-06-02 — retrospective completed (yolo mode); see epic-4-retro-2026-06-02.md. 13 action items, prep tasks across 3 critical milestones (pre-5-1, pre-5-2, pre-5-3/5-9). Key takeaways: Phase 3.5 cadence FINALLY shipped (CP-1..CP-11 PASS via agent walk + Story 4-0 Adam-side credential capture); CR cadence v2 from Epic 3 retro action #1 NOT codified — Stories 4-4 (drainer) + 4-7 (sensitivity handshake) ran gate-coverage-only as predicted failure mode; retroactive CR debt now 4 stories (3-3, 3-5, 4-4, 4-7); sub-second ts overdue across FIVE epics now (escalated to non-defensible). Adam's attention requested on: action item #1 (CR cadence v2 decision A-vs-B) + Story 4-1 CR-2 (DELETE requires_sensitivity_token=False) + Story 5-9 worker-integration approach.
 
   # Epic 5: Conversational Control
   epic-5: backlog

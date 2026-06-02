@@ -10,13 +10,14 @@ Row ordering note (Story 2-4 review fix MEDIUM): when Story 2-4's
 ``ask_router`` escalates on schema-validation failure, the recursive
 escalated call's ``finally`` block fires BEFORE the outer call's
 ``finally``. Result: rows are inserted in REVERSE dispatch order (escalated
-tier first, original tier second). ``ts`` is second-precision so the two
-rows often share the same timestamp. Queries reconstructing dispatch
-sequence from this table should NOT order by ``id`` or ``ts`` alone for
-escalation analysis — instead correlate via ``email_id`` + ``task_type`` +
-``model_chosen_reason`` (the ``escalated_from_<X>`` tag identifies which
-row was the escalated leg). A future story may add a ``parent_call_id``
-column if richer dispatch-chain reconstruction becomes load-bearing.
+tier first, original tier second). Since the 2026-06-02 sub-second-``ts``
+fix (Epic 4 retro action item #3), ``ts`` is microsecond-precision so
+back-to-back rows from the same call chain are strictly orderable by
+``ts``. Queries reconstructing dispatch sequence for escalation analysis
+can now ``ORDER BY ts`` reliably; legacy rows written before the fix may
+still share a second and should additionally correlate via ``email_id`` +
+``task_type`` + ``model_chosen_reason`` (the ``escalated_from_<X>`` tag
+identifies which row was the escalated leg).
 
 Story 2-1 ships the writer in isolation — Story 2-4 will wire it into
 ``ask_router()`` 's ``finally`` block so a row is recorded even when the
@@ -33,18 +34,14 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from mailbot_api.db import connection, queries
+from mailbot_api.observability.timestamps import is_valid_ts, utc_z_now
 
 _log = logging.getLogger(__name__)
-
-# UTC ISO-8601 with Z suffix, second precision (matches the format produced by
-# `_utc_z_now` below and by Story 1-4's logging timestamp format).
-_TS_FORMAT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 # Closed-set ``model_chosen_reason`` values that downstream Epic-2 stories produce.
 # Adding a value here ALSO requires updating any consumer that filter-greps on
@@ -65,11 +62,6 @@ _REASON_LITERALS = frozenset(
 _ESCALATED_FROM_RE = re.compile(r"^escalated_from_[\w.:\-]+$")
 
 
-def _utc_z_now() -> str:
-    """UTC ISO-8601 with Z suffix (AR-PAT-3 — matches ``observability.logging`` format)."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 class RouterCallRow(BaseModel):
     """One row of the ``router_calls`` audit log.
 
@@ -77,7 +69,7 @@ class RouterCallRow(BaseModel):
     ``_param_tuple`` below.
     """
 
-    ts: str = Field(default_factory=_utc_z_now)
+    ts: str = Field(default_factory=utc_z_now)
     task_type: str
     prompt_version: str
     model_chosen: str
@@ -110,14 +102,16 @@ class RouterCallRow(BaseModel):
     def _check_ts_format(cls, value: str) -> str:
         """Reject malformed timestamps before they corrupt `ix_router_calls_ts`.
 
-        Per AR-PAT-3: UTC ISO-8601 with `Z` suffix, second precision
-        (`YYYY-MM-DDTHH:MM:SSZ`). The default factory always produces this
-        shape; explicit callers passing `ts="not-a-timestamp"` would silently
-        break ts-ordered queries without this validator (Story 2-1 review fix R10).
+        Per AR-PAT-3: UTC ISO-8601 with `Z` suffix. Lenient — accepts both
+        microsecond-precision (default factory; post-2026-06-02 writes) and
+        legacy second-precision (rows written before the sub-second-`ts` fix).
+        Explicit callers passing `ts="not-a-timestamp"` would silently break
+        ts-ordered queries without this validator (Story 2-1 review fix R10).
         """
-        if not _TS_FORMAT_RE.match(value):
+        if not is_valid_ts(value):
             raise ValueError(
-                f"ts must match 'YYYY-MM-DDTHH:MM:SSZ' format; got: {value!r}"
+                "ts must match 'YYYY-MM-DDTHH:MM:SS[.ffffff]Z' format; "
+                f"got: {value!r}"
             )
         return value
 

@@ -25,6 +25,7 @@ import logging
 from datetime import datetime, timezone
 
 from mailbot_api.db import connection, queries
+from mailbot_api.observability.timestamps import utc_z_now
 
 _log = logging.getLogger(__name__)
 
@@ -128,7 +129,7 @@ class BudgetGuard:
                 await self._enter_degraded_mode(db_path)
 
     async def _enter_degraded_mode(self, db_path: str) -> None:
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_iso = utc_z_now()
         await connection.execute_write(db_path, queries.DEGRADED_MODE_ENTER, (now_iso,))
         self._degraded_mode_active = True
         _log.error(
@@ -144,7 +145,7 @@ class BudgetGuard:
         async with self._lock:
             if not self._degraded_mode_active:
                 return
-            now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            now_iso = utc_z_now()
             await connection.execute_write(db_path, queries.DEGRADED_MODE_EXIT, (now_iso,))
             self._degraded_mode_active = False
             _log.info(

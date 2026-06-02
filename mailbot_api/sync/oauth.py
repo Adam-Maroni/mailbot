@@ -29,6 +29,7 @@ from mailbot_api.db.queries import (
     OAUTH_STATE_SELECT,
     OAUTH_STATE_UPDATE_AFTER_EXCHANGE,
 )
+from mailbot_api.observability.timestamps import utc_z_now
 from mailbot_api.sync.graph_client import (
     _DEFAULT_SCOPE,
     _REFRESH_LEEWAY_SECONDS,
@@ -42,8 +43,11 @@ _PROVIDER = "microsoft_graph"
 
 
 def _utc_iso8601() -> str:
-    """Return the current UTC time as ISO-8601 with Z suffix (AR-PAT-3)."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """Return the current UTC time as ISO-8601 with Z suffix (AR-PAT-3).
+
+    Microsecond-precision since 2026-06-02 (Epic 4 retro action item #3).
+    """
+    return utc_z_now()
 
 
 @dataclass
@@ -62,9 +66,9 @@ class OAuthState:
         if not self.access_token or not self.access_expires_at:
             return False
         try:
-            expiry = datetime.strptime(self.access_expires_at, "%Y-%m-%dT%H:%M:%SZ").replace(
-                tzinfo=timezone.utc
-            )
+            # Lenient: accepts both microsecond-precision (post-2026-06-02)
+            # and legacy second-precision timestamps via fromisoformat.
+            expiry = datetime.fromisoformat(self.access_expires_at.replace("Z", "+00:00"))
         except ValueError:
             return False
         # Refresh proactively when we're within _REFRESH_LEEWAY_SECONDS of expiry.
@@ -190,7 +194,7 @@ async def exchange_and_persist(
         raise GraphAuthError("missing_access_token", "Token endpoint returned no access_token")
 
     expiry_iso = datetime.fromtimestamp(time.time() + int(expires_in), tz=timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
+        "%Y-%m-%dT%H:%M:%S.%fZ"
     )
     now_iso = _utc_iso8601()
 

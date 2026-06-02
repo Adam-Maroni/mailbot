@@ -17,6 +17,7 @@ import json
 from datetime import datetime, timezone
 
 from mailbot_api.db import connection, queries
+from mailbot_api.observability.timestamps import utc_z_now
 
 
 def compute_cache_key(model: str, temperature: float, system: str, user: str) -> str:
@@ -26,8 +27,9 @@ def compute_cache_key(model: str, temperature: float, system: str, user: str) ->
 
 
 def _parse_z_iso8601(value: str) -> datetime:
-    # value format: "YYYY-MM-DDTHH:MM:SSZ"
-    return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    # Lenient: accepts both microsecond-precision (post-2026-06-02) and
+    # legacy second-precision timestamps via fromisoformat.
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 async def lookup(db_path: str, cache_key: str) -> dict[str, object] | None:
@@ -76,7 +78,7 @@ async def insert(
     """Upsert a row into ``response_cache``. ``hit_count`` is reset to 0 on
     overwrite — a re-caching represents a fresh start for hit accounting.
     """
-    cached_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cached_at = utc_z_now()
     await connection.execute_write(
         db_path,
         queries.RESPONSE_CACHE_INSERT,

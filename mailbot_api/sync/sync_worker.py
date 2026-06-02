@@ -23,7 +23,6 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -39,6 +38,7 @@ from mailbot_api.db.queries import (
     SYNC_STATE_UPSERT_NULL_LINK,
     THREAD_UPSERT,
 )
+from mailbot_api.observability.timestamps import utc_z_now
 from mailbot_api.sync.graph_client import PREFER_IMMUTABLE_ID
 from mailbot_api.sync.oauth import get_access_token
 
@@ -70,8 +70,11 @@ _resync_notification_fired = False
 
 
 def _utc_iso8601() -> str:
-    """Return the current UTC time as ISO-8601 with Z suffix (AR-PAT-3)."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """Return the current UTC time as ISO-8601 with Z suffix (AR-PAT-3).
+
+    Microsecond-precision since 2026-06-02 (Epic 4 retro action item #3).
+    """
+    return utc_z_now()
 
 
 def _safe_json(response: httpx.Response) -> Any:

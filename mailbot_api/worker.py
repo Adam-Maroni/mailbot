@@ -25,6 +25,7 @@ from mailbot_api.db.migrations_runner import apply_pending_migrations
 from mailbot_api.db.queries import WORKER_HEALTH_SELECT, WORKER_HEALTH_UPSERT
 from mailbot_api.notifications import send_urgent
 from mailbot_api.observability.logging import configure_logging
+from mailbot_api.observability.timestamps import utc_z_now
 from mailbot_api.sync.sync_worker import SyncResult, run_once
 
 logger = logging.getLogger(__name__)
@@ -37,11 +38,14 @@ STALE_THRESHOLD_MINUTES = 60
 
 
 def _utc_iso8601() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return utc_z_now()
 
 
 def _parse_utc_iso8601(value: str) -> datetime:
-    return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    # Lenient: accepts both microsecond-precision (post-2026-06-02) and
+    # legacy second-precision timestamps. `fromisoformat` handles both
+    # natively once the `Z` suffix is normalized to a UTC offset.
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 @dataclass

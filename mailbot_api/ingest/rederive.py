@@ -25,7 +25,7 @@ derivations_idempotency rows for each email_id BEFORE the re-derivation runs.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Final
 
 from pydantic import BaseModel, ConfigDict
@@ -50,6 +50,7 @@ from mailbot_api.ingest.pipeline import (
     apply_derived_field_write,
     record_idempotency,
 )
+from mailbot_api.observability.timestamps import utc_z_now
 from mailbot_api.router import ask_router
 from mailbot_api.router.policy import snapshot_for_dispatch
 from mailbot_api.router.pricing import estimate_cost_usd
@@ -107,7 +108,7 @@ class RederiveResult(BaseModel):
 
 
 def _utc_iso8601_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return utc_z_now()
 
 
 async def plan_rederive(

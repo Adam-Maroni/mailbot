@@ -19,8 +19,9 @@ import logging
 import re
 import sqlite3
 from collections import Counter
-from datetime import datetime, timezone
 from pathlib import Path
+
+from mailbot_api.observability.timestamps import utc_z_now
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +33,11 @@ class MigrationError(RuntimeError):
 
 
 def _utc_iso8601() -> str:
-    """Return the current UTC time as ISO-8601 with Z suffix (AR-PAT-3)."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """Return the current UTC time as ISO-8601 with Z suffix (AR-PAT-3).
+
+    Microsecond-precision since 2026-06-02 (Epic 4 retro action item #3).
+    """
+    return utc_z_now()
 
 
 def _open_connection(db_path: str) -> sqlite3.Connection:

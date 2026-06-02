@@ -31,7 +31,12 @@ _BASELINE_WARMUP_SAMPLES = 24  # one day of hourly observations
 
 
 def _format_z(now: datetime) -> str:
-    return now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    """UTC ISO-8601 with `Z` suffix, microsecond precision.
+
+    Microsecond-precision since 2026-06-02 (Epic 4 retro action item #3) —
+    matches the shape produced by :func:`mailbot_api.observability.timestamps.utc_z_now`.
+    """
+    return now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _online_update(

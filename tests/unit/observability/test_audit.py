@@ -115,8 +115,9 @@ async def test_record_router_call_default_ts_is_utc_z(tmp_path: Path) -> None:
     )
 
     assert row.ts.endswith("Z")
-    # ISO-8601 second-precision: 2026-06-01T12:34:56Z is 20 characters.
-    assert len(row.ts) == 20
+    # ISO-8601 microsecond-precision (post-2026-06-02): 27 chars
+    # `2026-06-01T12:34:56.123456Z`. Epic 4 retro action item #3.
+    assert len(row.ts) == 27
 
     await record_router_call(row, db_path=db_path)
     fetched = await fetchone(
@@ -217,13 +218,18 @@ def test_router_call_row_rejects_bogus_outcome(bad_outcome: str) -> None:
         "2026-06-01 12:34:56",            # space, no T
         "2026-06-01T12:34:56",            # missing Z
         "2026-06-01T12:34:56+00:00",      # +00:00 instead of Z
-        "2026-06-01T12:34:56.123Z",       # fractional seconds
+        "2026-06-01T12:34:56.1234567Z",   # > 6 microsecond digits
         "20260601T123456Z",               # no dashes
         "",
     ],
 )
 def test_router_call_row_rejects_malformed_ts(bad_ts: str) -> None:
-    """Malformed ts must fail Pydantic validation — `ix_router_calls_ts` depends on it."""
+    """Malformed ts must fail Pydantic validation — `ix_router_calls_ts` depends on it.
+
+    Post-2026-06-02 (Epic 4 retro action item #3): fractional seconds (1-6
+    digit microseconds) are now ACCEPTED — the default factory emits them.
+    The strictness moved to bounding microseconds at 6 digits.
+    """
     with pytest.raises(ValidationError):
         RouterCallRow(
             ts=bad_ts,
@@ -235,8 +241,37 @@ def test_router_call_row_rejects_malformed_ts(bad_ts: str) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "good_ts",
+    [
+        "2026-06-01T12:34:56Z",          # legacy second-precision (pre-2026-06-02 rows)
+        "2026-06-01T12:34:56.1Z",        # 1-digit microsecond
+        "2026-06-01T12:34:56.123Z",      # 3-digit microsecond
+        "2026-06-01T12:34:56.123456Z",   # 6-digit microsecond (default factory)
+    ],
+)
+def test_router_call_row_accepts_lenient_ts_shapes(good_ts: str) -> None:
+    """The ts validator accepts both microsecond-precision (post-2026-06-02
+    writes) and legacy second-precision (rows from before the fix)."""
+    row = RouterCallRow(
+        ts=good_ts,
+        task_type="coarse_class",
+        prompt_version="v1",
+        model_chosen="qwen2.5:3b-instruct-q4_K_M",
+        model_chosen_reason="policy",
+        outcome="ok",
+    )
+    assert row.ts == good_ts
+
+
 def test_router_call_row_accepts_default_factory_ts(tmp_path: Path) -> None:
-    """The default factory produces a valid ts that passes the format validator."""
+    """The default factory produces a microsecond-precision ts that passes
+    the format validator.
+
+    Post-2026-06-02 (Epic 4 retro action item #3): default factory now emits
+    `YYYY-MM-DDTHH:MM:SS.ffffffZ` (27 chars) so back-to-back same-second
+    audit writes are strictly orderable.
+    """
     row = RouterCallRow(
         task_type="coarse_class",
         prompt_version="v1",
@@ -244,9 +279,9 @@ def test_router_call_row_accepts_default_factory_ts(tmp_path: Path) -> None:
         model_chosen_reason="policy",
         outcome="ok",
     )
-    # Default ts should match the validated format.
     assert row.ts.endswith("Z")
-    assert len(row.ts) == 20
+    assert len(row.ts) == 27
+    assert row.ts[19] == "."
 
 
 # ---- Story 2-1 review fix R7: defensive DB-write failure path ----
