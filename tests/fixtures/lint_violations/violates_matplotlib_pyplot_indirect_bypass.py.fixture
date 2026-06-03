@@ -1,0 +1,6 @@
+"""Story 6-8 CR-MED-1 boundary fixture: indirect-import bypass —
+`from matplotlib import pyplot as plt` outside the analytics-verb allowlist.
+Must trigger BOUNDARY via scripts/check_boundaries.py.
+"""
+
+from matplotlib import pyplot as plt  # noqa: F401

@@ -169,6 +169,19 @@ def test_utcnow_triggers_dtz003(tmp_path: Path) -> None:
             "mailbot_api/verbs",
             "bare action-type string literal",
         ),
+        # Story 6-8 AC-3: matplotlib.pyplot import outside the analytics-verb
+        # allowlist (`mailbot_api/verbs/analytics/`).
+        (
+            "violates_matplotlib_pyplot_outside_analytics.py.fixture",
+            "mailbot_api/verbs",
+            "matplotlib.pyplot",
+        ),
+        # Story 6-8 CR-MED-1: indirect `from matplotlib import pyplot` bypass.
+        (
+            "violates_matplotlib_pyplot_indirect_bypass.py.fixture",
+            "mailbot_api/verbs",
+            "indirect bypass",
+        ),
     ],
 )
 def test_boundary_violations_caught_by_check_boundaries(

@@ -153,3 +153,13 @@ tasks:
     sensitivity: "any"
     notes: "Iterative draft refinement (Story 5-9). Routes to Opus per FR-4.4. No response cache - refinements are turn-specific."
     demotion_hypothesis: "Haiku may suffice for small-delta refinements (e.g., 'make this shorter'); demote when Epic 7 measures refinement quality parity."
+
+  daily_digest_intro:
+    model: "qwen2.5:3b-instruct-q4_K_M"
+    prompt_version: "v1"
+    escalate: false
+    max_tokens_out: 200
+    lane: "batch"
+    sensitivity: "any"
+    response_cache_ttl_seconds: 600
+    notes: "Story 6-5: 08:00 digest intro paragraph (≤200 chars). Qwen-served, batch-lane, response-cached 10 min so digest retries within the window re-use the same intro. Input is structured counts only (no email bodies — Rule J)."

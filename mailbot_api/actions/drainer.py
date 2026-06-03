@@ -13,12 +13,13 @@ Hybrid sync-conflict policy:
   - AR-D4-1 strict-ETag for Tier-3 (skip when email-less per Story 4-2 CR-2)
   - AR-D4-2 lenient 3-rule for Tier-1/2
 
-Notifications per AR-D5-4:
+Notifications per AR-D5-4 (Story 6-3 wired the four-tier dispatcher):
   - Tier-1 failures → silent log (no notification)
-  - Tier-2 failures → important tier (Epic 6 wires the daily digest; here we
-    stand in with the same notifications.send_urgent path Story 1-8 ships, but
-    log the intended tier as `important` for forward-compat)
-  - Tier-3 failures → urgent notification immediately
+  - Tier-2 failures → `notifications.tiers.send_important` — row lands in
+    notifications_outbox with tier='important' and Story 6-5's 08:00 digest
+    sweeper picks it up. (Previously the Story 1-8 send_urgent JSONL stand-in.)
+  - Tier-3 failures → `notifications.tiers.send_urgent` — pull-based Hermes
+    delivery via MCP, posted to Discord within ~30s.
 
 References:
   - FR-5.1..5.6, AR-D4-1..2, AR-D5-1..4, AR-D13-1
@@ -56,7 +57,7 @@ from mailbot_api.db.queries import (
     PENDING_ACTIONS_SELECT_DRAINABLE,
     SEND_FAMILY_BUDGET_CONSUMED_TODAY_COUNT,
 )
-from mailbot_api.notifications import send_urgent
+from mailbot_api.notifications import tiers as notification_tiers
 
 _logger = logging.getLogger(__name__)
 
@@ -344,14 +345,14 @@ async def _check_tier_3(
     return (None, grant_id, False)
 
 
-def _notify_failure(row: PendingActionRow, reason: str) -> None:
-    """Tier-banded notification per AR-D5-4.
+async def _notify_failure(row: PendingActionRow, reason: str, *, db_path: str) -> None:
+    """Tier-banded notification per AR-D5-4 + Story 6-3 dispatcher.
 
     Tier-1: silent (log already happened).
-    Tier-2: important — Epic 6 wires the daily digest; for now we stand in
-            with send_urgent so the operator at least sees the row (and we
-            log the intended tier so Epic 6 can re-route).
-    Tier-3: urgent.
+    Tier-2: important — routes to notifications.tiers.send_important for the
+            08:00 digest (Story 6-5 sweeper).
+    Tier-3: urgent — routes to notifications.tiers.send_urgent for ~30s
+            Hermes-pull delivery.
 
     CR-4-4-5: every notification emits a structured `intended_notification_tier`
     log field so an Epic 6 migration / shadow-mode observer can programmatically
@@ -361,28 +362,27 @@ def _notify_failure(row: PendingActionRow, reason: str) -> None:
     if row.tier == 1:
         return
     if row.tier == 2:
-        # TODO(epic-6): replace with notifications.send_important; for now
-        # surface via urgent so failures don't get silently lost.
         _logger.warning(
-            "drainer Tier-2 failure routed to urgent as stand-in",
+            "drainer Tier-2 failure → important",
             extra={
                 "event": "action.drainer.notify",
                 "action_id": row.id,
                 "action_type": row.action_type.value,
                 "tier": 2,
                 "intended_notification_tier": "important",
-                "actual_notification_tier": "urgent",
+                "actual_notification_tier": "important",
                 "reason": reason,
             },
         )
-        send_urgent(
-            f"action {row.id} ({row.action_type.value}, Tier 2) failed: {reason} "
-            "[intended tier=important; Epic 6 wires the digest]"
+        await notification_tiers.send_important(
+            f"action {row.id} ({row.action_type.value}, Tier 2) failed: {reason}",
+            "action_escalation",
+            db_path=db_path,
         )
         return
     # Tier 3
     _logger.warning(
-        "drainer Tier-3 failure routed to urgent",
+        "drainer Tier-3 failure → urgent",
         extra={
             "event": "action.drainer.notify",
             "action_id": row.id,
@@ -393,8 +393,10 @@ def _notify_failure(row: PendingActionRow, reason: str) -> None:
             "reason": reason,
         },
     )
-    send_urgent(
-        f"action {row.id} ({row.action_type.value}, Tier 3) failed: {reason}"
+    await notification_tiers.send_urgent(
+        f"action {row.id} ({row.action_type.value}, Tier 3) failed: {reason}",
+        "action_escalation",
+        db_path=db_path,
     )
 
 
@@ -498,12 +500,12 @@ async def _process_claimed_row(
             },
         )
         await _mark_failed(db_path, row, f"invalid_tier:{row.tier}")
-        _notify_failure(row, f"invalid_tier:{row.tier}")
+        await _notify_failure(row, f"invalid_tier:{row.tier}", db_path=db_path)
         return
 
     if failure is not None:
         await _mark_failed(db_path, row, failure)
-        _notify_failure(row, failure)
+        await _notify_failure(row, failure, db_path=db_path)
         return
 
     # Story 4-6 hard 20-send/day cap. Checked BEFORE dispatch so we never
@@ -512,7 +514,7 @@ async def _process_claimed_row(
     # it prevents retry-bombing from re-attempting the same row 100×.
     if is_send_family(row.action_type) and await _send_cap_exceeded(db_path):
         await _mark_failed(db_path, row, "daily_send_cap_exceeded")
-        _notify_failure(row, "daily_send_cap_exceeded")
+        await _notify_failure(row, "daily_send_cap_exceeded", db_path=db_path)
         return
 
     # CR-4-4-2: action_history pre-state row MUST exist before dispatch so
@@ -526,7 +528,7 @@ async def _process_claimed_row(
         result: GraphApplyResult = await adapter.apply(row)
     except Exception as exc:  # noqa: BLE001 — adapter contract is "return result"; defend against bugs
         await _mark_failed(db_path, row, f"adapter_exception:{type(exc).__name__}")
-        _notify_failure(row, f"adapter_exception:{type(exc).__name__}")
+        await _notify_failure(row, f"adapter_exception:{type(exc).__name__}", db_path=db_path)
         return
 
     if result.ok:
@@ -534,7 +536,7 @@ async def _process_claimed_row(
     else:
         reason = result.error or "unknown_adapter_failure"
         await _mark_failed(db_path, row, reason)
-        _notify_failure(row, reason)
+        await _notify_failure(row, reason, db_path=db_path)
 
 
 async def run_loop(

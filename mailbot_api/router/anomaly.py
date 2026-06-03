@@ -1,10 +1,12 @@
-"""Hourly call-volume anomaly detection per Story 2-9.
+"""Hourly call-volume anomaly detection per Story 2-9 + Story 6-3 wiring.
 
 Each tick (default hourly):
   1. Aggregate by caller_origin over the last hour (via queries.CALL_VOLUME_LAST_HOUR_BY_ORIGIN).
   2. Compare each origin's count vs its rolling 7-day per-hour baseline
      (mean_volume + 3*stddev_volume).
-  3. Above threshold → log + (future) send_urgent notification.
+  3. Above threshold → log + urgent notification via
+     ``notifications.tiers.send_urgent`` (Story 6-3 wired this — was a
+     `(future)` comment through Story 2-9).
   4. Upsert the baseline with this hour's count (rolling sample).
 
 Baseline update uses Welford-ish online stats: each row tracks
@@ -19,6 +21,7 @@ import math
 from datetime import datetime, timedelta, timezone
 
 from mailbot_api.db import connection, queries
+from mailbot_api.notifications import tiers as notification_tiers
 
 _log = logging.getLogger(__name__)
 
@@ -60,8 +63,9 @@ async def run_anomaly_check(db_path: str, *, now: datetime | None = None) -> lis
     """Run one anomaly-detection pass against router_calls.
 
     Returns the list of caller_origin strings that tripped the alert (empty
-    list on no anomalies). For Story 2-9 this returns the list for tests +
-    a future Story 6.x to wire into notifications.send_urgent.
+    list on no anomalies). Story 6-3 wired the urgent notification per
+    tripped origin (was a `(future)` comment through Story 2-9 — now
+    actually fires via ``notifications.tiers.send_urgent``).
     """
     now = now or datetime.now(timezone.utc)
     one_hour_ago = now - timedelta(hours=1)
@@ -105,6 +109,18 @@ async def run_anomaly_check(db_path: str, *, now: datetime | None = None) -> lis
                     "baseline_stddev": stddev,
                     "threshold": threshold,
                 },
+            )
+            # Story 6-3 CR MED-3: actually wire the notification (was a
+            # `(future) send_urgent` comment through Story 2-9). Fires per
+            # tripped origin so multiple simultaneous anomalies surface
+            # distinct messages to Adam.
+            await notification_tiers.send_urgent(
+                (
+                    f"hourly anomaly: {caller_origin} observed {observed} "
+                    f"calls vs baseline {mean:.1f} (threshold {threshold:.1f})"
+                ),
+                "router_anomaly",
+                db_path=db_path,
             )
 
         # Update baseline with this hour's observation.

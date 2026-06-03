@@ -1,173 +1,155 @@
-# Hermes container config — Story 5-4.
+# Hermes container config — Story 6-0 rewrite against real Hermes schema.
 #
-# Loaded by nousresearch/hermes-agent:latest at container startup. Path inside
-# the container: /opt/data/config.yaml (bind-mounted from this repo's
-# hermes-config/ via docker-compose.yml).
+# Loaded by nousresearch/hermes-agent:latest at container startup. The image
+# pins ENV HERMES_HOME=/opt/data, so the path inside the container is
+# /opt/data/config.yaml (bind-mounted from this repo's hermes-config/ via
+# docker-compose.yml).
 #
-# All secret-bearing fields use ${ENV_VAR} substitution; Hermes resolves them
-# against the container's environment at startup. NEVER hard-code secrets here.
+# This file replaces the Story 5-4 invention with the documented Hermes
+# schema. See docs/external/hermes-agent/RECONCILIATION-NOTES.md for the
+# full schema-to-schema mapping and the divergence table.
+#
+# All secret-bearing fields use ${ENV_VAR} substitution; Hermes resolves
+# them against /opt/data/.env + the container environment at startup.
+# NEVER hard-code secrets here.
 
 # --- Main provider: Hermes's primary inference path ---
 #
 # Routes through mailbot-api's OpenAI-compatible /v1/chat/completions
-# (Story 2-10). `hermes_aux` is a Router alias (see router/policy.yaml's
-# hermes_aux task entry); the actual backend model is selected per policy
-# at dispatch time. Re-tune Hermes's main inference by editing policy.yaml,
-# not this file.
-provider:
+# endpoint (Story 2-10) using Hermes's "custom" provider mode. `hermes_aux`
+# is a Router task type (see router/policy.yaml's hermes_aux entry); the
+# actual backend model is selected per policy at dispatch time. Re-tune
+# Hermes's main inference by editing policy.yaml, not this file.
+model:
+  default: "hermes_aux"
+  provider: "custom"
   base_url: "http://mailbot-api:8000/v1"
-  model: "hermes_aux"
   api_key: "${MAILBOT_ROUTER_KEY}"
+  # context_length: leave unset — Hermes auto-detects from the provider.
+  # request_timeout_seconds: leave unset (default 1800s); mailbot-api
+  # streams responses so the default is fine.
 
-# --- Auxiliary providers: Hermes-internal helper calls ---
+# --- Auxiliary helper-model calls ---
 #
-# Both route through the same mailbot-api endpoint but tag themselves via
-# `X-Mailbot-Caller-Origin` so the Router's router_calls table can distinguish
-# the workloads for cost-discipline forensics (Story 2-10's caller_origin
-# propagation). These tags MUST match exactly what router_calls.caller_origin
-# expects: drift breaks the cost-attribution dashboards.
+# Each auxiliary task family (compression, title_generation, etc.) gets
+# its own provider/model config. Hermes calls these for context-window
+# management, conversation titling, and other internal jobs. We route
+# all of them through mailbot-api so the Router sees every LLM call
+# (Rule Ω end-to-end), even Hermes-internal ones.
+#
+# NOTE on caller_origin granularity loss: Story 5-4 attempted to
+# distinguish aux call types via X-Mailbot-Caller-Origin headers, but
+# the real Hermes schema does NOT support a `headers:` key on auxiliary
+# entries. Until a follow-up story adds distinct `hermes_aux_compression`
+# and `hermes_aux_title` task types to policy.yaml, every auxiliary call
+# lands in router_calls with caller_origin="hermes_aux" — aggregate cost
+# discipline holds, sub-distinction is lost. See RECONCILIATION-NOTES §1.6.
 auxiliary:
   compression:
     provider: "custom"
     base_url: "http://mailbot-api:8000/v1"
     model: "hermes_aux"
     api_key: "${MAILBOT_ROUTER_KEY}"
-    headers:
-      X-Mailbot-Caller-Origin: "hermes-aux-compression"
   title_generation:
     provider: "custom"
     base_url: "http://mailbot-api:8000/v1"
     model: "hermes_aux"
     api_key: "${MAILBOT_ROUTER_KEY}"
+
+# --- NFR-OPS-6 fallback chain ---
+#
+# Story 5-4 shipped a top-level `fallback_providers:` block. Real Hermes
+# does NOT load fallback chains from config YAML; they are managed via
+# the `hermes fallback` CLI (`hermes fallback add anthropic claude-opus-4-7`
+# etc.). The chain persists to config-managed storage but under a key
+# the operator-level CLI owns.
+#
+# Operational setup: at first deploy, exec into the mailbot-hermes container
+# and run `hermes fallback add anthropic claude-opus-4-7` interactively
+# (also requires ANTHROPIC_API_KEY in /opt/data/.env). This is captured as a
+# carry-forward to Story 6-7's setup_vps.sh runbook (see
+# RECONCILIATION-NOTES §6 item 3).
+
+# --- MCP servers (Hermes consuming mailbot-api's /mcp endpoint) ---
+#
+# Hermes connects to mailbot-api's FastMCP server (Story 5-2) and
+# auto-registers all 19 verb tools (Story 6-8 added `render_spend_chart`;
+# Story 6-3 added `pull_pending_notifications` + `ack_notification` for the
+# urgent-notification pull-based delivery surface). Tool names get prefixed
+# `mcp_mailbot-api_<verb_name>` inside the Hermes agent's tool registry
+# (e.g., `find_emails` → `mcp_mailbot-api_find_emails`). The Discord-side
+# dispatcher and any test harness must use the prefixed names.
+#
+# MCP auth: Story 5-2 deferred bearer-auth enforcement on `mailbot-api`'s
+# Starlette `/mcp` Mount — `_check_bearer_auth()` only protects
+# `/v1/chat/completions`. Until that gate ships, the trust boundary is
+# mailbot-net itself.
+#
+# TODO(auth): the `Authorization: "Bearer ..."` header below is a
+# forward-compat PLACEHOLDER. Hermes sends it; mailbot-api currently ignores
+# it. When the MCP bearer-auth gate ships (a follow-up story), this header
+# becomes load-bearing and MAILBOT_ROUTER_KEY must match on both sides.
+# Keeping the header here now means no config change is needed when the
+# gate lands. Story 6-0 CR-2 decision: ship as placeholder, documented.
+mcp_servers:
+  mailbot-api:
+    # Story 6-6.6 F6 closure: URL MUST include trailing slash. FastAPI's
+    # `app.mount("/mcp", ...)` requires `/mcp/` to match the Mount routing
+    # without going through a 307 redirect; without the slash, Starlette
+    # issues `307 Temporary Redirect → /mcp/`, and Hermes's MCP client
+    # does NOT follow redirects on its bidirectional POST transport (gives
+    # up after 3 attempts with `MCP server 'mailbot-api' initial connection
+    # failed`). The paired server-side fix is `streamable_http_path="/"` on
+    # FastMCP construction (defeats the inner-Starlette-Route double-mount).
+    url: "http://mailbot-api:8000/mcp/"
     headers:
-      X-Mailbot-Caller-Origin: "hermes-aux-title"
+      Authorization: "Bearer ${MAILBOT_ROUTER_KEY}"  # TODO(auth) — see comment above
+    enabled: true
+    timeout: 30
+    connect_timeout: 10
 
-# --- Fallback providers: NFR-OPS-6 emergency-only ---
+# --- Discord gateway behavior ---
 #
-# When mailbot-api is hard-down for > 10 minutes (Router unreachable, health
-# check failing, container restart-looping), Hermes switches to this entry
-# rather than going dark. This BYPASSES the Router's cost discipline by
-# design — it's the documented exception to Rule F.1 (agent never holds the
-# Anthropic key under normal operation). See .env.example for the operational
-# warning that accompanies the ANTHROPIC_API_KEY env var on the Hermes side.
-fallback_providers:
-  - provider: "anthropic"
-    base_url: "https://api.anthropic.com"
-    model: "claude-opus-4-7"
-    api_key: "${ANTHROPIC_API_KEY}"
-    notes: "NFR-OPS-6 emergency-only — bypasses Router cost discipline by design. Used when mailbot-api is hard-down for > 10 minutes."
+# Discord-side env vars (DISCORD_BOT_TOKEN, DISCORD_ALLOWED_USERS,
+# DISCORD_HOME_CHANNEL) live in .env per the real schema. The bot's
+# privileged intents (MESSAGE_CONTENT, Server Members) must be enabled
+# at the Discord Developer Portal — they are NOT declared in this file.
+#
+# Slash commands are auto-registered from installed Hermes skills, NOT
+# from this config file (real Hermes contract). Story 5-6's 8-command
+# registry needs to migrate to a skill bundle under
+# hermes-config/skills/mailbot/ in a follow-up story
+# (RECONCILIATION-NOTES §6 item 1).
+#
+# Behavioral keys below tune Hermes's Discord engagement defaults for
+# MailBot's single-user Adam-only deploy.
+discord:
+  require_mention: false      # Single-user DM-first deploy — no @mention needed
+  thread_require_mention: false
+  free_response_channels: ""  # No public channels; DMs only
+  auto_thread: false          # Single-user; no thread auto-creation needed
+  reactions: true             # Defender-acknowledgment hookup
+  ignored_channels: []
+  no_thread_channels: []
+  history_backfill: true
+  history_backfill_limit: 50
+  channel_prompts: {}
+  allow_mentions:
+    everyone: false
+    roles: false
+    users: true
+    replied_user: true
 
-# --- Discord gateway adapter ---
-#
-# bot_token is captured at Discord Developer Portal time. MESSAGE_CONTENT is
-# a privileged intent and MUST be enabled in the portal for the bot. Adam's
-# bot is in a single private server (< 100 servers), so no Discord approval
-# is required for the privileged intent. Extra intents beyond the four below
-# are deliberately omitted (unnecessary attack surface per Story 5-4 AC-1).
-gateway:
-  discord:
-    bot_token: "${DISCORD_BOT_TOKEN}"
-    intents:
-      - "DIRECT_MESSAGES"
-      - "MESSAGE_CONTENT"
-      - "GUILDS"
-      - "GUILD_MESSAGES"
-    # --- Story 5-6: slash command registry ---
-    #
-    # Each entry maps a Discord slash command to an MCP verb on mailbot-api.
-    # ephemeral=true means responses are visible only to the invoking user
-    # (FR-4.8 — required for /cost, /budget reset, /confirm which surface
-    # cost / budget / sensitivity-token data that must not leak in shared
-    # channels). ephemeral=false posts publicly in the channel.
-    #
-    # Schema reference: hermes-config/skills/mailbot/SKILL.md walks the verb
-    # surface; SOUL.md + AGENTS.md set the defender voice + Rule P tier
-    # enforcement that the dispatcher honors.
-    slash_commands:
-      - name: "cost"
-        description: "Show Router cost breakdown for the period."
-        options:
-          - name: "period"
-            type: "string"
-            choices: ["today", "month"]
-            required: false
-        verb: "cost_breakdown"
-        ephemeral: true
-      - name: "pause"
-        description: "Pause the Router lane scheduler with a reason."
-        options:
-          - name: "reason"
-            type: "string"
-            required: false
-        verb: "pause_router"
-        ephemeral: false
-      - name: "resume"
-        description: "Resume the Router lane scheduler."
-        verb: "resume_router"
-        ephemeral: false
-      - name: "cancel"
-        description: "Cancel a pending action by action_id (during cooling-off only)."
-        options:
-          - name: "action_id"
-            type: "integer"
-            required: true
-        verb: "cancel_action"
-        ephemeral: false
-      - name: "mute"
-        description: "Mute a notification category."
-        options:
-          - name: "category"
-            type: "string"
-            required: true
-          - name: "muted_until"
-            type: "string"
-            description: "UTC ISO-8601 Z; omit for indefinite."
-            required: false
-        verb: "mute_category"
-        ephemeral: false
-      - name: "label"
-        description: "Apply a local-category label to recent emails."
-        options:
-          - name: "recent"
-            type: "integer"
-            description: "How many recent emails to label."
-            required: true
-          - name: "label"
-            type: "string"
-            required: true
-        verb: "propose_action"  # dispatched as ActionType.ADD_LOCAL_CATEGORY per Story 5-6 AC-7
-        ephemeral: false
-      - name: "budget"
-        description: "Budget admin commands."
-        subcommands:
-          - name: "reset"
-            description: "Reset degraded mode (exit) and clear the in-memory flag."
-            verb: "reset_degraded_mode"
-            ephemeral: true
-      - name: "confirm"
-        description: "Mint a sensitivity token for a sensitive email + task_type."
-        options:
-          - name: "email_id"
-            type: "string"
-            required: true
-          - name: "task_type"
-            type: "string"
-            required: true
-        verb: "mint_sensitivity_token"
-        ephemeral: true
+# Per-user session isolation in shared channels (Adam-only deploy, but
+# keeping the default so a future second-user case doesn't surprise us).
+group_sessions_per_user: true
 
-# --- MCP clients: tool dispatch surface ---
+# --- Streaming responses ---
 #
-# Connects to mailbot-api's /mcp endpoint (Story 5-2's FastMCP 1.27.2
-# streamable-HTTP mount). The 11 verbs from Story 5-2 are auto-discovered
-# via the MCP list_tools handshake.
-#
-# MCP auth is out of scope here (per Story 5-2 Dev Notes); the trust boundary
-# is mailbot-net itself — only containers on that network can reach /mcp.
-# Adding bearer auth here would require coordinating a separate key between
-# this file and mailbot-api's lifespan; deferred to a follow-up story if
-# Adam decides to expose the network beyond mailbot-net.
-mcp_clients:
-  - name: "mailbot-api"
-    url: "http://mailbot-api:8000/mcp"
-    transport: "streamable_http"
+# Edit-in-place transport for Discord message updates while Hermes
+# generates. Defaults are fine.
+streaming:
+  enabled: true
+  transport: "edit"
+
+# --- Memory + agent budget defaults are fine; not overridden here ---

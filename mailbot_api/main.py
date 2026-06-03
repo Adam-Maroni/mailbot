@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from mailbot_api.config import SecretMissing, get_secret, get_secret_optional
 from mailbot_api.db.migrations_runner import apply_pending_migrations
@@ -221,9 +221,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             # canonical source rather than hardcoding. Story 5-6 bumped 11->16
             # but missed this observability line.
             from mailbot_api.mcp_server import _EXPECTED_TOOL_COUNT
+            # Story 6-6.6 CR MED-2: distinguish the FastAPI Mount path
+            # ("/mcp") from the externally-visible URL path Hermes POSTs to
+            # ("/mcp/"). After F6 closure the trailing slash is load-bearing
+            # — surface both so operators reading startup logs can verify the
+            # routing shape without inspecting hermes-config/config.yaml.
             logger.info(
                 "mcp server live",
-                extra={"event": "mcp.startup.live", "tools": _EXPECTED_TOOL_COUNT, "path": "/mcp"},
+                extra={
+                    "event": "mcp.startup.live",
+                    "tools": _EXPECTED_TOOL_COUNT,
+                    "mount_path": "/mcp",
+                    "hermes_url_path": "/mcp/",
+                },
             )
         elif _app is not None and not skip_mcp:
             # CR-6: surface misconfiguration. skip_mcp=False but db_path=None
@@ -476,3 +486,130 @@ async def embeddings(
             }
         },
     )
+
+
+# --- Story 6-2: POST /admin/pause + POST /admin/resume — operator kill switch ---
+
+
+class _PauseRequest(BaseModel):
+    """Body shape for POST /admin/pause.
+
+    CR-1 (Story 6-2 review 2026-06-03): `reason` rejects empty strings via
+    `min_length=1`. Operators who omit a reason get the default; operators
+    who send `{"reason": ""}` get a 422 (more useful than persisting blank).
+    """
+
+    reason: str = Field(default="manual cli pause", min_length=1)
+
+
+@app.post("/admin/pause")
+async def admin_pause(
+    request: _PauseRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Bearer-authed kill switch — pauses the Router via Story 2-9's
+    `PauseState`.
+
+    CR-2 (Story 6-2 review 2026-06-03): re-issuing while already paused
+    UPDATES the persisted `reason` AND refreshes `paused_at` to the new
+    invocation timestamp (per `PAUSE_STATE_PAUSE` query, which always sets
+    `paused_at = ?` unconditionally). The status board shows the most-recent
+    pause invocation, NOT the first. Operators get `previously_paused=True`
+    in the response so they can see this was a re-pause.
+
+    Story 6-2 calls this from `mailbot pause [reason]` CLI; Story 5-6's
+    `/pause` MCP slash command also reaches the same underlying state
+    (via verbs/router_control.py).
+    """
+    _check_bearer_auth(authorization)
+    db_path = _db_path_from_app()
+    if db_path is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": {
+                    "type": "service_unavailable",
+                    "message": "pause requires db_path",
+                }
+            },
+        )
+    state = get_pause_state()
+    previously_paused = state.is_paused()
+    await state.pause(db_path, reason=request.reason)
+    message = (
+        f"router paused — reason: {request.reason}"
+        if not previously_paused
+        else f"router was already paused — reason updated to: {request.reason}"
+    )
+    return {
+        "ok": True,
+        "previously_paused": previously_paused,
+        "reason": request.reason,
+        "message": message,
+    }
+
+
+@app.post("/admin/resume")
+async def admin_resume(
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Bearer-authed inverse of /admin/pause. Idempotent: resuming an
+    already-running Router is a no-op (responses still include the
+    `previously_paused` flag so the operator sees whether it was a no-op)."""
+    _check_bearer_auth(authorization)
+    db_path = _db_path_from_app()
+    if db_path is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": {
+                    "type": "service_unavailable",
+                    "message": "resume requires db_path",
+                }
+            },
+        )
+    state = get_pause_state()
+    previously_paused = state.is_paused()
+    await state.resume(db_path)
+    message = (
+        "router resumed" if previously_paused else "router was not paused"
+    )
+    return {
+        "ok": True,
+        "previously_paused": previously_paused,
+        "message": message,
+    }
+
+
+# --- Story 6-1: GET /admin/status — operator status board ---
+
+
+@app.get("/admin/status")
+async def admin_status(
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Bearer-authed status board read by `mailbot status` CLI.
+
+    Returns a JSON-serialized `StatusReport` (see
+    `mailbot_api/observability/status.py`). All section reads run in
+    parallel; total wall-clock budget < 1s on 100k router_calls rows.
+    """
+    _check_bearer_auth(authorization)
+    db_path = _db_path_from_app()
+    if db_path is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": {
+                    "type": "service_unavailable",
+                    "message": "status assembler requires db_path",
+                }
+            },
+        )
+    # Late import — observability/status.py imports from worker.py, which
+    # imports from main-time-loaded modules. Late-import side-steps the
+    # circular surface.
+    from mailbot_api.observability.status import assemble_status
+
+    report = await assemble_status(db_path)
+    return report.model_dump()

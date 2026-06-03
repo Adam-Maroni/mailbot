@@ -75,11 +75,20 @@ def _read_status(db_path: str, action_id: int) -> tuple[str, str | None, int]:
 
 
 def _notifications_count(tmp_path: Path) -> int:
-    """Read notifications_pending.jsonl and count rows."""
-    log_file = tmp_path / "logs" / "notifications_pending.jsonl"
-    if not log_file.exists():
+    """Story 6-3: count `notifications_outbox` rows (replaces the JSONL
+    file-based count). Sync — opens its own short-lived SQLite connection
+    to the test DB."""
+    import sqlite3
+
+    db_file = tmp_path / "test.db"
+    if not db_file.exists():
         return 0
-    return sum(1 for line in log_file.read_text(encoding="utf-8").splitlines() if line.strip())
+    with sqlite3.connect(str(db_file)) as conn:
+        try:
+            row = conn.execute("SELECT COUNT(*) FROM notifications_outbox").fetchone()
+        except sqlite3.OperationalError:
+            return 0
+    return int(row[0]) if row is not None else 0
 
 
 # ---- Tier-1 happy + failure ---------------------------------------------------

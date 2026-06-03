@@ -26,6 +26,10 @@ OAUTH_STATE_SELECT = (
 
 OAUTH_STATE_INSERT_SEED = "INSERT INTO oauth_state (provider, refresh_token, rotation_count) VALUES (?, ?, 0)"
 
+# Story 6-6: worker's drainer-side access-token cache refresher reads just
+# the access_token column on every refresh (cheaper than the full SELECT).
+OAUTH_STATE_ACCESS_TOKEN_SELECT = "SELECT access_token FROM oauth_state WHERE provider = ?"  # noqa: S105
+
 OAUTH_STATE_UPDATE_AFTER_EXCHANGE = (
     "UPDATE oauth_state SET refresh_token = ?, access_token = ?, "
     "access_expires_at = ?, last_rotated_at = ?, rotation_count = ? "
@@ -492,6 +496,52 @@ WORKER_HEALTH_UPSERT = (
 )
 
 
+# --- Story 6-1: status assembler reads (mailbot_api/observability/status.py) ---
+#
+# All 5 queries below land in the status board read-path; collectively they
+# must execute in < 1s on 100k router_calls (per AC perf budget). Each one
+# either hits an existing index (router_calls.ts, pending_actions.status) or
+# does a small COUNT(*) — verified via `EXPLAIN QUERY PLAN` during dev.
+
+PENDING_ACTIONS_COUNT_BY_TIER = (
+    "SELECT tier, COUNT(*) FROM pending_actions "
+    "WHERE status IN ('pending', 'pending_grant', 'cooling_off') "
+    "GROUP BY tier"
+)
+
+PENDING_ACTIONS_AWAITING_GRANT_COUNT = (
+    "SELECT COUNT(*) FROM pending_actions WHERE status = 'pending_grant'"
+)
+
+PENDING_ACTIONS_FAILED_LAST_24H = (
+    "SELECT COUNT(*) FROM pending_actions "
+    "WHERE status = 'failed' AND terminal_at >= ?"
+)
+
+ROUTER_CALLS_CACHE_HIT_RATE_LAST_7D = (
+    "SELECT COALESCE(SUM(cached_tokens_in), 0), COALESCE(SUM(tokens_in), 0) "
+    "FROM router_calls WHERE ts >= ?"
+)
+
+ROUTER_CALLS_LAST_N_ERRORS = (
+    "SELECT id, ts, task_type, model_chosen, outcome, caller_origin "
+    "FROM router_calls WHERE outcome IN ('failed', 'retry_recovered') "
+    "ORDER BY ts DESC LIMIT ?"
+)
+
+ROUTER_CALLS_HERMES_AUX_COUNT_LAST_24H = (
+    # Story 6-1 CR-1: post-Story-6-0 reality is that Hermes's real config
+    # schema has no `headers:` key on auxiliary entries (see RECONCILIATION-NOTES
+    # §1.6), so production auxiliary calls land with caller_origin = 'hermes_aux'
+    # (single value, underscore). The legacy 'hermes-aux-*' pattern is what
+    # Story 2-10's test fixtures + the original chat-completions header-propagation
+    # path produce. Match BOTH so the query stays correct across the corrective.
+    "SELECT COUNT(*) FROM router_calls "
+    "WHERE (caller_origin = 'hermes_aux' OR caller_origin LIKE 'hermes-aux%') "
+    "AND ts >= ?"
+)
+
+
 # --- router_calls (Story 2-1) ---
 #
 # The ONLY production-code INSERT into router_calls. Boundary-checked at
@@ -599,7 +649,14 @@ ROUTER_CALLS_BY_CALLER_ORIGIN_SINCE = (
 )
 
 # Hermes aux drift detection (Story 2-10 AC).
-ROUTER_CALLS_HERMES_AUX_SINCE = "SELECT COUNT(*) FROM router_calls WHERE ts >= ? AND caller_origin LIKE 'hermes-aux-%'"
+ROUTER_CALLS_HERMES_AUX_SINCE = (
+    # Story 6-1 CR-1 coordination fix: post-Story-6-0 real Hermes config has no
+    # `headers:` key on auxiliary entries, so production lands `caller_origin =
+    # 'hermes_aux'` (underscore). Legacy header-propagation path stays as the
+    # 'hermes-aux-*' family. Match BOTH so the count is correct across stacks.
+    "SELECT COUNT(*) FROM router_calls "
+    "WHERE ts >= ? AND (caller_origin = 'hermes_aux' OR caller_origin LIKE 'hermes-aux-%')"
+)
 
 
 CALL_VOLUME_BASELINE_UPSERT = (
@@ -853,4 +910,186 @@ NOTIFICATION_MUTES_UPSERT = (
     "ON CONFLICT(category) DO UPDATE SET "
     "muted_until = excluded.muted_until, "
     "muted_at = excluded.muted_at"
+)
+
+
+# --- notifications_outbox (Story 6-3) ---
+
+# Enqueue. tier is 'urgent' or 'important'; informational/silent never reach
+# the DB.
+NOTIFICATIONS_OUTBOX_INSERT = (
+    "INSERT INTO notifications_outbox "
+    "(tier, category, message, enqueued_at) "
+    "VALUES (?, ?, ?, ?)"
+)
+
+# Hermes-polled pull. Urgent-tier only; important rows belong to Story 6-5's
+# 08:00 digest. ORDER BY enqueued_at ASC for FIFO; LIMIT respects the caller's
+# batch cap (default 10 in the verb wrapper).
+NOTIFICATIONS_OUTBOX_PULL_PENDING_URGENT = (
+    "SELECT id, tier, category, message, enqueued_at, attempt_count "
+    "FROM notifications_outbox "
+    "WHERE delivery_status='pending' AND tier='urgent' "
+    "ORDER BY enqueued_at ASC LIMIT ?"
+)
+
+# Atomic claim — runs in the same transaction as the pull. The
+# `delivery_status='pending'` predicate makes concurrent claims race-safe:
+# if another Hermes poller already flipped the row to 'delivering', this
+# UPDATE matches 0 rows and the verb skips the claim. The IN(?) shape is
+# expanded at call time via parameterized placeholders.
+NOTIFICATIONS_OUTBOX_CLAIM_ONE_FOR_DELIVERY = (
+    "UPDATE notifications_outbox "
+    "SET delivery_status='delivering', "
+    "    attempt_count = attempt_count + 1, "
+    "    last_attempt_at = ? "
+    "WHERE id = ? AND delivery_status='pending'"
+)
+
+# Ack: success. delivered_at gets the wall-clock ts; status transitions to
+# the terminal 'ok' state.
+NOTIFICATIONS_OUTBOX_ACK_OK = (
+    "UPDATE notifications_outbox "
+    "SET delivery_status='ok', delivered_at = ? "
+    "WHERE id = ? AND delivery_status='delivering'"
+)
+
+# Ack: failure under the 5-attempt cap. Returns to 'pending' for re-pull;
+# records last_error for the operator to inspect.
+NOTIFICATIONS_OUTBOX_ACK_FAILED_RETRY = (
+    "UPDATE notifications_outbox "
+    "SET delivery_status='pending', last_error = ? "
+    "WHERE id = ? AND delivery_status='delivering' AND attempt_count < 5"
+)
+
+# Ack: failure at or past the 5-attempt cap. Terminal failed_max_retries
+# state — no further pulls; manual intervention required.
+NOTIFICATIONS_OUTBOX_ACK_FAILED_MAX = (
+    "UPDATE notifications_outbox "
+    "SET delivery_status='failed_max_retries', last_error = ? "
+    "WHERE id = ? AND delivery_status='delivering' AND attempt_count >= 5"
+)
+
+# Recovery sweep — re-claims rows stuck in 'delivering' state for > 60s.
+# The cutoff is computed in Python (`now - 60s`) and passed as the bound
+# parameter. Rows that come back to 'pending' get re-pulled on the next
+# Hermes poll; attempt_count is preserved (recovery is NOT a fresh attempt
+# from the cap-counting perspective).
+NOTIFICATIONS_OUTBOX_RECOVERY_RECLAIM = (
+    "UPDATE notifications_outbox "
+    "SET delivery_status='pending' "
+    "WHERE delivery_status='delivering' AND last_attempt_at < ?"
+)
+
+# Fetch one row by id — used by ack_notification to inspect attempt_count
+# before deciding the retry-vs-terminal path.
+NOTIFICATIONS_OUTBOX_FETCH_BY_ID = (
+    "SELECT id, tier, category, message, enqueued_at, "
+    "  delivery_status, attempt_count, last_attempt_at, last_error, delivered_at "
+    "FROM notifications_outbox WHERE id = ?"
+)
+
+# Test helper / observability — count all rows in the outbox.
+NOTIFICATIONS_OUTBOX_COUNT_ALL = "SELECT COUNT(*) FROM notifications_outbox"
+
+# Test helper — list all messages (used by tests to assert what was enqueued
+# during a flow). Ordered by enqueued_at ASC so tests can pattern-match by
+# index.
+NOTIFICATIONS_OUTBOX_LIST_ALL = (
+    "SELECT id, tier, category, message FROM notifications_outbox "
+    "ORDER BY enqueued_at ASC"
+)
+
+
+# --- anti-fatigue (Story 6-4) ---
+
+# Dedup: count + max-id of same-category-same-tier rows within the last
+# hour. Used by the dispatcher to decide collapse vs new insert at the
+# 5-in-1h threshold per AC-2.
+#
+# CR HIGH-1 fix: filter on `delivery_status='pending'` so already-delivered
+# rows do NOT count toward dedup. Without this filter, 5 acked rows + a
+# 6th call would target an `ok`-state row for UPDATE (predicate fails),
+# silently dropping the 6th notification with no INSERT.
+NOTIFICATIONS_OUTBOX_COUNT_SAME_CATEGORY_LAST_HOUR = (
+    "SELECT COUNT(*), MAX(id) FROM notifications_outbox "
+    "WHERE category = ? AND tier = ? AND enqueued_at >= ? "
+    "AND delivery_status = 'pending'"
+)
+
+# Dedup collapse: rewrite the latest row's message body to the summary
+# form. Only touches pending rows (a delivered row should not have its
+# message rewritten — the recipient already saw it).
+NOTIFICATIONS_OUTBOX_UPDATE_LATEST_MESSAGE = (
+    "UPDATE notifications_outbox SET message = ? "
+    "WHERE id = ? AND delivery_status = 'pending'"
+)
+
+# Story 6-4 unmute verb companion to Story 5-6's NOTIFICATION_MUTES_UPSERT.
+# Returns rowcount > 0 iff a mute was actually cleared (used to populate
+# UnmuteCategoryOut.was_muted).
+NOTIFICATION_MUTES_DELETE_BY_CATEGORY = (
+    "DELETE FROM notification_mutes WHERE category = ?"
+)
+
+# Posture state (Story 6-4 single-row table; id always 1).
+POSTURE_STATE_SELECT = (
+    "SELECT urgent_only, set_at, reason FROM posture_state WHERE id = 1"
+)
+POSTURE_STATE_SET_URGENT_ONLY = (
+    "UPDATE posture_state SET urgent_only = 1, set_at = ?, reason = ? WHERE id = 1"
+)
+POSTURE_STATE_LIFT_URGENT_ONLY = (
+    "UPDATE posture_state SET urgent_only = 0, set_at = NULL, reason = NULL WHERE id = 1"
+)
+
+
+# --- daily digest (Story 6-5) ---
+
+# Recent non-deleted projection rows ordered by importance DESC. The verb
+# buckets the rows in Python (high ≥ 70, medium 40-69, low < 40).
+#
+# Schema-reality note (Story 5-1 § precedent): `emails.is_read` is NOT
+# captured in the local schema — Microsoft Graph has `isRead` but the
+# sync worker doesn't persist it. Without is_read, this query approximates
+# "unread" as "all non-deleted emails received in the last 24h" so the
+# digest stays useful. A future story will capture is_read; for now the
+# 24h window is the pragmatic proxy. Story 5-1's `find_emails` documented
+# the same gap.
+EMAILS_UNREAD_BUCKETED = (
+    "SELECT graph_id, subject, from_address, received_at, "
+    "  importance_score, summary_short, class_coarse, sensitivity "
+    "FROM emails "
+    "WHERE deleted_at IS NULL AND received_at >= ? "
+    "ORDER BY importance_score DESC NULLS LAST, received_at DESC "
+    "LIMIT 100"
+)
+
+# Tier-2 pending batches grouped by action_type. The composer renders one
+# line per action_type with the count + oldest proposal timestamp.
+PENDING_ACTIONS_TIER2_GROUPED = (
+    "SELECT action_type, COUNT(*), MIN(proposed_at) "
+    "FROM pending_actions "
+    "WHERE tier = 2 AND status = 'pending' "
+    "GROUP BY action_type "
+    "ORDER BY COUNT(*) DESC"
+)
+
+# Queued important notifications since the last digest (i.e., still pending).
+# Story 6-3 enqueues important rows with delivery_status='pending'; this
+# story's finalize sweep flips them to 'ok_via_digest' after the digest
+# posts.
+NOTIFICATIONS_OUTBOX_IMPORTANT_PENDING = (
+    "SELECT id, category, message, enqueued_at "
+    "FROM notifications_outbox "
+    "WHERE tier = 'important' AND delivery_status = 'pending' "
+    "ORDER BY enqueued_at ASC"
+)
+
+# Finalize sweep — flips every queued important row to ok_via_digest in
+# one transaction. Returns rowcount via execute_write.
+NOTIFICATIONS_OUTBOX_FINALIZE_DIGEST_DELIVERY = (
+    "UPDATE notifications_outbox "
+    "SET delivered_at = ?, delivery_status = 'ok_via_digest' "
+    "WHERE tier = 'important' AND delivery_status = 'pending'"
 )

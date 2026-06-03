@@ -68,7 +68,12 @@ This was the failure mode Story 5-4 Dev Notes explicitly anticipated as "verify 
 
 This is a low-severity observability drift, not a functional bug, but it's a Story 5-6 CR miss worth flagging.
 
-#### Finding 3 — Hermes image runs an interactive TUI, not a daemon — **CARRY-FORWARD**
+#### Finding 3 — Hermes image runs an interactive TUI, not a daemon — **RESOLVED 2026-06-02 (Story 6-0)**
+
+**Resolution:** the image's CMD passes through `/opt/hermes/docker/main-wrapper.sh` which routes non-executable first args as `hermes` subcommands. Setting `command: ["gateway", "run"]` in docker-compose.yml routes to `hermes gateway run` — the documented Docker daemon mode that auto-engages s6 supervision with auto-restart on crash. The "interactive-only by design" framing was wrong; the image is multi-mode and Epic 5 used the wrong mode. See [docs/external/hermes-agent/RECONCILIATION-NOTES.md](../../docs/external/hermes-agent/RECONCILIATION-NOTES.md) §2.3 and the Story 6-0 walk record in `epic-6-run-flags.md`.
+
+**Original finding follows for audit trail:**
+
 
 After Finding 1 was fixed and Hermes initialized cleanly, the container printed its splash screen ("Hermes Agent v0.15.1 ... 26 tools · 86 skills ... Welcome to Hermes Agent! Type your message or /help for commands.") and then exited with `Warning: Input is not a terminal (fd=0). Goodbye! ⚕`.
 
@@ -76,7 +81,12 @@ The `nousresearch/hermes-agent:latest` image's default entrypoint runs the inter
 
 This invalidates Story 5-4's core architectural assumption.
 
-#### Finding 4 — `command:` override is swallowed by s6 supervisor — **ATTEMPTED + ROLLED BACK**
+#### Finding 4 — `command:` override is swallowed by s6 supervisor — **RESOLVED 2026-06-02 (Story 6-0)**
+
+**Resolution:** the framing was wrong. Docker-level `command:` is NOT swallowed; it's routed through `main-wrapper.sh` (the image's CMD entrypoint), which dispatches non-executable first args as `hermes` subcommands. Epic 5 tried `command: ["hermes", "gateway", "start"]` — `start` is the systemd/launchd subcommand, not Docker. The correct subcommand is `hermes gateway run` (or simply `command: ["gateway", "run"]` because the wrapper prefixes `hermes`). Per `hermes gateway run --help`: *"Inside the s6-overlay Docker image, normally `gateway run` is automatically redirected to the supervised s6 service (so the gateway gets auto-restart on crash)."* See [docs/external/hermes-agent/RECONCILIATION-NOTES.md](../../docs/external/hermes-agent/RECONCILIATION-NOTES.md) §2.2 and §2.3.
+
+**Original finding follows for audit trail:**
+
 
 Per the upstream README ([github.com/NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)), `hermes gateway start` is the long-running messaging daemon (Discord, Telegram, etc.). The dev pass attempted to override the container `command:` to `["hermes", "gateway", "start"]` to redirect to the daemon entrypoint.
 
@@ -84,7 +94,17 @@ The override had no effect. The image is supervised by s6-overlay; the managed s
 
 **Action taken:** the `command: ["hermes", "gateway", "start"]` override was reverted from `docker-compose.yml` and the corresponding test (`test_compose_mailbot_hermes_runs_gateway_not_tui`) was removed. Leaving the no-op override in the repo would be misleading. The docker-compose.yml now carries an explicit comment documenting the architectural mismatch and the Epic 6 carry-forward.
 
-#### Finding 5 — `hermes-config/config.yaml` schema is fabricated — **ACKNOWLEDGED + CARRY-FORWARD**
+#### Finding 5 — `hermes-config/config.yaml` schema is fabricated — **RESOLVED 2026-06-02 (Story 6-0)**
+
+**Resolution:** `hermes-config/config.yaml` rewritten against the documented Hermes schema. Top-level keys are now `model`, `auxiliary`, `mcp_servers`, `discord`, `streaming`, `group_sessions_per_user` (real schema), replacing the invented `provider`, `auxiliary` (kept by coincidence — same field name but no headers), `fallback_providers`, `gateway`, `mcp_clients`. The `scripts/check_hermes_config.py` verifier was also rewritten to assert the new shape. See [docs/external/hermes-agent/RECONCILIATION-NOTES.md](../../docs/external/hermes-agent/RECONCILIATION-NOTES.md) §3 (divergence table) and §5 (rewrite action plan).
+
+Two architectural side-effects of the corrective:
+
+1. **Slash commands move from config-YAML to Hermes skills** — real Hermes auto-registers installed skill bundles as Discord application commands. The Story 5-6 8-command surface (cost / pause / resume / cancel / mute / label / budget / confirm) needs a follow-up story that ports the registry to `hermes-config/skills/mailbot/` as a Hermes-loadable skill bundle. Filed as RECONCILIATION-NOTES §6 item 1.
+2. **NFR-OPS-6 fallback chain moves from config-YAML to CLI** — real Hermes manages fallback chains via `hermes fallback add ...` CLI, not file-driven. Operator setup: at first deploy, exec into mailbot-hermes and run `hermes fallback add anthropic claude-opus-4-7`. Captured for Story 6-7's setup_vps.sh runbook (RECONCILIATION-NOTES §6 item 3).
+
+**Original finding follows for audit trail:**
+
 
 The config file Story 5-4 shipped at `hermes-config/config.yaml` (provider / auxiliary / fallback_providers / gateway.discord.slash_commands / mcp_clients blocks) was the dev pass's invention. Story 5-4 Dev Notes explicitly hedged this as "verify against the image; if Hermes's actual config parser uses a different schema, the dev pass MUST verify... if unverifiable without running the image, document the assumed schema."
 

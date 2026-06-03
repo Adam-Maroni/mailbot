@@ -402,18 +402,25 @@ async def test_handles_410_gone_clears_delta_link_and_notifies_once(
     assert state is not None
     assert state[0] is None  # NULL — fresh resync on next tick
 
-    # Notification fired exactly once.
-    notifications_log = tmp_path / "logs" / "notifications_pending.jsonl"
-    assert notifications_log.exists()
-    lines = notifications_log.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 1
-    assert "delta token reset" in lines[0]
+    # Story 6-3 reframe: notifications now land in `notifications_outbox`
+    # (SQLite) instead of the legacy JSONL file. Assert via DB queries.
+    from mailbot_api.db.connection import fetchall as _fetchall
+    from mailbot_api.db.connection import fetchone as _fetchone
+    from mailbot_api.db.queries import (
+        NOTIFICATIONS_OUTBOX_COUNT_ALL,
+        NOTIFICATIONS_OUTBOX_LIST_ALL,
+    )
+
+    count_row = await _fetchone(db_path, NOTIFICATIONS_OUTBOX_COUNT_ALL, ())
+    assert count_row is not None and count_row[0] == 1
+    rows = await _fetchall(db_path, NOTIFICATIONS_OUTBOX_LIST_ALL, ())
+    assert "delta token reset" in rows[0][3]
 
     # Second 410 in the same episode does NOT re-notify (debounced).
     transport2, _ = _transport_with_status(410, {"code": "syncStateInvalid"})
     await run_once(db_path, transport=transport2)
-    lines_after = notifications_log.read_text(encoding="utf-8").splitlines()
-    assert len(lines_after) == 1  # still just the one notification
+    count_row = await _fetchone(db_path, NOTIFICATIONS_OUTBOX_COUNT_ALL, ())
+    assert count_row is not None and count_row[0] == 1  # still just the one
 
 
 async def test_handles_404_sync_state_not_found_same_recovery_path(
@@ -451,9 +458,12 @@ async def test_handles_404_sync_state_not_found_same_recovery_path(
     assert state is not None
     assert state[0] is None
 
-    notifications_log = tmp_path / "logs" / "notifications_pending.jsonl"
-    assert notifications_log.exists()
-    assert len(notifications_log.read_text(encoding="utf-8").splitlines()) == 1
+    # Story 6-3: notifications go to notifications_outbox.
+    from mailbot_api.db.connection import fetchone as _fetchone
+    from mailbot_api.db.queries import NOTIFICATIONS_OUTBOX_COUNT_ALL
+
+    count_row = await _fetchone(db_path, NOTIFICATIONS_OUTBOX_COUNT_ALL, ())
+    assert count_row is not None and count_row[0] == 1
 
 
 async def test_404_without_sync_state_not_found_does_not_clear_delta_link(
@@ -490,9 +500,12 @@ async def test_404_without_sync_state_not_found_does_not_clear_delta_link(
     assert state[0] is not None
     assert "KEEP" in state[0]
 
-    # No notification.
-    notifications_log = tmp_path / "logs" / "notifications_pending.jsonl"
-    assert not notifications_log.exists() or notifications_log.read_text(encoding="utf-8").strip() == ""
+    # No notification — Story 6-3: outbox stays empty.
+    from mailbot_api.db.connection import fetchone as _fetchone_neg
+    from mailbot_api.db.queries import NOTIFICATIONS_OUTBOX_COUNT_ALL as _COUNT_NEG
+
+    count_row = await _fetchone_neg(db_path, _COUNT_NEG, ())
+    assert count_row is not None and count_row[0] == 0
 
 
 async def test_resync_notification_clears_after_successful_sync(
@@ -523,9 +536,12 @@ async def test_resync_notification_clears_after_successful_sync(
     transport3, _ = _transport_with_status(410, {"code": "syncStateInvalid"})
     await run_once(db_path, transport=transport3)
 
-    notifications_log = tmp_path / "logs" / "notifications_pending.jsonl"
-    lines = notifications_log.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 2  # one per episode
+    # Story 6-3: outbox has 2 rows total — one per episode.
+    from mailbot_api.db.connection import fetchone as _fetchone_e2
+    from mailbot_api.db.queries import NOTIFICATIONS_OUTBOX_COUNT_ALL as _COUNT_E2
+
+    count_row = await _fetchone_e2(db_path, _COUNT_E2, ())
+    assert count_row is not None and count_row[0] == 2
 
 
 async def test_handles_duplicate_message_in_single_delta_page(

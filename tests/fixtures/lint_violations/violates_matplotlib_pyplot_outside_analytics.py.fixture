@@ -1,0 +1,6 @@
+"""Story 6-8 AC-3 boundary fixture: imports `matplotlib.pyplot` outside the
+analytics-verb allowlist (`mailbot_api/verbs/analytics/render_spend_chart.py`).
+Must trigger BOUNDARY via scripts/check_boundaries.py.
+"""
+
+import matplotlib.pyplot as plt  # noqa: F401

@@ -27,7 +27,6 @@ from typing import Any
 
 import httpx
 
-from mailbot_api import notifications
 from mailbot_api.db.connection import execute_write, fetchone
 from mailbot_api.db.queries import (
     EMAIL_SOFT_DELETE,
@@ -38,6 +37,7 @@ from mailbot_api.db.queries import (
     SYNC_STATE_UPSERT_NULL_LINK,
     THREAD_UPSERT,
 )
+from mailbot_api.notifications import tiers as notification_tiers
 from mailbot_api.observability.timestamps import utc_z_now
 from mailbot_api.sync.graph_client import PREFER_IMMUTABLE_ID
 from mailbot_api.sync.oauth import get_access_token
@@ -353,7 +353,14 @@ async def _handle_delta_token_invalidation(db_path: str, reason: str) -> None:
         (_PROVIDER, _utc_iso8601()),
     )
     if not _resync_notification_fired:
-        notifications.send_urgent("delta token reset — full resync in progress")
+        # Story 6-3: route through the four-tier dispatcher so Hermes pulls
+        # this via the outbox + posts to Discord; the legacy JSONL stub is
+        # no longer the canonical path.
+        await notification_tiers.send_urgent(
+            "delta token reset — full resync in progress",
+            "sync",
+            db_path=db_path,
+        )
         _resync_notification_fired = True
 
 

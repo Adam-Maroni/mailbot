@@ -139,11 +139,19 @@ async def test_check_alarm_fires_on_failed_outcome(
     await upsert_heartbeat(db_path, component="sync", outcome="failed", error="boom")
     await _check_alarm(db_path, state)
     assert state.alarm_fired_for_episode is True
-    jsonl = (tmp_path / "logs" / "notifications_pending.jsonl").read_text(encoding="utf-8").splitlines()
-    assert len(jsonl) == 1
-    record = json.loads(jsonl[0])
-    assert "sync stale" in record["message"]
-    assert record["kind"] == "urgent"
+    # Story 6-3: outbox-backed dispatch (not JSONL).
+    from mailbot_api.db.connection import fetchall as _fetchall
+    from mailbot_api.db.connection import fetchone as _fetchone
+    from mailbot_api.db.queries import (
+        NOTIFICATIONS_OUTBOX_COUNT_ALL,
+        NOTIFICATIONS_OUTBOX_LIST_ALL,
+    )
+
+    count_row = await _fetchone(db_path, NOTIFICATIONS_OUTBOX_COUNT_ALL, ())
+    assert count_row is not None and count_row[0] == 1
+    rows = await _fetchall(db_path, NOTIFICATIONS_OUTBOX_LIST_ALL, ())
+    assert "sync stale" in rows[0][3]
+    assert rows[0][1] == "urgent"
 
 
 async def test_alarm_fires_only_once_per_episode(
@@ -156,8 +164,12 @@ async def test_alarm_fires_only_once_per_episode(
     await _check_alarm(db_path, state)
     await _check_alarm(db_path, state)
     await _check_alarm(db_path, state)
-    jsonl = (tmp_path / "logs" / "notifications_pending.jsonl").read_text(encoding="utf-8").splitlines()
-    assert len(jsonl) == 1  # debounced
+    # Story 6-3: outbox-backed dispatch (debounced — only one row).
+    from mailbot_api.db.connection import fetchone as _fetchone_d
+    from mailbot_api.db.queries import NOTIFICATIONS_OUTBOX_COUNT_ALL as _COUNT_D
+
+    count_row = await _fetchone_d(db_path, _COUNT_D, ())
+    assert count_row is not None and count_row[0] == 1
 
 
 async def test_alarm_resets_on_recovery(
@@ -192,8 +204,12 @@ async def test_alarm_resets_on_recovery(
     await _check_alarm(db_path, state)
     assert state.alarm_fired_for_episode is True
 
-    jsonl_lines = (tmp_path / "logs" / "notifications_pending.jsonl").read_text(encoding="utf-8").splitlines()
-    assert len(jsonl_lines) == 2  # two episodes, two notifications
+    # Story 6-3: outbox-backed dispatch — 2 rows (one per episode).
+    from mailbot_api.db.connection import fetchone as _fetchone_r
+    from mailbot_api.db.queries import NOTIFICATIONS_OUTBOX_COUNT_ALL as _COUNT_R
+
+    count_row = await _fetchone_r(db_path, _COUNT_R, ())
+    assert count_row is not None and count_row[0] == 2
 
 
 async def test_check_alarm_silent_when_no_heartbeat_yet(
@@ -207,7 +223,19 @@ async def test_check_alarm_silent_when_no_heartbeat_yet(
     assert state.alarm_fired_for_episode is False
 
 
-async def test_send_urgent_writes_jsonl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_send_urgent_writes_jsonl_LEGACY(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LEGACY surface test — Story 6-3 CR LOW-2 disposition.
+
+    `mailbot_api/notifications/__init__.py:send_urgent` is the Story 1-8
+    sync JSONL writer. Story 6-3 migrated all production call sites to the
+    new async `notifications.tiers.send_urgent` (DB-backed). This test
+    keeps the JSONL stub working for one-epic backwards compat — it does
+    NOT validate any production code path post-Story-6-3. Marked LEGACY
+    in the name so future devs know to delete it if/when the stub is
+    removed (likely Epic 7).
+    """
     monkeypatch.setenv("MAILBOT_LOGS_PATH", str(tmp_path / "logs"))
     send_urgent("test message")
     send_urgent("another")
@@ -219,6 +247,35 @@ async def test_send_urgent_writes_jsonl(tmp_path: Path, monkeypatch: pytest.Monk
     assert r1["message"] == "test message"
     assert r1["kind"] == "urgent"
     assert r1["ts"].endswith("Z")
+
+
+async def test_check_alarm_writes_to_outbox_via_tiers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Story 6-3 CR LOW-2: explicit end-to-end test that `_check_alarm`
+    triggers a row in `notifications_outbox` via `tiers.send_urgent` —
+    not just that a sync loop happens to produce one. Direct call to the
+    alarm function so the path is unambiguous."""
+    from mailbot_api.db.connection import fetchall as _fetchall
+    from mailbot_api.db.connection import fetchone as _fetchone
+    from mailbot_api.db.queries import (
+        NOTIFICATIONS_OUTBOX_COUNT_ALL,
+        NOTIFICATIONS_OUTBOX_LIST_ALL,
+    )
+
+    db_path = await _prepare_db(tmp_path)
+    monkeypatch.setenv("MAILBOT_LOGS_PATH", str(tmp_path / "logs"))
+    state = WorkerState()
+    await upsert_heartbeat(db_path, component="sync", outcome="failed", error="boom")
+
+    await _check_alarm(db_path, state)
+
+    count = await _fetchone(db_path, NOTIFICATIONS_OUTBOX_COUNT_ALL, ())
+    assert count is not None and count[0] == 1
+    rows = await _fetchall(db_path, NOTIFICATIONS_OUTBOX_LIST_ALL, ())
+    assert rows[0][1] == "urgent"
+    assert rows[0][2] == "health"
+    assert "sync stale" in rows[0][3]
 
 
 async def test_sync_loop_runs_bounded_iterations(

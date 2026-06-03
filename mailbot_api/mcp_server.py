@@ -1,6 +1,6 @@
-"""MCP server exposing MailBot verbs as tools — Story 5-2; extended in Story 5-6.
+"""MCP server exposing MailBot verbs as tools — Story 5-2; extended in Story 5-6 + 6-8.
 
-Builds a ``FastMCP`` instance and registers 16 of the project's verbs as MCP
+Builds a ``FastMCP`` instance and registers 22 of the project's verbs as MCP
 tools.
 
 The 11 baseline tools (Story 5-2): ``find_emails``, ``hydrate_email``,
@@ -11,8 +11,23 @@ The 11 baseline tools (Story 5-2): ``find_emails``, ``hydrate_email``,
 The 5 slash-command surface tools added in Story 5-6 (closing Story 5-2's
 deferral): ``cost_breakdown`` (slash: /cost), ``reset_degraded_mode``
 (/budget reset), ``pause_router`` (/pause), ``resume_router`` (/resume), and
-the new ``mute_category`` (/mute). Each maps to a Discord slash command
-declared in ``hermes-config/config.yaml#gateway.discord.slash_commands``.
+``mute_category`` (/mute).
+
+The 1 analytics tool added in Story 6-8 (AR-ANALYTICS-1): ``render_spend_chart``
+(slash: /spend) — returns a matplotlib-rendered PNG of cost-per-task over
+today/week/month.
+
+The 2 notification-dispatcher tools added in Story 6-3:
+``pull_pending_notifications`` (Hermes atomically claims up to N urgent
+rows from notifications_outbox) + ``ack_notification`` (Hermes finalizes
+each row with ok/failed). This is the schema-reality replacement for the
+epic spec's invented Hermes inbound-HTTP delivery.
+
+Each slash-command surface tool is intended to surface as a Discord slash
+command — the dispatch contract is **a follow-up Hermes-skill bundle under
+hermes-config/skills/mailbot/** per Story 6-0's RECONCILIATION-NOTES §6 item 1
+(Story 5-6's config-YAML registry was based on an invented Hermes schema and
+was retired by Story 6-0).
 
 Per AR-D7-1 the server runs as part of the ``uvicorn mailbot_api.main:app``
 process on port 8000 under path ``/mcp`` (FastMCP's default ``streamable_http_path``).
@@ -69,15 +84,24 @@ from mailbot_api.verbs import (
 from mailbot_api.verbs import (
     reset_hydration_count as _reset_hydration_count,
 )
+from mailbot_api.verbs.ack_notification import ack_notification as _ack_notification
+from mailbot_api.verbs.analytics import render_spend_chart as _render_spend_chart
 from mailbot_api.verbs.budget_admin import reset_degraded_mode as _reset_degraded_mode
 from mailbot_api.verbs.cancel_action import cancel_action as _cancel_action
+from mailbot_api.verbs.compose_digest import compose_digest as _compose_digest
 from mailbot_api.verbs.cost import cost_breakdown as _cost_breakdown
+from mailbot_api.verbs.finalize_digest_delivery import (
+    finalize_digest_delivery as _finalize_digest_delivery,
+)
 from mailbot_api.verbs.mint_grant import mint_grant as _mint_grant
 from mailbot_api.verbs.mint_sensitivity_token import (
     mint_sensitivity_token as _mint_sensitivity_token,
 )
 from mailbot_api.verbs.mute_category import mute_category as _mute_category
 from mailbot_api.verbs.propose_action import propose_action as _propose_action
+from mailbot_api.verbs.pull_pending_notifications import (
+    pull_pending_notifications as _pull_pending_notifications,
+)
 from mailbot_api.verbs.revert_action import revert_action as _revert_action
 from mailbot_api.verbs.revoke_grant import revoke_grant as _revoke_grant
 from mailbot_api.verbs.router_control import (
@@ -87,6 +111,7 @@ from mailbot_api.verbs.router_control import (
     resume_router as _resume_router,
 )
 from mailbot_api.verbs.schemas import FindEmailsFilter
+from mailbot_api.verbs.unmute_category import unmute_category as _unmute_category
 
 _logger = logging.getLogger(__name__)
 
@@ -149,8 +174,10 @@ def _session_id_from_ctx(ctx: Context[Any, Any, Any]) -> str:
 
 
 def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
-    """Construct the 16 tool wrappers closed over the given _ServerContext.
-    (11 Story-5-2 baseline + 5 Story-5-6 slash-command surface.)
+    """Construct the 22 tool wrappers closed over the given _ServerContext.
+    (11 Story-5-2 baseline + 5 Story-5-6 slash-command surface + 1 Story-6-8
+    analytics + 2 Story-6-3 notification dispatcher pull/ack +
+    1 Story-6-4 unmute_category + 2 Story-6-5 digest compose/finalize.)
 
     Returned dict maps verb-name → wrapper coroutine. The wrappers each take
     only agent-supplied kwargs (db_path / session_id never appear in their
@@ -424,8 +451,9 @@ def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
     #
     # These five verbs are the slash-command surface for /cost, /pause, /resume,
     # /budget reset, and /mute. The Hermes Discord adapter dispatches each
-    # slash command to its corresponding tool here per
-    # hermes-config/config.yaml#gateway.discord.slash_commands.
+    # slash command to its corresponding tool via the (forthcoming) Hermes
+    # skill bundle at hermes-config/skills/mailbot/ — see Story 6-0
+    # RECONCILIATION-NOTES §6 item 1 for the carry-forward.
 
     async def cost_breakdown(
         ctx: Context[Any, Any, Any], period: str = "today"
@@ -528,6 +556,145 @@ def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
             _log_ok("mute_category", sid, latency_ms)
         return out
 
+    # ---- Story 6-5: daily digest composer + delivery finalizer ----
+
+    async def compose_digest(ctx: Context[Any, Any, Any]) -> Any:
+        sid = _session_id_from_ctx(ctx)
+        t0 = time.perf_counter()
+        try:
+            out = await _compose_digest(db_path=server_ctx.require_db_path())
+        except Exception as exc:  # noqa: BLE001
+            _log_crash("compose_digest", sid, exc, int((time.perf_counter() - t0) * 1000))
+            raise
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        code = _maybe_error_code(out)
+        if code:
+            _log_error_as_data("compose_digest", sid, code, latency_ms)
+        else:
+            _log_ok("compose_digest", sid, latency_ms)
+        return out
+
+    async def finalize_digest_delivery(ctx: Context[Any, Any, Any]) -> Any:
+        sid = _session_id_from_ctx(ctx)
+        t0 = time.perf_counter()
+        try:
+            out = await _finalize_digest_delivery(
+                db_path=server_ctx.require_db_path()
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log_crash(
+                "finalize_digest_delivery", sid, exc,
+                int((time.perf_counter() - t0) * 1000),
+            )
+            raise
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        code = _maybe_error_code(out)
+        if code:
+            _log_error_as_data("finalize_digest_delivery", sid, code, latency_ms)
+        else:
+            _log_ok("finalize_digest_delivery", sid, latency_ms)
+        return out
+
+    # ---- Story 6-4: /unmute companion to Story 5-6's /mute ----
+
+    async def unmute_category(
+        category: str, ctx: Context[Any, Any, Any]
+    ) -> Any:
+        sid = _session_id_from_ctx(ctx)
+        t0 = time.perf_counter()
+        try:
+            out = await _unmute_category(
+                category, db_path=server_ctx.require_db_path()
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log_crash("unmute_category", sid, exc, int((time.perf_counter() - t0) * 1000))
+            raise
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        code = _maybe_error_code(out)
+        if code:
+            _log_error_as_data("unmute_category", sid, code, latency_ms)
+        else:
+            _log_ok("unmute_category", sid, latency_ms)
+        return out
+
+    # ---- Story 6-3: notification dispatcher pull/ack surface ----
+
+    async def pull_pending_notifications(
+        ctx: Context[Any, Any, Any], limit: int = 10
+    ) -> Any:
+        sid = _session_id_from_ctx(ctx)
+        t0 = time.perf_counter()
+        try:
+            out = await _pull_pending_notifications(
+                limit, db_path=server_ctx.require_db_path()
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log_crash(
+                "pull_pending_notifications", sid, exc,
+                int((time.perf_counter() - t0) * 1000),
+            )
+            raise
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        code = _maybe_error_code(out)
+        if code:
+            _log_error_as_data("pull_pending_notifications", sid, code, latency_ms)
+        else:
+            _log_ok("pull_pending_notifications", sid, latency_ms)
+        return out
+
+    async def ack_notification(
+        notification_id: int,
+        delivery_status: str,
+        ctx: Context[Any, Any, Any],
+        error: str | None = None,
+    ) -> Any:
+        sid = _session_id_from_ctx(ctx)
+        t0 = time.perf_counter()
+        try:
+            out = await _ack_notification(
+                notification_id,
+                delivery_status,  # type: ignore[arg-type]
+                error,
+                db_path=server_ctx.require_db_path(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log_crash(
+                "ack_notification", sid, exc,
+                int((time.perf_counter() - t0) * 1000),
+            )
+            raise
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        code = _maybe_error_code(out)
+        if code:
+            _log_error_as_data("ack_notification", sid, code, latency_ms)
+        else:
+            _log_ok("ack_notification", sid, latency_ms)
+        return out
+
+    # ---- Story 6-8: render_spend_chart (analytics surface, /spend) ----
+
+    async def render_spend_chart(
+        ctx: Context[Any, Any, Any], period: str = "month"
+    ) -> Any:
+        # Story 6-8 mirrors Story 5-6 CR-1 fix: default to "month" so the
+        # Discord slash command's `required: false` period option works
+        # end-to-end. The verb itself raises ValueError on any other string
+        # via _period_window_start.
+        sid = _session_id_from_ctx(ctx)
+        t0 = time.perf_counter()
+        try:
+            out = await _render_spend_chart(period, db_path=server_ctx.require_db_path())  # type: ignore[arg-type]
+        except Exception as exc:  # noqa: BLE001
+            _log_crash("render_spend_chart", sid, exc, int((time.perf_counter() - t0) * 1000))
+            raise
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        code = _maybe_error_code(out)
+        if code:
+            _log_error_as_data("render_spend_chart", sid, code, latency_ms)
+        else:
+            _log_ok("render_spend_chart", sid, latency_ms)
+        return out
+
     return {
         "find_emails": find_emails,
         "hydrate_email": hydrate_email,
@@ -546,6 +713,17 @@ def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
         "pause_router": pause_router,
         "resume_router": resume_router,
         "mute_category": mute_category,
+        # Story 6-8 — analytics surface (/spend slash command).
+        "render_spend_chart": render_spend_chart,
+        # Story 6-3 — notification dispatcher pull/ack (Hermes-pulled urgent
+        # delivery via MCP, replaces the invented inbound-HTTP epic spec).
+        "pull_pending_notifications": pull_pending_notifications,
+        "ack_notification": ack_notification,
+        # Story 6-4 — /unmute companion to Story 5-6's /mute.
+        "unmute_category": unmute_category,
+        # Story 6-5 — daily digest assembly + delivery sweep.
+        "compose_digest": compose_digest,
+        "finalize_digest_delivery": finalize_digest_delivery,
     }
 
 
@@ -619,13 +797,49 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
     ),
     "mute_category": (
         "Mute a notification category until a timestamp (or indefinitely). "
+        "SHARP EDGE: silences ALL tiers including urgent. Avoid indefinite "
+        "mutes on ops categories (health, sync, router_anomaly). "
         "Slash-command surface: /mute (Story 5-6); "
         "Epic 6's dispatcher reads from notification_mutes."
+    ),
+    "render_spend_chart": (
+        "Render a per-task cost chart for the period (today | week | month). "
+        "Returns a 1200×800 PNG (image/png) ready to attach to a Discord message. "
+        "Slash-command surface: /spend (Story 6-8); "
+        "AR-ANALYTICS-1 + AR-ANALYTICS-2 — matplotlib Agg backend, bytes-only return."
+    ),
+    "pull_pending_notifications": (
+        "Pull up to `limit` (≤ 25) urgent-tier notifications from "
+        "notifications_outbox. Atomically claims each (delivery_status: "
+        "pending → delivering). Hermes posts each to Discord then calls "
+        "ack_notification. FIFO ordering by enqueued_at. Story 6-3."
+    ),
+    "ack_notification": (
+        "Finalize a pulled notification by id with delivery_status='ok' "
+        "(success → terminal ok) or 'failed' (retry under 5-attempt cap, "
+        "else terminal failed_max_retries). Story 6-3."
+    ),
+    "unmute_category": (
+        "Clear a notification mute by category. Companion to "
+        "/mute (Story 5-6); idempotent — returns was_muted=False if "
+        "the category had no mute. Slash-command surface: /unmute. Story 6-4."
+    ),
+    "compose_digest": (
+        "Assemble the 08:00 daily digest payload: unread emails bucketed by "
+        "importance, pending Tier-2 batches, queued tier='important' "
+        "notifications, weekly artifacts. Cached projections only (Rule J + "
+        "Rule A); no LLM call. Hermes's cron job invokes for the intro+post. "
+        "Story 6-5."
+    ),
+    "finalize_digest_delivery": (
+        "Mark every queued tier='important' notification as delivered via "
+        "digest (delivery_status='ok_via_digest'). Called by Hermes after "
+        "posting the digest. Idempotent. Story 6-5."
     ),
 }
 
 
-_EXPECTED_TOOL_COUNT = 16
+_EXPECTED_TOOL_COUNT = 22
 
 
 # ---------------------------------------------------------------------------
@@ -634,7 +848,7 @@ _EXPECTED_TOOL_COUNT = 16
 
 
 def build_mcp_server(*, db_path: str | None = None) -> FastMCP:
-    """Build and configure a FastMCP server with all 16 MailBot tools registered.
+    """Build and configure a FastMCP server with all 22 MailBot tools registered.
     (11 Story-5-2 baseline read+write verbs + 5 Story-5-6 slash-command surface
     verbs.)
 
@@ -645,8 +859,20 @@ def build_mcp_server(*, db_path: str | None = None) -> FastMCP:
     The returned server has a ``_mailbot_server_ctx`` attribute (the
     ``_ServerContext`` instance) for tests and the lifespan to mutate.
     """
+    # Story 6-6.6 F6 closure: `streamable_http_path="/"` defeats the inner-
+    # mount double-prefix bug. FastMCP's default registers an INNER Starlette
+    # `Route("/mcp", endpoint=streamable_http_app)` inside its returned app.
+    # `mailbot_api/main.py` then mounts that whole app via
+    # `Mount("/mcp", app=streamable_http_app)`. Effective full path becomes
+    # `/mcp/mcp`. POST /mcp from Hermes → Mount strips prefix → empty path →
+    # 307 to `/mcp/` (Starlette redirect_slashes default) → still no match →
+    # 404. By setting the inner path to `/`, the Mount prefix-strip lands on
+    # `/` which matches the inner route directly, and the effective path is
+    # back to `/mcp` as documented in `hermes-config/config.yaml`. One kwarg;
+    # no Mount edit; no Hermes-side change.
     server = FastMCP(
         name="mailbot-api",
+        streamable_http_path="/",
         instructions=(
             "MailBot agent-facing verb surface. Read verbs (find_emails, "
             "hydrate_email, get_thread, count_emails, get_sender_summary) are "
@@ -654,9 +880,10 @@ def build_mcp_server(*, db_path: str | None = None) -> FastMCP:
             "mint_grant, revoke_grant, cancel_action, revert_action, "
             "mint_sensitivity_token) follow the second-auth-check pattern. "
             "Slash-command-surface verbs (cost_breakdown, reset_degraded_mode, "
-            "pause_router, resume_router, mute_category) are the verb side of "
-            "Discord slash commands; agent invocations are allowed but should "
-            "cite the user intent in the reasoning trace. "
+            "pause_router, resume_router, mute_category, render_spend_chart) "
+            "are the verb side of Discord slash commands; agent invocations "
+            "are allowed but should cite the user intent in the reasoning "
+            "trace. "
             "Always inspect `result.error` after every tool call — verbs return "
             "error-as-data and never raise across the MCP boundary."
         ),

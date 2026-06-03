@@ -1,11 +1,19 @@
-"""Placeholder notification surface for Story 1-8.
+"""Notification surface — Story 1-8 placeholder + Story 6-3 four-tier dispatcher.
 
-`send_urgent(message)` writes a JSONL row to `MAILBOT_LOGS_PATH/notifications_pending.jsonl`.
-Epic 5 replaces the body with the Discord-via-Hermes integration. The function
-signature stays stable across that refactor.
+Story 6-3 introduced `mailbot_api.notifications.tiers` with async
+`send_urgent / send_important / send_informational / send_silent` APIs that
+write to the `notifications_outbox` SQLite table. Hermes pulls via the MCP
+verbs `pull_pending_notifications` + `ack_notification`.
 
-Why JSONL: each row is one notification; structured for the Epic 5 consumer to
-read tail-style; line-delimited so partial writes are always recoverable.
+This module retains the LEGACY sync `send_urgent(message, *, kind=...)` JSONL
+writer as a one-epic deprecation forwarder for code paths that haven't yet
+migrated. New code should import from `mailbot_api.notifications.tiers`
+directly (async + DB-backed).
+
+The legacy writer is preserved in-file (it doesn't forward to the async
+dispatcher because the call sites are sync and the JSONL audit trail is
+still useful for offline replay until Story 6-3's outbox is the only source
+of truth).
 """
 
 from __future__ import annotations

@@ -29,6 +29,12 @@ Bans enforced:
     `mailbot_api/verbs/propose_action.py`).
   - Story 5-2 AC-7: `from mcp.server.fastmcp` outside `mailbot_api/mcp_server.py`.
     Keeps the FastMCP dependency localized to the MCP server module.
+  - Story 6-8 AC-3: `import matplotlib.pyplot` / `from matplotlib.pyplot`
+    outside `mailbot_api/verbs/analytics/`. Bare `import matplotlib` is
+    permitted (analytics verbs need `matplotlib.use("Agg")` BEFORE the pyplot
+    import); only the pyplot gateway is locked down. AR-ANALYTICS-1 +
+    AR-ANALYTICS-2 — chart rendering is owned by analytics verbs returning
+    `(bytes, mime_type)` shapes.
 
 Output: one line per violation, non-zero exit code on any violation.
 """
@@ -157,6 +163,24 @@ _VERBS_IMPORT_ALLOW = frozenset(
         # Story 5-6: notification mute write-side; reads from
         # notification_mutes happen in Epic 6's dispatcher.
         "mailbot_api/verbs/mute_category.py",
+        # Story 6-8: analytics surface — render_spend_chart is the first
+        # analytics verb. Both the package __init__ (re-export) and the
+        # render module itself live inside the verbs package; they re-import
+        # each other for ergonomic `from mailbot_api.verbs.analytics import
+        # render_spend_chart` consumers (the MCP server).
+        "mailbot_api/verbs/analytics/__init__.py",
+        "mailbot_api/verbs/analytics/render_spend_chart.py",
+        # Story 6-3: notification dispatcher verbs — pull/ack ride the same
+        # MCP surface F6 closure unblocked. Hermes polls pull every ~10s.
+        "mailbot_api/verbs/pull_pending_notifications.py",
+        "mailbot_api/verbs/ack_notification.py",
+        # Story 6-4: /unmute companion to Story 5-6's /mute. Clears
+        # notification_mutes rows by category.
+        "mailbot_api/verbs/unmute_category.py",
+        # Story 6-5: daily digest verbs — compose reads cached projections,
+        # finalize sweeps queued important rows to ok_via_digest terminal.
+        "mailbot_api/verbs/compose_digest.py",
+        "mailbot_api/verbs/finalize_digest_delivery.py",
         # Story 5-8: reference-resolution orchestrator. Consumes EmailProjection
         # from verbs.schemas to type the candidate_projections context field;
         # itself an agent-facing surface (chat surface) so the verb-import
@@ -181,6 +205,18 @@ _VERBS_IMPORT_ALLOW = frozenset(
 # from `mcp.server.fastmcp`. The MCP SDK is a heavy dependency we keep
 # localized; tests live under tests/ and are not scanned.
 _FASTMCP_IMPORT_ALLOW = frozenset({"mailbot_api/mcp_server.py"})
+# Story 6-8 AC-3: matplotlib.pyplot import isolation. Only analytics verbs
+# may reach for pyplot — the chart rendering surface is locked to
+# `mailbot_api/verbs/analytics/`. `import matplotlib` (without `.pyplot`) is
+# permitted everywhere — analytics verbs need `matplotlib.use("Agg")` BEFORE
+# the pyplot import, and future analytics modules may need `matplotlib.figure`
+# or `matplotlib.transforms` directly. Only the pyplot module is the gateway
+# we're locking down.
+_MATPLOTLIB_PYPLOT_ALLOW = frozenset(
+    {
+        "mailbot_api/verbs/analytics/render_spend_chart.py",
+    }
+)
 _ACTION_TYPE_VALUES = frozenset(
     {
         # Tier 1
@@ -422,6 +458,21 @@ def check_file(path: Path, repo_root: Path) -> list[str]:
                             _FASTMCP_IMPORT_ALLOW,
                         )
                     )
+                # Story 6-8 AC-3: `import matplotlib.pyplot[.xxx]` outside the
+                # analytics-verb allowlist. Bare `import matplotlib` is permitted
+                # (analytics verbs need it for the `matplotlib.use("Agg")` call
+                # at module-load time, BEFORE the pyplot import).
+                if (
+                    alias.name == "matplotlib.pyplot"
+                    or alias.name.startswith("matplotlib.pyplot.")
+                ) and rel not in _MATPLOTLIB_PYPLOT_ALLOW:
+                    violations.append(
+                        _violation(
+                            node.lineno,
+                            f"`import {alias.name}`",
+                            _MATPLOTLIB_PYPLOT_ALLOW,
+                        )
+                    )
 
         # Story 2-2 AC-12: `yaml.safe_load(...)` / `yaml.load(...)` calls.
         # Detection on Call → Attribute (`yaml.safe_load(...)`); imports of
@@ -483,6 +534,35 @@ def check_file(path: Path, repo_root: Path) -> list[str]:
                         _FASTMCP_IMPORT_ALLOW,
                     )
                 )
+            # Story 6-8 AC-3: `from matplotlib.pyplot import ...` outside the
+            # analytics-verb allowlist.
+            if (
+                full_mod == "matplotlib.pyplot"
+                or full_mod.startswith("matplotlib.pyplot.")
+            ) and rel not in _MATPLOTLIB_PYPLOT_ALLOW:
+                violations.append(
+                    _violation(
+                        node.lineno,
+                        f"`from {full_mod} import ...`",
+                        _MATPLOTLIB_PYPLOT_ALLOW,
+                    )
+                )
+            # Story 6-8 CR-MED-1: indirect-import bypass —
+            # `from matplotlib import pyplot [as plt]`. Mirrors the Story 5-2
+            # CR-5 closure for the verbs boundary (`from mailbot_api import
+            # verbs`). Without this guard, any module could write
+            # `from matplotlib import pyplot as plt` and reach into pyplot
+            # without firing the primary check above.
+            if full_mod == "matplotlib" and rel not in _MATPLOTLIB_PYPLOT_ALLOW:
+                for alias in node.names:
+                    if alias.name == "pyplot":
+                        violations.append(
+                            _violation(
+                                node.lineno,
+                                "`from matplotlib import pyplot` (indirect bypass)",
+                                _MATPLOTLIB_PYPLOT_ALLOW,
+                            )
+                        )
             # Story 2-2 review fix LOW: `from yaml import safe_load`
             # bare-name bypass — the bare `safe_load(x)` call after such an
             # import won't be caught by the `yaml.safe_load(...)` attribute

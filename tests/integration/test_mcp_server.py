@@ -173,13 +173,10 @@ def _parse_tool_result(result: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def test_build_mcp_server_registers_16_tools_with_expected_names(tmp_path: Path) -> None:
-    """Story 5-6 extended Story 5-2's 11-tool baseline by 5 slash-command verbs
-    (cost_breakdown / reset_degraded_mode / pause_router / resume_router /
-    mute_category). The expected set is now 16."""
+def test_build_mcp_server_registers_22_tools_with_expected_names(tmp_path: Path) -> None:
+    """Story 5-6 → 16; Story 6-8 → 17; Story 6-3 → 19; Story 6-4 → 20;
+    Story 6-5 → 22 (compose_digest + finalize_digest_delivery)."""
     server = build_mcp_server(db_path=str(tmp_path / "x.db"))
-    # FastMCP exposes the registered tools via list_tools (async); use the
-    # tool manager directly for a sync snapshot.
     tool_names = sorted(server._tool_manager._tools.keys())  # type: ignore[attr-defined]
     expected = sorted(
         [
@@ -201,10 +198,20 @@ def test_build_mcp_server_registers_16_tools_with_expected_names(tmp_path: Path)
             "pause_router",
             "resume_router",
             "mute_category",
+            # Story 6-8 addition (1).
+            "render_spend_chart",
+            # Story 6-3 additions (2).
+            "pull_pending_notifications",
+            "ack_notification",
+            # Story 6-4 addition (1).
+            "unmute_category",
+            # Story 6-5 additions (2).
+            "compose_digest",
+            "finalize_digest_delivery",
         ]
     )
     assert tool_names == expected, f"unexpected tool set: {tool_names}"
-    assert len(tool_names) == 16
+    assert len(tool_names) == 22
 
 
 def test_internal_verbs_are_not_registered(tmp_path: Path) -> None:
@@ -265,8 +272,9 @@ async def test_list_tools_returns_constraint_phrases(tmp_path: Path) -> None:
         await client.initialize()
         listed = await client.list_tools()
     by_name = {t.name: t for t in listed.tools}
-    # Story 5-6 bumped the registered tool count from 11 to 16.
-    assert len(by_name) == 16
+    # Story 5-6 → 16; Story 6-8 → 17; Story 6-3 → 19; Story 6-4 → 20;
+    # Story 6-5 → 22 (compose_digest + finalize_digest_delivery).
+    assert len(by_name) == 22
     # find_emails must mention the 100-cap + Rule J.
     assert "100" in by_name["find_emails"].description
     assert "Rule J" in by_name["find_emails"].description

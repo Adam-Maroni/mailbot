@@ -153,7 +153,59 @@ Tier-handling responsibility: the verb REFUSES on `confidential` emails (per
 AR-D12-1). Do not retry; surface the refusal with a defender-toned message:
 "Confidential emails admit no API override. The body stays on your VPS, period."
 
-## Router verbs — `ask_router` is intentionally NOT MCP-exposed
+## Slash-command verbs (MCP-exposed as of Story 5-6 + Story 6-8)
+
+The slash-command surface (`/cost`, `/pause`, `/resume`, `/budget reset`,
+`/mute`, `/spend`) maps to MCP-exposed verbs. Adam types the slash command in
+Discord; Hermes routes via its slash dispatcher to the corresponding MCP tool.
+
+### `cost_breakdown`
+
+Purpose: return Router cost breakdown for the period (today | month). Per-task /
+per-model / per-caller_origin aggregations + cache hit rate.
+
+Slash command: `/cost [period]` (default: today).
+
+### `reset_degraded_mode`
+
+Purpose: flip `degraded_mode_state` to inactive and clear the in-memory flag.
+
+Slash command: `/budget reset`.
+
+### `pause_router` / `resume_router`
+
+Purpose: pause the Router lane scheduler with a reason / resume it.
+
+Slash commands: `/pause [reason]`, `/resume`.
+
+### `mute_category`
+
+Purpose: mute a notification category until a timestamp (or indefinitely).
+Epic 6's dispatcher reads from `notification_mutes`.
+
+Slash command: `/mute <category> [until]`.
+
+### `render_spend_chart`
+
+Purpose: render a 1200×800 PNG horizontal bar chart of cost-per-task over
+today/week/month. Returns the bytes ready to attach to a Discord message + a
+text summary line.
+
+Example user turn: `/spend month` → call `render_spend_chart(period="month")` →
+receive `RenderSpendChartOut(image_bytes=..., total_usd=..., top_task=...,
+task_count=...)` → post a single Discord message with the PNG as an attachment
+and the documented text summary: `"$X.XX spent month. Top task: {top_task}
+(${Y.YY}). Cap: $30."`.
+
+AR-ANALYTICS-1 + AR-ANALYTICS-2 discipline: the chart is rendered via
+matplotlib's `Agg` backend; PNG bytes are returned (never written to disk on
+mailbot-api); any chart text labels pass through the Story 5-7 chat-input
+redactor before being baked into the image. The `render_spend_chart` verb is
+the FIRST analytics verb to ship; future analytics verbs follow the same
+package-isolation discipline (lives under `mailbot_api/verbs/analytics/`,
+boundary-checker-enforced `matplotlib.pyplot` isolation).
+
+## Router-internal — `ask_router` is intentionally NOT MCP-exposed
 
 The Router's dispatch surface (`ask_router`) is NOT exposed as an MCP tool. This
 is by design — re-exposing it would let you bypass:
@@ -171,13 +223,8 @@ provider/auxiliary inference path per `hermes-config/config.yaml`. You reach
 the Router by sending a chat-completions request through Hermes's normal
 provider chain, NOT by calling `ask_router` as a tool.
 
-Other internal verbs that are also NOT MCP-exposed:
-
-- `cost_breakdown`, `reset_degraded_mode`, `pause_router`, `resume_router` —
-  these are the verb-side handlers for Discord slash commands. Story 5-6 wires
-  them up alongside the slash-command dispatcher.
-- `reset_hydration_count` — server-internal lifecycle helper called by the MCP
-  server between turns. Not an agent-facing tool.
+`reset_hydration_count` is a server-internal lifecycle helper called by the MCP
+server between turns. Not an agent-facing tool.
 
 ## End-to-end turn structures
 
@@ -274,3 +321,25 @@ Steps:
 Banned: never short-circuit to step 5 without step 4. Never proceed past step 1
 if `resolved_email_ids` is empty (you cannot delete an email you cannot
 identify; ask for clarification instead).
+
+### Turn structure 4 — `/spend month`
+
+User: `/spend month` (or `/spend week` / `/spend today` — defaults to month).
+
+Steps:
+
+1. Slash-dispatcher routes the command to `render_spend_chart(period="month")`
+   via MCP. Receive `RenderSpendChartOut(image_bytes=<png>, total_usd=...,
+   top_task=..., task_count=...)`.
+2. Post a single Discord message with the PNG as an attachment and the text
+   summary: `"$X.XX spent month. Top task: {top_task} (${Y.YY}). Cap: $30."`
+   where the dollar amounts come from `out.total_usd` and the cost of the top
+   task (read from a sibling `cost_breakdown(period="month")` call if needed
+   for the per-task breakdown).
+3. Done. Default notification tier (Rule R): inherits from the user's turn
+   (the user asked; you reply in the same channel).
+
+Banned: never render a /spend chart for a period the verb doesn't accept (only
+today / week / month — the verb raises `ValueError` on any other string).
+Never write the PNG to disk; the bytes go straight from the verb's BytesIO
+return to Discord's attachment upload.
