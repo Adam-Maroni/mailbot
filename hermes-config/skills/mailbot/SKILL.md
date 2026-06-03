@@ -1,3 +1,17 @@
+---
+name: mailbot
+description: "MailBot verb surface — Outlook triage + draft-reply + cost reporting via 22 MCP tools."
+version: 1.0.0
+author: Adam Maroni
+license: MIT
+platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    tags: [Email, Outlook, MCP, Defender, MailBot]
+    category: email
+    related_skills: [himalaya]
+---
+
 # SKILL.md — MailBot verb-surface reference
 
 This file walks the MCP verb surface Hermes consumes via the

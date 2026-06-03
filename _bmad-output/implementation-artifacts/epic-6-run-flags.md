@@ -72,23 +72,64 @@ CP-2 walk attempt #2 after F8 fix + rebuild:
 
 ---
 
-### F9 — Hermes main-inference uses bare `hermes_aux` prompt (no defender-persona, no skill-bundle dispatch) — **CARRY-FORWARD** (NOT a code bug — Hermes-skill-bundle dependency)
+### F9 — Hermes main-inference DM round-trip "Empty response" — **CARRY-FORWARD** (now precisely scoped to F11 dependency)
 
-**Discovered during:** Epic 6 Phase 3.5 CP-2 walk attempt #2 after F8 closure, 2026-06-03 ~20:45 UTC.
+**Discovered during:** Epic 6 Phase 3.5 CP-2 walk attempt #2 after F8 closure, 2026-06-03 ~20:45 UTC. **Sharpened by:** Path-1 investigation + CP-2 walk attempt #3 after Story 6-6.9, 2026-06-03 ~21:25 UTC.
 
 After F8 closure verified the chat-completions HTTP plumbing works end-to-end, the user-facing reply was: `"Empty response from model — retrying (1/3)... (2/3)... (3/3)... Model returned no content after all retries."`
 
-**Investigation:** Haiku DID return content (tokens_out=89-98 per call, total $0.034 across 5 retries). Direct curl `POST /v1/chat/completions` with `{"model": "hermes_aux", "messages": [{"role":"user","content":"spend month"}]}` returned `content: "SPEND MONTH"` — Haiku interpreted the `hermes_aux/v1.py` SYSTEM prompt's "auxiliary text-processing model — respond with the requested transformation only" instruction literally and uppercased the input.
+**Original investigation (attempt #2):** Haiku DID return content (tokens_out=89-98 per call, total $0.034 across 5 retries). Direct curl returned `content: "SPEND MONTH"` — Haiku interpreted the generic `hermes_aux/v1.py` SYSTEM prompt as a text-transformation request.
 
-**Root cause:** `mailbot_api/prompts/hermes_aux/v1.py` is a generic text-processor prompt — designed for compression / title generation / summarization (the Hermes-aux auxiliary calls). But Hermes is ALSO using `hermes_aux` for its MAIN inference path (the DM-bot conversational flow), because `hermes-config/config.yaml:24` sets `model.default: "hermes_aux"`. The main inference path needs:
+**Path-1 deeper investigation (attempt #3, post-Story-6-6.9):** After fixing the SKILL.md frontmatter contract gap (Story 6-6.9 — see per-story row below), Adam DMed `spend month` again. Same Discord-visible outcome ("Empty response"). But underlying state improved:
 
-- A defender-persona SYSTEM prompt (Story 5-5's `hermes-config/SOUL.md` content)
-- Tool-use schema (MailBot's 22 MCP tools available + the routing logic to invoke them)
-- Skill-bundle dispatch logic (Hermes loads `hermes-config/skills/mailbot/SKILL.md`, knows to invoke `render_spend_chart` for `/spend`, etc.)
+- mailbot-api log: 4× `POST /v1/chat/completions 200 OK` + 4× Anthropic round-trips
+- router_calls audit: 4 rows with `tokens_in=8079` (significantly larger system prompt — consistent with full SOUL.md + AGENTS.md + SKILL.md inclusion now that SKILL.md is valid per Hermes contract) + `tokens_out=68-89` + `cost=$0.0084 each`
+- Direct curl with explicit tool-describing system prompt: Haiku returns code-block-wrapped `render_spend_chart("month")` — **Haiku UNDERSTANDS the intent and wants to call the tool**, but produces text instead of `tool_calls` because no OpenAI tool-call API plumbing exists end-to-end
 
-NONE of this is wired up in the current Hermes runtime. This is the **Hermes-skill-bundle carry-forward** that's been Epic 6 retro readiness items #1 + #2 + #3 since 2026-06-03 morning. F9 is the surface symptom of that gap; the fix is the Hermes-side skill-bundle implementation, which is explicitly out-of-scope for the autonomous dev loop. **Owner:** Story 6-9 candidate or Epic 7 first item.
+**Sharpened root cause: F11** (see new F11 carry-forward block below). The original framing "Hermes-aux prompt is generic text-processor; main inference needs defender-persona-via-skill-bundle" had two components:
 
-F9 is filed here for traceability but is NOT a closure-story candidate — there's no mailbot-api-side bug to fix.
+| Component | Disposition |
+| --- | --- |
+| SKILL.md skill-loader contract gap | **RESOLVED by Story 6-6.9** (frontmatter fix; skill is now valid per Hermes contract) |
+| OpenAI tool-calling support on `/v1/chat/completions` | **Filed as F11** (carry-forward; multi-story scope) |
+
+**F9 disposition:** Remains carry-forward, but now precisely scoped to F11 (not a vague "Hermes-skill-bundle gap"). F9 will close when F11 closes. **Owner:** future story implementing F11 (sketch in F11 block below).
+
+---
+
+### F11 — `/v1/chat/completions` does not support OpenAI `tools=[...]` parameter — **CARRY-FORWARD** (multi-story scope; the actual F9 blocker)
+
+**Discovered during:** F9 Path-1 investigation, 2026-06-03 ~21:25 UTC.
+
+**Symptom:** Hermes's AIAgent assembles OpenAI-shape requests with `tools=[{"type":"function","function":{...}}, ...]` to expose MCP tools to the inference model. mailbot-api's Story 2-10 `/v1/chat/completions` endpoint silently drops the `tools` parameter at the Pydantic parse layer (the `_ChatCompletionsRequest` schema in `mailbot_api/main.py` has only `model / messages / max_tokens / temperature` — no `tools` field). Haiku receives a tools-less prompt, produces text-form intent (e.g., code-block-wrapped function call syntax), Hermes parses no `tool_calls` field → "Empty response" + retry.
+
+**Root cause:** Story 2-10 was scoped for Hermes-aux pass-through tasks (compression, title generation, summarization) where tool-calling isn't needed. The chat_completions endpoint design did not anticipate Hermes also using it for main-inference paths where tool-calling IS the entire point.
+
+**Multi-story scope** (NOT a 1-line fix):
+
+| Layer | Work required |
+| --- | --- |
+| Request schema | Add `tools: list[dict] \| None = None` + `tool_choice` to `_ChatCompletionsRequest` |
+| Router contract | Forward `tools` through `ask_router` (currently `ask_router` doesn't accept tools either) |
+| Adapter | `AnthropicAdapter.call` must pass `tools=[...]` to Anthropic Messages API (different tool-call format than OpenAI's; needs translation) |
+| Response | Translate Anthropic's `content: [{type: "tool_use", id, name, input}]` blocks back to OpenAI's `tool_calls: [{id, type: "function", function: {name, arguments}}]` shape |
+| Audit schema | `router_calls` schema may need `tool_calls_count` column or tool-call cost-accounting columns |
+| Tests | Tool-call round-trip integration tests covering: tools forwarded, response translated, audit captured, multi-round-trip tool_use ↔ tool_result conversation history maintained |
+| Sensitivity gates | Tool-use carrying email_id arguments needs the same sensitivity-precondition gates ask_router applies elsewhere |
+| Caching | Anthropic prompt cache (Story 2-6 Rule M) interacts with tools differently — likely needs cache-key inclusion of tools shape to prevent stale-cache contamination |
+
+**Estimated effort:** 4-8 hours of focused work plus design discussion before implementation. **Owner:** Story 6-9 candidate or Epic 7 first item. Should not be attempted as a single-session inline fix.
+
+**Implementation strategy notes (for future story):**
+
+1. Anthropic's tool-calling shape: `tools=[{"name": "render_spend_chart", "description": "...", "input_schema": {...}}]`. Response blocks have `type: "tool_use"` with `{id, name, input}`. Subsequent turns echo tool results back as `{type: "tool_result", tool_use_id, content}` blocks.
+2. OpenAI's tool-calling shape: `tools=[{"type": "function", "function": {"name", "description", "parameters"}}]`. Response has `tool_calls: [{id, type: "function", function: {"name", "arguments": "<JSON string>"}}]`. Subsequent turns echo tool results as `role: "tool" / tool_call_id / content` messages.
+3. Translation is non-trivial: argument shape (dict vs JSON string), id ownership (Anthropic generates; OpenAI client-supplies), multi-turn history reconstruction across mode boundaries.
+4. The AnthropicAdapter currently expects `AdapterResponse(text, tokens_in, tokens_out, cached_tokens_in, latency_ms, raw)`. Tool-call response needs a new shape (`tool_calls: list[...]` or similar) — touches the entire Router protocol contract.
+
+**F11 unblocks:** F9 (Discord round-trip), CP-2 PASS, CP-3 capstone walk's draft-reply flow (which also needs tool-calling), and any future Hermes-orchestrated `/spend / /cost / /pause / /resume / /mute` dispatch.
+
+**F11 disposition:** Filed as carry-forward at Epic 6 retro action #1 candidate (alongside the Hermes-cron-skill bundle work). Not a closure-story candidate for this session — too large.
 
 ---
 
@@ -237,11 +278,32 @@ PNG file: [`6-6-8-cp-2-walk-evidence/spend_month.png`](./6-6-8-cp-2-walk-evidenc
 
 **Closure-gate impact:** CP-2 walk record stands as PARTIAL-PASS. The Epic 6 done-flip remains gated on:
 
-1. F9 closure (Hermes-skill-bundle work — carry-forward stack #1+#2)
-2. CP-3 (Story 6-6.5 capstone walk) — F9-gated for CP-A/B/C round-trips AND credential-gated on missing OUTLOOK_CLIENT_SECRET
+1. F11 closure (the actual F9 blocker — OpenAI `tools=[...]` support on `/v1/chat/completions`, multi-story scope)
+2. CP-3 (Story 6-6.5 capstone walk) — F11-gated for CP-A/B/C draft-reply round-trips AND credential-gated on missing OUTLOOK_CLIENT_SECRET
 3. CP-1 (Story 6-7 deploy walk) — Hostinger VPS provisioning (operator-deferred)
 
-The carry-forward stack of mailbot-api-side dev work for Epic 6 is now **empty** — all 5 mailbot-api-side MCP/chat blockers (F3/F4/F5/F6/F7/F8) are closed. Remaining work is operator-side (Adam DMing + Hostinger provisioning) and Hermes-side (skill-bundle).
+The carry-forward stack of mailbot-api-side dev work for Epic 6 is now **largely empty** — all 4 mailbot-api-side MCP/chat boundary blockers (F3/F4/F5/F6/F7/F8) are closed, and the Hermes-config-side SKILL.md contract gap is closed. F11 is the remaining large gap, but it's now precisely scoped (Story 2-10 endpoint feature gap) instead of vague (carry-forward "Hermes-skill-bundle work"). Remaining work is operator-side (Adam DMing + Hostinger provisioning) and one well-scoped future story (F11).
+
+### CP-2 walk attempt #3 — post-Story-6-6.9 SKILL.md frontmatter fix (2026-06-03 ~21:22 UTC)
+
+**Verdict:** SAME Discord-visible outcome as attempt #2 (`"Empty response from model"`), but underlying state IS improved.
+
+**What changed (positive):**
+
+- Story 6-6.9's SKILL.md frontmatter fix is in place. Skill is now valid per Hermes contract (the himalaya / native-mcp / 80+ other bundled skills' shape)
+- mailbot-api log: 4× `POST /v1/chat/completions 200 OK` + 4× Anthropic round-trips (same plumbing-works evidence as attempt #2)
+- `router_calls` audit: 4 rows with `tokens_in=8079` — consistent with full SOUL.md + AGENTS.md + SKILL.md inclusion in the system prompt; tokens_out=68-89; cost=$0.0084 each
+- Direct curl reproduction with explicit tools-describing system prompt: Haiku returns code-block-wrapped `render_spend_chart("month")` — **proves Haiku UNDERSTANDS the intent and wants to call the tool**
+
+**What's still broken (F11):**
+
+- mailbot-api's `/v1/chat/completions` Pydantic schema (`_ChatCompletionsRequest`) silently drops Hermes's `tools=[...]` request parameter (the schema has only `model / messages / max_tokens / temperature` — no `tools` field)
+- Haiku receives a tools-less prompt, produces text-form tool intent in a code block, Hermes parses no `tool_calls` field → "Empty response" + retry
+- **F11 is now precisely characterized:** multi-story scope (request schema + Router contract + AnthropicAdapter tool-call support + response translation + audit schema + tests + sensitivity-gate interactions + cache-key interactions)
+
+**Filed as F11 carry-forward** (see F11 block above for full implementation strategy notes). F9 disposition remains carry-forward but is now sharply scoped to F11 dependency.
+
+**Sibling-quartet pattern complete:** F6 (routing) + F7 (transport-security) + F8 (application-translation) + SKILL.md frontmatter (skill-loader contract) — 4 Hermes-integration contract bugs closed via inline-fix-and-walk loop this session. F11 (tool-calling) is the 5th boundary layer and largest remaining gap. Pattern strongly suggests: future Phase 3.5 walks for Hermes-touching stories should explicitly enumerate ALL contract boundaries and verify each one live.
 
 ---
 
@@ -261,6 +323,7 @@ The carry-forward stack of mailbot-api-side dev work for Epic 6 is now **empty**
 | 6-5 | done | +15 net (15 daily-digest tests); 976 + 2 skipped | Inline §5.12 self-audit (3 criteria; tight self-review accepted in lieu of formal CR — read-side surface, no novel concurrency / no FastMCP serialization edges; 6-3 + 6-4 paid the CR cost for this family of seams) | N/A | N/A | Mailbot-api side: `compose_digest` (4-section payload from cached projections; Rule J + Rule A; 24h received_at proxy for the absent is_read column per Story 5-1 § precedent) + `finalize_digest_delivery` (sweeper: queued tier='important' → ok_via_digest terminal; migration 021 extends CHECK constraint via SQLite table-recreate dance) + AR-PAT-5 prompt module `daily_digest_intro/v1.py` + policy.yaml entry (qwen, batch lane, 600s response-cache). MCP tools 20→22. **Hermes-cron-skill side (08:00 trigger + Qwen intro call + Discord posting) deferred to Phase 3.5** — same precedent as Story 6-3's pull-based delivery contract: mailbot-api ships the verb surface; Hermes-side consumer is a separate follow-up. |
 | 6-6.7 | done | +2 net (2 transport-security regression tests); 978 + 2 skipped | Inline §5.12 self-audit (3 criteria: external transport surface + cross-story load-bearing seam + new security-middleware config; mirrors 6-6.6 cadence — same MCP boundary, sibling fix; live walk verification covered the cost of formal CR dispatch) | N/A | N/A | **F7 RESOLVED.** Discovered during Epic 6 Phase 3.5 CP-2 walk attempt #1: FastMCP 1.27.2's `TransportSecurityMiddleware` enables DNS-rebinding protection by default with `allowed_hosts=[]`, returning 421 for every Host header BEFORE routing. Fix: explicit `transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=["mailbot-api:8000", "localhost:8000", "127.0.0.1:8000", "testserver"])` on FastMCP constructor. Protection stays enabled (belt-and-suspenders). 2 regression tests (behavioral + structural) mirror F6 sibling pattern. Live verification: `200 OK / 200 OK / 202 Accepted / 200 OK` MCP handshake from Hermes; adversarial Host `evil-rebind-attacker.com` STILL returns 421 (protection preserved). Parallel `.env` `DISCORD_ALLOWED_USERS` gap fixed inline (separate finding; Story 4-0 amendment candidate for Epic 6 retro). |
 | 6-6.8 | done | +2 net (2 chat-completions alias regression tests); 980 + 2 skipped | Inline §5.12 self-audit (3 criteria: external/operator-facing chat endpoint surface + cross-story load-bearing seam between Story 2-10 + Story 5-4 + new alias-resolution logic; mirrors 6-6.6 + 6-6.7 cadence — sibling-triplet pattern, live walk verification absorbs CR cost) | N/A | N/A | **F8 RESOLVED.** Discovered during Epic 6 Phase 3.5 CP-2 walk attempt #1: Story 2-10's `/v1/chat/completions` passed `force_model=request.model` unconditionally, but Hermes's documented contract (`hermes-config/config.yaml:19-22`) sends `model: "hermes_aux"` as a task-type alias to be resolved at dispatch time. Router received `force_model="hermes_aux"` → `get_adapter("hermes_aux")` KeyError → HTTP 502 on every chat call. Fix: `force_model = request.model if request.model != "hermes_aux" else None` — alias signals "use policy default", real model ids still flow through as force_model. 2 regression tests (behavioral alias-path + counter-test force_model-path-preserved). Live verification: 5× `POST /v1/chat/completions 200 OK` + 5× Anthropic round-trips with real cost ($0.0084 each); `router_calls` audit table shows clean before-and-after (`model_chosen='hermes_aux'/failed/$0` → `model_chosen='claude-haiku-4-5-20251001'/ok/$0.034`). **Sibling-triplet pattern:** F6 (routing) + F7 (transport-security) + F8 (application-translation) — same operational pattern (server+Hermes contracts inferred-compatible but not actually-tested live), different boundary layer each time; all 3 surfaced during Phase 3.5 walks and closed via inline-fix-and-walk loop. F9 (Hermes-aux prompt = generic text-processor; main inference needs defender-persona-via-skill-bundle) filed as carry-forward — surface symptom of carry-forward stack items #1+#2, not a mailbot-api-side bug. F10 (chart title/subtitle overlap) filed as cosmetic carry-forward. |
+| 6-6.9 | done | 0 net (no Python touched; gates baseline 980 + 2 skipped) | Inline §5.12 self-audit (3 criteria: external/operator-facing Hermes-skill-loader contract + cross-story load-bearing seam Story 5-5 + walk-discovered shape gap; mirrors 6-6.6/6-6.7/6-6.8 cadence — sibling-quartet pattern; CP-2 walk attempt #3 absorbs CR cost) | N/A | N/A | **SKILL.md frontmatter contract gap RESOLVED.** Discovered during F9 Path-1 investigation: Story 5-5's `hermes-config/skills/mailbot/SKILL.md` started with `# SKILL.md — MailBot verb-surface reference` (Markdown heading) instead of `---` (YAML frontmatter delimiter). Hermes's `parse_frontmatter()` short-circuits on non-`---` open with empty dict → skill listed in `hermes skills list` but `description=""` / `platforms=[]` / no slash-command registration / functionally inert at progressive-disclosure layer. 13-line YAML frontmatter block added (name / description / version / author / license / platforms / metadata.hermes.tags / category / related_skills). Body preserved verbatim. **No mailbot-api Python touched** — Hermes-config-side fix only. **F9 NOT closed by this fix** — CP-2 walk attempt #3 (2026-06-03 ~21:22 UTC) showed same Discord-visible outcome ("Empty response from model — retrying"). But underlying state IS improved: `tokens_in=8079` per call (vs. attempt #2 baseline — indicates SKILL.md body now in prompt); direct-curl reproduction confirms Haiku produces code-block-wrapped `render_spend_chart("month")` text — **wants to call the tool, but no OpenAI tool-call API plumbing exists end-to-end**. **F11 filed as new carry-forward** (multi-story scope; the actual F9 blocker): `/v1/chat/completions` Pydantic schema (`_ChatCompletionsRequest`) has only `model / messages / max_tokens / temperature` — silently drops `tools=[...]` parameter that Hermes's AIAgent assembles. F9 now precisely scoped to F11 dependency. **Sibling-quartet pattern emerges**: F6 (routing) + F7 (transport-security) + F8 (application-translation) + SKILL.md (skill-loader contract) — 4 Hermes-integration contract bugs closed via inline-fix-and-walk loop across the session; F11 is the 5th boundary layer (tool-calling) and the largest remaining gap. |
 | 6-4 | done | +19 net (17 fatigue + 2 CR regression guards); 961 + 2 skipped | MANDATORY-CR (Sonnet 4.6 — 4 §5.12 criteria) | 8 / 8 | **100%** | Anti-fatigue gating layer on Story 6-3's dispatcher: quiet hours (22:00–08:00 in MAILBOT_LOCAL_TZ; UTC fallback for Windows), mute (urgent honors — SHARP EDGE documented in verb + MCP description; Adam-decided per Story 4-1 CR-2 belt-and-suspenders precedent), 5-in-1h dedup collapse, urgent-only posture (manual `set_urgent_only(reason)`; `/resume` lifts), `/unmute` companion MCP verb (20th tool). **CR HIGH-1 caught silent data-loss bug**: dedup count was including acked rows, so 5 delivered health alerts + 6th → UPDATE missed (predicate `pending`) → alert dropped. Two-part fix: SQL filter on `delivery_status='pending'` + dispatcher fallback-to-INSERT on rowcount=0. CR MED-2: `_log_suppressed` → WARNING level (operator visibility). CR LOW-2/4: lift logs `lifted_at`+`pre_lift_set_at`+`pre_lift_reason` for audit reconstructibility. **Scope-reduced**: response-rate auto-trigger + engagement_metrics table deferred (Hermes message-from-Adam ingest doesn't exist yet); flagged for Story 6-9 candidate. |
 | 6-3 | done | +18 net (17 notification-delivery + 1 alarm→outbox integration; -1 reverted spend-chart >=17→==19); 942 + 2 skipped | MANDATORY-CR (Sonnet 4.6 — 4 §5.12 criteria: new code, external/operator-facing, cross-story refactor, observability) | 8 / 8 | **100%** | Four-tier dispatcher (FR-7.4) + pull-based MCP delivery surface. **Schema-reality reframe** of the epic spec's invented "Hermes inbound HTTP" — replaced with `notifications_outbox` + 2 new MCP tools (`pull_pending_notifications` + `ack_notification`) + recovery loop. MCP tools 17→19. CR HIGH-1 caught `PullPendingNotificationsOut.count` time-bomb (independent field defaulting to 0 with no validator → silent desync on any future constructor refactor); fixed via `@model_validator(mode="after")`. CR HIGH-2 caught silent error-text discard on recovery/ack race; added `notification.ack.race_loss` observability log. CR MED-3 caught the AC-required-but-skipped anomaly.py wiring. 5 call sites migrated (drainer + sync_worker + worker + anomaly). 9 existing tests adapted to outbox-backed assertions; legacy JSONL stub kept + explicitly LEGACY-marked. |
 
@@ -270,7 +333,7 @@ The carry-forward stack of mailbot-api-side dev work for Epic 6 is now **empty**
 
 ## Final loop disposition — Epic 6 closed 2026-06-03
 
-**Stories shipped in this run: 12** — 11 dev-codeable + 1 walk-deferred:
+**Stories shipped in this run: 13** — 12 dev-codeable + 1 walk-deferred:
 
 1. **6-0** Hermes runtime corrective (F3/F4/F5 RESOLVED via live walk; F6 surfaced as new finding)
 2. **6-6** Worker-process integration (8 dormant components wired into scheduler)
@@ -283,9 +346,10 @@ The carry-forward stack of mailbot-api-side dev work for Epic 6 is now **empty**
 9. **6-4** Anti-fatigue mechanics (quiet hours + dedup + mute + urgent-only posture + `/unmute` verb)
 10. **6-5** Daily digest verb + finalize sweeper + AR-PAT-5 prompt module
 11. **6-6.7** F7 closure (FastMCP `transport_security` allow-list — `mailbot-api:8000` + localhost shapes + testserver); discovered during Phase 3.5 CP-2 walk attempt #1; parallel `.env` `DISCORD_ALLOWED_USERS` gap fixed inline (Story 4-0 amendment candidate)
-12. **6-6.8** F8 closure (`chat_completions` `hermes_aux` alias resolution — `force_model = request.model if request.model != "hermes_aux" else None`); discovered during Phase 3.5 CP-2 walk attempt #1 (post-F7); F9 + F10 filed as carry-forward (F9 = Hermes-skill-bundle dependency, surface symptom of carry-forward stack #1+#2; F10 = chart cosmetic polish)
+12. **6-6.8** F8 closure (`chat_completions` `hermes_aux` alias resolution — `force_model = request.model if request.model != "hermes_aux" else None`); discovered during Phase 3.5 CP-2 walk attempt #1 (post-F7); F9 + F10 filed as carry-forward
+13. **6-6.9** SKILL.md frontmatter contract fix (Hermes skill-loader compliance for `hermes-config/skills/mailbot/SKILL.md`); discovered during F9 Path-1 investigation; **F11 filed as new carry-forward** = OpenAI `tools=[...]` parameter support on `/v1/chat/completions` (multi-story scope; the actual F9 blocker)
 
-**Walk-deferred: 1** — 6-6.5 Epic 5 capstone walk (ready-for-walk; F6 + F7 + F8 all closed; F9 Hermes-skill-bundle gap still blocks CP-A/B/C round-trips).
+**Walk-deferred: 1** — 6-6.5 Epic 5 capstone walk (ready-for-walk; F6 + F7 + F8 closed; F9 still carry-forward, now F11-gated; F11 blocks CP-A/B/C draft-reply round-trips).
 
 ### Net dev-cycle metrics (final)
 
