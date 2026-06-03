@@ -65,6 +65,19 @@ python scripts/check_hermes_config.py
 
 Exit code 0 + `OK: hermes-config/config.yaml shape verified against real Hermes schema.` means safe. Any URL drift (including dropping the trailing slash) is surfaced with the expected-vs-actual diff.
 
+A second load-bearing coupling lives in `mailbot_api/mcp_server.py:build_mcp_server` (Story 6-6.7, F7 closure). FastMCP 1.27.2 enables DNS-rebinding protection by default; the server's `transport_security.allowed_hosts` allow-list MUST contain the Docker service hostname Hermes uses to reach mailbot-api. Today that hostname is `mailbot-api:8000` (the service name in `docker-compose.yml`). If a future operator renames the service — for example, from `mailbot-api` to `mailbot-backend` — the docker-compose.yml change is NOT sufficient on its own; the matching `allowed_hosts` entry in `mailbot_api/mcp_server.py` MUST be updated to match, or Hermes's MCP discovery starts failing again with `Client error '421 Misdirected Request'` and zero tools register. The current allow-list:
+
+```python
+allowed_hosts=[
+    "mailbot-api:8000",  # MUST match the docker-compose service name
+    "localhost:8000",
+    "127.0.0.1:8000",
+    "testserver",
+],
+```
+
+Adversarial Host headers (anything not on this list) still return 421, so the DNS-rebinding protection is preserved against the actual threat model.
+
 ## §4 — Hermes fallback provisioning (CLI-driven, NOT config-YAML)
 
 Per [Story 6-0 RECONCILIATION-NOTES §6 item 3](../docs/external/hermes-agent/RECONCILIATION-NOTES.md), Hermes's `fallback_providers` chain is managed via the `hermes fallback` CLI — NOT via `hermes-config/config.yaml`. After the stack is up (§5), provision the NFR-OPS-6 fallback chain:

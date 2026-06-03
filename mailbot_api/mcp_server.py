@@ -65,6 +65,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from mailbot_api.verbs import (
     count_emails as _count_emails,
@@ -870,9 +871,30 @@ def build_mcp_server(*, db_path: str | None = None) -> FastMCP:
     # `/` which matches the inner route directly, and the effective path is
     # back to `/mcp` as documented in `hermes-config/config.yaml`. One kwarg;
     # no Mount edit; no Hermes-side change.
+    # F7 closure (2026-06-03): FastMCP 1.27.2 enables DNS-rebinding protection
+    # by default, validating the Host header against `allowed_hosts`. Hermes
+    # reaches us as `mailbot-api:8000` (Docker service hostname on the internal
+    # `mailbot-net` network); pytest's TestClient sends `testserver`; local dev
+    # via `localhost:8000` / `127.0.0.1:8000` (Story 6-1's curl checks +
+    # operator debugging). Without these in the allow-list, every live request
+    # returns HTTP 421 "Invalid Host header" and Hermes gives up after 3
+    # retries with `421 Misdirected Request`. DNS-rebinding is a browser-side
+    # attack vector; this server is reached only via the Docker-internal MCP
+    # transport (never a browser), so the protection is belt-and-suspenders.
+    # We keep it enabled with an explicit allow-list rather than disabling
+    # entirely — preserves the FastMCP default-safe posture.
     server = FastMCP(
         name="mailbot-api",
         streamable_http_path="/",
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=[
+                "mailbot-api:8000",
+                "localhost:8000",
+                "127.0.0.1:8000",
+                "testserver",
+            ],
+        ),
         instructions=(
             "MailBot agent-facing verb surface. Read verbs (find_emails, "
             "hydrate_email, get_thread, count_emails, get_sender_summary) are "

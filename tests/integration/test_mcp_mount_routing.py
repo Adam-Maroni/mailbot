@@ -214,3 +214,109 @@ def test_hermes_config_url_has_trailing_slash() -> None:
         "Hermes MCP client does not follow the redirect, and tool "
         "discovery fails after 3 attempts."
     )
+
+
+# ---------------------------------------------------------------------------
+# Story 6-6.7 — F7 closure regression tests
+# ---------------------------------------------------------------------------
+#
+# The bug (live discovery during Epic 6 Phase 3.5 CP-2 walk, 2026-06-03):
+#
+#   1. Story 6-6.6 fixed the F6 routing chain (server-side path "/" +
+#      client-side trailing slash). Story 6-6.6's e2e tests use FastAPI's
+#      TestClient which sends `Host: testserver` by default.
+#   2. FastMCP 1.27.2 enables DNS-rebinding protection by default via the
+#      `TransportSecurityMiddleware`. When `enable_dns_rebinding_protection
+#      is True` and `allowed_hosts` is empty (the FastMCP default), EVERY
+#      incoming Host header fails the allow-list check → HTTP 421
+#      "Misdirected Request" with body "Invalid Host header".
+#   3. Live discovery: Hermes reaches mailbot-api as `mailbot-api:8000`
+#      (Docker service hostname on the `mailbot-net` network). FastMCP's
+#      transport security rejected `mailbot-api:8000` with 421. Hermes's
+#      MCP client surfaced "Client error '421 Misdirected Request' for url
+#      'http://mailbot-api:8000/mcp/'" and gave up after 3 retries. All
+#      22 MCP tools were silently absent from Hermes's tool registry.
+#   4. Story 6-6.6's tests didn't catch this because they don't customize
+#      the Host header (TestClient defaults to `testserver`, which IS in
+#      the new allow-list — so the test's default behavior is preserved,
+#      and the new regression test below covers the production hostname
+#      explicitly).
+#
+# The fix (Story 6-6.7):
+#
+#   `build_mcp_server` constructs FastMCP with an explicit
+#   `transport_security=TransportSecuritySettings(...)` that allow-lists
+#   the Docker-internal hostname, localhost shapes, and TestClient's
+#   `testserver`. Protection stays ENABLED (belt-and-suspenders against
+#   any future browser-reachable surface); we just provide the missing
+#   allow-list. The setting lives in code (not config) because the
+#   Docker service hostname is fixed by docker-compose.yml.
+#
+# These tests guard against re-introduction of either:
+#   (a) the empty-allow-list case (server constructed without the kwarg
+#       at all), or
+#   (b) a refactor that drops `mailbot-api:8000` from the allow-list.
+
+
+def test_mcp_transport_security_allows_docker_hostname(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F7 closure: POST /mcp/ with `Host: mailbot-api:8000` (the live
+    Docker-internal hostname) MUST NOT return 421.
+
+    A 421 means FastMCP's `TransportSecurityMiddleware` rejected the
+    Host header. In production this is the failure that broke Hermes's
+    MCP discovery in CP-2: every retry returned 421, Hermes gave up,
+    zero tools registered.
+    """
+    _bootstrap_app_env(monkeypatch, str(tmp_path / "f7_docker_host.db"))
+
+    from mailbot_api.main import app
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/mcp/",
+            json={"jsonrpc": "2.0", "method": "initialize", "id": 1},
+            headers={
+                "Content-Type": "application/json",
+                "Host": "mailbot-api:8000",
+            },
+            follow_redirects=False,
+        )
+
+    assert response.status_code != 421, (
+        f"POST /mcp/ with Host: mailbot-api:8000 returned 421 — "
+        f"FastMCP DNS-rebinding protection rejected the Docker-internal "
+        f"hostname. F7 regression. Body: {response.text!r}. "
+        f"Fix: add 'mailbot-api:8000' to `allowed_hosts` in "
+        f"`TransportSecuritySettings` inside `build_mcp_server`."
+    )
+
+
+def test_mcp_transport_security_settings_include_docker_host(
+    tmp_path: Path,
+) -> None:
+    """STRUCTURAL: the FastMCP server MUST be constructed with explicit
+    `allowed_hosts` containing the Docker-internal hostname.
+
+    Catches the case where someone refactors `build_mcp_server` to drop
+    the `transport_security` kwarg entirely — the live e2e test above
+    would still pass under TestClient's `testserver` default, but Hermes
+    would break in production.
+    """
+    server = build_mcp_server(db_path=str(tmp_path / "x.db"))
+    settings = server.settings.transport_security
+    assert settings is not None, (
+        "FastMCP server constructed without explicit `transport_security`. "
+        "F7 regression: the default `TransportSecuritySettings()` with "
+        "DNS-rebinding-protection disabled is a security regression; the "
+        "default-enabled config with empty allow-list breaks Hermes. "
+        "Fix: pass `TransportSecuritySettings(enable_dns_rebinding_protection"
+        "=True, allowed_hosts=[...])` in `build_mcp_server`."
+    )
+    assert "mailbot-api:8000" in settings.allowed_hosts, (
+        f"`mailbot-api:8000` missing from allow-list: "
+        f"{settings.allowed_hosts!r}. Hermes reaches the server via this "
+        f"Docker service hostname; without it, every live request returns "
+        f"421 and tool discovery fails."
+    )

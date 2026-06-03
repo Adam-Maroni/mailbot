@@ -420,11 +420,26 @@ async def chat_completions(
     from mailbot_api.router import ask_router as _ask_router
 
     caller_origin = x_mailbot_caller_origin if x_mailbot_caller_origin else "unknown-external"
+
+    # F8 closure (Story 6-6.8, 2026-06-03): if the client sends the task-type
+    # name as the model id (Hermes's documented contract — `hermes-config/
+    # config.yaml`'s `model.default: "hermes_aux"` means "use the Router's
+    # hermes_aux policy entry to pick the actual backend model at dispatch
+    # time"), don't force-override; let ask_router resolve from policy. Any
+    # other client-requested model name (e.g. "claude-opus-4-7" from a
+    # power-user override) still flows through as a real `force_model` and
+    # triggers the existing degraded-mode + sensitivity gates correctly.
+    # The bug fixed here: previously `force_model=request.model` passed the
+    # alias string `"hermes_aux"` straight to `get_adapter()`, which raised
+    # `KeyError("no adapter registered for model_id='hermes_aux'")`. The
+    # error surfaced as HTTP 502 to Hermes after 3 retries on every call.
+    force_model = request.model if request.model != "hermes_aux" else None
+
     result = await _ask_router(
         "hermes_aux",
         content,
         db_path=db_path,
-        force_model=request.model,
+        force_model=force_model,
         force=False,
         caller_origin=caller_origin,
         caller_verb="hermes_aux",

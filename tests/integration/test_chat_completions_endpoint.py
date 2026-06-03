@@ -205,3 +205,112 @@ def test_embeddings_endpoint_501_with_valid_bearer(
             json={"input": "hi"},
         )
     assert r.status_code == 501
+
+
+# ---------------------------------------------------------------------------
+# Story 6-6.8 — F8 closure regression tests
+# ---------------------------------------------------------------------------
+#
+# The bug (discovered during Epic 6 Phase 3.5 CP-2 walk, 2026-06-03):
+#
+#   `hermes-config/config.yaml` configures Hermes's main inference to send
+#   `model: "hermes_aux"` in the OpenAI request body. The comment at
+#   `hermes-config/config.yaml:19-22` documents the contract:
+#
+#       "hermes_aux is a Router task type (see router/policy.yaml's
+#        hermes_aux entry); the actual backend model is selected per policy
+#        at dispatch time."
+#
+#   Story 2-10's `/v1/chat/completions` endpoint did NOT honor that contract.
+#   It passed `force_model=request.model` unconditionally, so `force_model`
+#   became the string `"hermes_aux"` (the task-type alias, not a real model
+#   id). The Router's adapter resolution then raised
+#   `KeyError("no adapter registered for model_id='hermes_aux'")`, which
+#   surfaced as HTTP 502 to Hermes after 3 retries on every chat call.
+#
+# The fix (Story 6-6.8): in `chat_completions`, treat
+#   `request.model == "hermes_aux"` as the documented alias signal and
+#   pass `force_model=None` so ask_router resolves from policy
+#   (`policy.tasks["hermes_aux"].model` → `claude-haiku-4-5-20251001`).
+#   Other model names (e.g. a future power-user `model: "claude-opus-4-7"`
+#   override) still flow through as real `force_model` and trigger the
+#   degraded-mode + sensitivity gates correctly.
+
+
+def test_chat_completions_hermes_aux_alias_resolves_to_policy_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F8 closure: `model: "hermes_aux"` in the request body MUST resolve
+    to the policy entry's model (claude-haiku-4-5-20251001 per current
+    policy.yaml), NOT crash with `no adapter registered for
+    model_id='hermes_aux'`."""
+    app, _ = _bootstrap(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        register_adapter(
+            "claude-haiku-4-5-20251001", _FakeAdapter("resolved from policy")
+        )
+        r = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer test-router-key-xyz",
+                "X-Mailbot-Caller-Origin": "hermes-aux-main",
+            },
+            json={
+                # The Hermes-side `model: "hermes_aux"` alias per the
+                # `hermes-config/config.yaml` documented contract.
+                "model": "hermes_aux",
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        )
+
+    assert r.status_code == 200, (
+        f"F8 regression: status={r.status_code}, body={r.text!r}. "
+        "The alias `hermes_aux` should resolve to the policy entry's "
+        "model (claude-haiku-4-5-20251001), not pass through as a "
+        "force_model that the adapter registry doesn't recognize."
+    )
+    body = r.json()
+    assert body["choices"][0]["message"]["content"] == "resolved from policy"
+    # `model` in the response is the actually-used model id, not the alias.
+    assert body["model"] == "claude-haiku-4-5-20251001", (
+        f"response.model={body['model']!r}; expected the policy-resolved "
+        "model id, not the alias `hermes_aux`."
+    )
+
+
+def test_chat_completions_real_model_id_still_force_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F8 closure must NOT break the existing force_model path. A client
+    that sends `model: "claude-opus-4-7"` (a real model id) MUST still
+    force-override to that model — preserving the degraded-mode +
+    sensitivity precondition contracts that gate force_model use."""
+    app, _ = _bootstrap(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        # Register two distinct adapters so we can prove the dispatch went
+        # to the requested model, not the policy default.
+        register_adapter(
+            "claude-haiku-4-5-20251001", _FakeAdapter("haiku ran")
+        )
+        register_adapter("claude-opus-4-7", _FakeAdapter("opus ran"))
+        r = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer test-router-key-xyz",
+                "X-Mailbot-Caller-Origin": "power-user-override",
+            },
+            json={
+                # Real model id, NOT the alias — force_override path.
+                "model": "claude-opus-4-7",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["choices"][0]["message"]["content"] == "opus ran", (
+        "force_model path broken: client requested claude-opus-4-7 but "
+        f"got content={body['choices'][0]['message']['content']!r} (would "
+        "be 'haiku ran' if the request fell through to the policy default)."
+    )
+    assert body["model"] == "claude-opus-4-7"
