@@ -922,3 +922,114 @@ These are story-spec drift that surface when an autonomous walk follows the stor
 **NOT a regression introduced by Story 6-6.5 or any Story 6-9/6-10/CP-2-walk closure.** This walk surfaces a latent bug that's been live since 2026-06-02 — multiple Epic 6 stories ran past it because none of them ran the live ingest path under sustained load against unclassified emails. The Section A wiring check in this walk happens to be the first integration probe that crossed the `unprocessed_count > 0` boundary against the live `/admin/status` endpoint, which is why F17 surfaces now.
 
 ---
+
+## Story 6-6.5 walk record — Third pass (2026-06-04, agent-driven MCP walk)
+
+**Walk type:** Agent-driven via direct orchestrator + MCP invocation (no Discord, no Hermes-side). Adam chose this path after rejecting the manual Discord walk as too tedious. Hybrid option-2 (inline-fix-and-continue) was attempted then converted to option-1 (file follow-up stories) when the third blocker (F23) surfaced as operational rather than code.
+
+**Walked by:** Agent (Opus 4.7) inside `mailbot-api` container, driving the Story 5-9 orchestrator (`handle_draft_reply` / `accept_draft`) + `mailbot_api.actions.authorization.mint_grant` directly. Live verification queried `/admin/status` + SQLite + container logs in real time.
+
+**Approach trade-off vs canonical Section B:** the agent-driven walk skips the Hermes defender-persona surface + the Discord transport, but proves every leg Section A could not: real Anthropic Opus 4.7 call (`draft_reply`), real cooling-off ticker promotion, real drainer claim of pending rows, real Outlook adapter dispatch to Microsoft Graph, real budget burn + Tier-3 urgent notification fire. Story 6-10's prior CP-2 walk already proved Hermes-to-Discord transport on the cron-skill bundle path, so the transport coverage gap is small.
+
+### CP-A — Normal email happy path (PASS-WITH-FINDINGS)
+
+| Stage | Verdict | Evidence |
+| --- | --- | --- |
+| Target email selection | PASS | `emails.id=3215`, from `onboarding@info.n8n.io`, subject "Your n8n trial has ended", `sensitivity=normal` |
+| `handle_draft_reply` orchestrator call | PASS | `state=draft_presented`; defender_warnings populated; draft body 57 chars; suggested_subject "Re: Your n8n trial has ended" |
+| Real Opus 4.7 draft_reply Router call | PASS | `router_calls.id=416`, task_type=`draft_reply`, model_chosen=`claude-opus-4-7`, outcome=`ok`, tokens_in=717, tokens_out=179, cost=$0.0242, caller_origin=`cp-a-walk` |
+| `accept_draft` writes pending_actions | PASS | `pending_actions.id=1`, status=`cooling_off`, action_type=`send_reply` |
+| Cooling-off ticker promotes to pending | PASS | Observed via `pending_actions.status` flip after 60s window |
+| Drainer claims pending row | PASS | Drainer claimed; reverted to `pending_grant` (correctly — no grant yet) |
+| `mint_grant` + F22 promotion | PASS (after fix) | `action_grants.id=2`; F22 fix flipped `pending_actions.id=1` pending_grant -> pending; drainer next-tick claimed |
+| Drainer dispatches to Outlook adapter | PASS | Log: `mailbot_api.actions.drainer` claimed row + invoked `OutlookGraphWriteAdapter` |
+| Microsoft Graph endpoint hit | PASS | Log: `POST https://graph.microsoft.com/v1.0/me/messages/AAk.../reply` — request reached MS |
+| Graph 2xx response | FAIL | `HTTP 401 Unauthorized` — failure recorded as `provider_4xx_401` |
+| `budget_consumed=1` | PASS | `pending_actions.id=1`, budget_consumed=1, status=failed, failure_reason=`provider_4xx_401` |
+| Tier-3 failure -> urgent notification | PASS | Log: `action.drainer.notify`, intended_notification_tier=urgent, actual=urgent |
+| Reply lands in recipient inbox | FAIL | Blocked by Graph 401 (F23) |
+| `/cost month` reflects Opus call | PASS | `router_calls.id=416` cost=$0.0242 in today spend |
+
+**Verdict: PASS-WITH-FINDINGS.** Wiring proven end-to-end through Graph dispatch. Final "reply lands in recipient inbox" leg blocked by F23 (operational, not code). Two code defects (F19, F22) inline-fixed and verified live during the walk.
+
+### CP-B — Sensitive-email handshake (BLOCKED-by-F23)
+
+Not walked: same code path as CP-A (orchestrator -> propose_action -> cooling-off -> drainer -> Outlook adapter), so Graph 401 (F23) blocks at the same point. Will re-walk after F23 closes via Story 6-15. The F1 task_type-binding fix in Story 5-9 orchestrator was structurally proven by Story 5-9 14/14 orchestrator tests in Section A; the unique live behavior CP-B was supposed to prove is the `mint_sensitivity_token` -> consume-aware Router precondition handshake, which still requires the draft to dispatch successfully (F23 blocks).
+
+### CP-C — Confidential email refusal (PASS)
+
+| Stage | Verdict | Evidence |
+| --- | --- | --- |
+| Target email selection | PASS | First-ever `sensitivity=confidential` row in DB (subject "ETA-IL Application number 1779108106124", from `no-reply_israel-entry@piba.gov.il`) |
+| `handle_draft_reply` orchestrator call | PASS | `state=confidential_refused`, defender_message canonical (Story 5-5 SOUL.md text) |
+| No Router dispatch | PASS | `router_calls` max-id before = 489; after = 489; **delta = 0** (Story 4.7 design: confidential short-circuits BEFORE Router dispatch) |
+
+**Verdict: PASS.** Confidential-refusal contract proven live. Handler short-circuits at chat-surface gate (orchestrator.py:164-168) before any ask_router() invocation. Defender-tone canonical string emitted verbatim.
+
+### CP-D — 20-send/day cap (AGENT-SURROGATE-PASS retained)
+
+Not re-walked in this third pass — agent-surrogate evidence from 2026-06-04 14:55 UTC stands (3/3 cap-check scenarios verified: 20 same-day fires; 19 same-day clears; 25 yesterday clears via UTC midnight rollover). Live full-walk still requires F23 closure before any real Graph send can complete to count toward the budget.
+
+### F19 — Anthropic deprecated `temperature` for claude-opus-4-7 (INLINE-FIXED -> Story 6-12)
+
+**Discovered:** first `handle_draft_reply` invocation against live Anthropic returned `BadRequestError: 400 - temperature is deprecated for this model`. model_attempted=`claude-opus-4-7`, request_id=`req_011CbiWJ3Sb2u1dgaBxWnHW2`.
+
+**Root cause:** `mailbot_api/router/models.py:555` (`AnthropicAdapter.call`) and `:650` (`AnthropicAdapter.call_with_tools`) unconditionally include `temperature` in `messages.create()` kwargs. Anthropic deprecated the parameter on the Opus 4.7 reasoning model. All Opus-bound calls fail at HTTP 400; Haiku continues to work.
+
+**Why hidden until now:** Story 5-9 14/14 orchestrator tests mock the Router boundary; Story 6-9 tool-calling tests mock the same boundary; pricing entry at `mailbot_api/router/pricing.py:40` flagged Opus 4.7 as "PLACEHOLDER pending live-billing verification" (a tell that nobody had run a real Opus call end-to-end); all `draft_reply` / `chat_completions_tool_call` activity in live `router_calls` audit before this walk showed `outcome=retry_recovered` or `failed` for Opus-bound tasks — never `ok`.
+
+**Inline fix applied:** in `AnthropicAdapter.call` + `call_with_tools`, build `request_kwargs` dict and only add `temperature` when `self.model_id != "claude-opus-4-7"`. Live-verified post-fix: `router_calls.id=416 model_chosen=claude-opus-4-7 outcome=ok cost=$0.0242`.
+
+**Filed as:** Story 6-12 (backlog) — formal CR + regression tests + audit of other model-specific param deprecations.
+
+### F22 — No pending_grant to pending promotion on mint_grant (INLINE-FIXED -> Story 6-13)
+
+**Discovered:** after F19 fix, CP-A `pending_actions.id=1` flipped `cooling_off` to `pending`, drainer claimed and reverted to `pending_grant`. After invoking `mint_grant(SEND_REPLY, [graph_id], expires_at=+15min)`, row STAYED in `pending_grant` indefinitely. Manual probe confirmed `is_grant_valid()` returns (True, grant_id=1) — grant exists and is valid; drainer just does not pick up pending_grant-status rows because `PENDING_ACTIONS_SELECT_DRAINABLE` filters `WHERE status='pending'` only.
+
+**Root cause:** Architectural gap. Story 4-3 (`mint_grant`) and Story 4-4 (drainer revert path) were validated against synthetic DBs where rows were pre-seeded into the right status, never through the live propose -> cooling_off -> drainer_revert_to_pending_grant -> mint_grant flow. Grant infrastructure missing back-promotion: `cooling_off` has `COOLING_OFF_PROMOTE_DUE` ticker, but `pending_grant` had no equivalent and `mint_grant` had no side-effect to wake stalled rows.
+
+**Inline fix applied:** new query `PENDING_GRANT_PROMOTE_FOR_ACTION_TYPE` added to `mailbot_api/db/queries.py`; `mint_grant` in `mailbot_api/actions/authorization.py` now invokes it as a side-effect after grant insert succeeds. Filters by `action_type` only — `is_grant_valid()` at drain time re-checks email_id membership against the JSON list. Live-verified post-fix: after `revoke_grant(1)` + `mint_grant(SEND_REPLY, [graph_id], +15min)`, `pending_actions.id=1` immediately flipped `pending_grant` -> `pending`; drainer 2s tick claimed and dispatched.
+
+**Filed as:** Story 6-13 (backlog) — formal CR + regression tests + cross-story load-bearing seam audit (Story 4-3 mint_grant + Story 4-4 drainer).
+
+### F21 — Haiku summary_short outcome=failed despite billing (OPEN, NON-BLOCKING -> Story 6-14)
+
+**Observed during walk:** every `claude-haiku-4-5-20251001 summary_short` ingest call today (router_calls ids 389/392/396/400/403/407/410/413/421/425, ...) shows `outcome=failed` with non-zero `cost_usd_estimated` (~$0.001/call), implying the Anthropic call succeeds + tokens consumed but response fails downstream validation.
+
+**Hypothesis:** schema_validation_failed at the prompt-output Pydantic boundary (Story 6-11 close-note hinted at this — "summary_short task now failing schema_validation_failed at Anthropic boundary"). Pipeline emits cost row before validation step, so we pay for malformed outputs.
+
+**Filed as:** Story 6-14 (backlog) — investigation story (no inline fix yet because fix shape not obvious — could be prompt drift, schema drift, model temperature/reasoning-token interaction, or Haiku regression). NON-BLOCKING for Section B re-walks (summary_short is ingest-pipeline, not draft-reply).
+
+### F23 — Microsoft refresh token rejected (OPEN, OPERATIONAL -> Story 6-15)
+
+**Discovered:** after F22 fix unblocked drainer dispatch, Graph endpoint returned `HTTP 401 Unauthorized` on `/me/messages/{id}/reply` POST. Root-cause probe revealed Microsoft `https://login.microsoftonline.com/consumers/oauth2/v2.0/token` endpoint returning `HTTP 400 invalid_request` on every refresh attempt for the past 9+ hours (`oauth.refresh.failed` log fires every refresher tick; `rotation_count=12` at sample time). Current `oauth_state.access_token` was 40+ minutes stale at walk time; refresher could not get a new one because refresh token itself is rejected.
+
+**Classification:** OPERATIONAL, not code. Microsoft consumer-tier refresh tokens have sliding 24h lifetime if unused (or up to 90 days if continuously rotated); if sync paused, token died. Adam needs to re-authorize Outlook account interactively (browser -> MS consent screen -> capture fresh refresh token -> persist via mailbot CLI or one-shot script).
+
+**Filed as:** Story 6-15 (backlog) — re-auth runbook + rotation reminder + observability surfacing. Scope: (1) document re-auth flow; (2) consider auto-pausing drainer on oauth_refresh_failing; (3) add `oauth_refresh_failing` to `mailbot status` alarms; (4) consider proactive-refresh schedule to stay inside sliding window.
+
+**Unblocks:** Story 6-6.5 Section B CP-A/B live re-walk (recipient-inbox verification).
+
+### Inline-fixed code, awaiting follow-up CR
+
+Two files modified inline during this walk, **NOT yet through formal CR cadence**:
+
+- `mailbot_api/router/models.py` — F19 fix (2 sites: `AnthropicAdapter.call` + `AnthropicAdapter.call_with_tools`)
+- `mailbot_api/actions/authorization.py` + `mailbot_api/db/queries.py` — F22 fix (1 new query + 1 side-effect in `mint_grant`)
+
+Per story file Dev Notes "no code changes" rule, these should have been follow-up stories from the start. Adam chose option-2 (fix inline) after F19 surfaced; the third blocker (F23, operational) forced switch to option-1 (file follow-up stories). Inline diffs **left in place** because (1) without F19 fix no Opus call works anywhere in the system; (2) F22 is foundational; reverting would re-strand the row we observed dispatching successfully; (3) Stories 6-12 + 6-13 inherit the diff and add missing CR + regression tests. Same pattern as sibling-quartet F6/F7/F8/SKILL.md inline-fix-and-walk closures.
+
+### Disposition
+
+- **Story 6-6.5 stays `ready-for-walk`** pending F23 closure (Story 6-15) + final CP-A/B live re-walk with recipient-inbox verification.
+- **Story 4-0 deferred CPs** (drainer e2e, real Graph write-back, 20-send/day cap live): wiring is proven (drainer claimed; adapter dispatched; budget_consumed set; cap-check verified agent-surrogate). Only remaining live verification is "real send completes" which is F23-gated.
+- **Epic 5 capstone carry-forward** (`epic-5-run-flags.md` F-deferred items): STAYS OPEN; pending recipient-inbox proof.
+- **Epic 6 done-flip**: STAYS BLOCKED; closure gate between Stories 6-7 and 6-3 still applies; Story 6-6.5 PASS required.
+
+### Re-invocation guidance
+
+When F23 closes via Story 6-15 (re-auth captures fresh refresh token), CP-A/B re-walk is a 5-minute agent-driven probe: orchestrator `handle_draft_reply` -> `accept_draft` -> `mint_grant` -> wait 60s -> check `pending_actions.status=applied` + check sender inbox. CP-B requires `mint_sensitivity_token` first to capture the sensitivity-grant audit pair (same harness, one extra call).
+
+**Do NOT re-invoke `/autonomous-story-run 6-6-5`** — the `ready-for-walk` status falls through the skill Phase 2.1 entry-point table.
+
+---

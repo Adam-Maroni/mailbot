@@ -761,6 +761,15 @@ PENDING_ACTION_REVERT_TO_PENDING_GRANT = (
     "proposed_by_grant_id = ? WHERE id = ?"
 )
 
+# F22 (Story 6-6.5 walk, 2026-06-04): promote pending_grant rows back to
+# pending after a matching grant is minted. Filters by action_type only;
+# email_id matching happens in is_grant_valid() at drain time (handles the
+# JSON-list email_ids semantics including the empty-list = all-emails case).
+PENDING_GRANT_PROMOTE_FOR_ACTION_TYPE = (
+    "UPDATE pending_actions SET status = 'pending' "
+    "WHERE status = 'pending_grant' AND action_type = ?"
+)
+
 # Pre-state snapshot for revert (Story 4-8 consumes). For Story 4-4 the
 # pre_state JSON is empty `{}` for every action_type — the emails table
 # doesn't carry the per-action fields (is_read, folder_id, categories) that

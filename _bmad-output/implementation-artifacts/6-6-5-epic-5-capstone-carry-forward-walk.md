@@ -264,6 +264,35 @@ In the same session, Adam captured the two prereq credentials inline and asked t
 
 **Final Section B verdict: PARTIAL-PASS (CP-D agent-surrogate) + BLOCKED-by-F17 (CP-A/B/C live walk).** Story status stays `ready-for-walk` pending 6-11 closure + CP-A/B/C live re-walk + CP-D live full-walk-with-Adam.
 
+#### 2026-06-04 — Third pass: agent-driven MCP walk (option-2-then-option-1)
+
+Adam rejected the manual Discord walk as too tedious; the agent drove an MCP-layer walk directly via the Story 5-9 orchestrator (`handle_draft_reply` / `accept_draft`) + `mint_grant` inside the mailbot-api container. Started as option-2 (inline-fix-and-continue); converted to option-1 (file follow-up stories) after the third blocker surfaced as operational rather than code.
+
+**Verdict per CP:**
+
+- **CP-A: PASS-WITH-FINDINGS.** Full wiring proven through Graph dispatch (real Opus 4.7 draft_reply $0.0242 / cooling-off ticker / drainer / Outlook adapter / Microsoft Graph POST /me/messages/{id}/reply / Tier-3 urgent notification / budget_consumed=1). Final "reply lands in recipient inbox" leg blocked by F23 (operational, expired refresh token).
+- **CP-B: BLOCKED-by-F23.** Same code path as CP-A, would block at the same Graph 401.
+- **CP-C: PASS.** Confidential refusal proven live — `state=confidential_refused`, defender_message canonical, `router_calls` delta = 0 (Story 4.7 short-circuit working).
+- **CP-D: AGENT-SURROGATE-PASS retained.**
+
+**Findings (4 new):**
+
+- **F19** (INLINE-FIXED): Anthropic deprecated `temperature` on `claude-opus-4-7`. Fix applied in `mailbot_api/router/models.py` (2 sites). Live-verified `router_calls.id=416 outcome=ok`. Filed as Story 6-12.
+- **F22** (INLINE-FIXED): No `pending_grant -> pending` promotion when `mint_grant` fires. Fix applied: new `PENDING_GRANT_PROMOTE_FOR_ACTION_TYPE` query + side-effect in `mint_grant`. Live-verified. Filed as Story 6-13.
+- **F21** (OPEN, NON-BLOCKING): Every Haiku `summary_short` ingest call shows `outcome=failed` despite billing (~$0.001/call). Hypothesis: schema_validation_failed at Pydantic boundary. Filed as Story 6-14.
+- **F23** (OPEN, OPERATIONAL): Microsoft refresh token rejected with `invalid_request` for 9+ hours. Not a code defect — Adam needs to re-authorize Outlook interactively. Filed as Story 6-15 (which BLOCKS this story's final Section B closure).
+
+**Status disposition:** stays `ready-for-walk` pending F23 closure + final CP-A/B live re-walk with recipient-inbox verification.
+
+**Inline-fixed code awaiting follow-up CR:**
+
+- `mailbot_api/router/models.py` (F19, 2 sites)
+- `mailbot_api/actions/authorization.py` + `mailbot_api/db/queries.py` (F22, 1 new query + 1 side-effect)
+
+Same pattern as sibling-quartet F6/F7/F8/SKILL.md inline-fix-and-walk closures. Stories 6-12 + 6-13 formalize.
+
+**Stack left UP** post-walk so Adam can re-walk after F23 closes without re-stack-up wait.
+
 #### 2026-06-03 — Original HALT disposition (SUPERSEDED 2026-06-04)
 
 (Preserved for audit trail.) Story 6-6.5 cannot proceed: F6 (MCP `/mcp` 307→404 redirect mismatch) was NOT RESOLVED at story-kickoff time. Story flipped to `review` with `[blocked: f6-still-open]` disposition; walk deferred until F6 closes in a follow-up story. The sibling-quartet inline closures (Stories 6-6.6 → 6-6.7 → 6-6.8 → 6-6.9 → 6-9) resolved F6 + F7 + F8 + SKILL.md frontmatter + F11 between 2026-06-03 and 2026-06-04, unblocking this story.
@@ -277,9 +306,17 @@ In the same session, Adam captured the two prereq credentials inline and asked t
 - `_bmad-output/implementation-artifacts/story-run-flags.md` (autonomous-story-run output appended)
 - `_bmad-output/implementation-artifacts/sprint-status.yaml` (Story 6-6.5 row comment updated 2026-06-04 — twice; first pass: Section A PASS + Section B QUEUED; second pass after F17 discovery: Section A PASS + Section B PARTIAL — CP-D agent-surrogate PASS + CP-A/B/C BLOCKED-by-F17; ALSO added new 6-11 row in backlog)
 - `_bmad-output/implementation-artifacts/6-11-ingest-pipeline-provider-error-investigation.md` (NEW — follow-up story stub for F17 root-cause investigation; 4 ACs + 5-task investigation plan)
+- `mailbot_api/router/models.py` (MODIFIED 2026-06-04 third pass — F19 inline fix at `AnthropicAdapter.call` + `AnthropicAdapter.call_with_tools`: omit `temperature` when `model_id=='claude-opus-4-7'`; live-verified `router_calls.id=416 outcome=ok cost=$0.0242`)
+- `mailbot_api/actions/authorization.py` (MODIFIED 2026-06-04 third pass — F22 inline fix: `mint_grant` side-effect invokes `PENDING_GRANT_PROMOTE_FOR_ACTION_TYPE` after grant insert; structured log carries `pending_grant_promoted` count)
+- `mailbot_api/db/queries.py` (MODIFIED 2026-06-04 third pass — F22 inline fix: new `PENDING_GRANT_PROMOTE_FOR_ACTION_TYPE` query)
+- `_bmad-output/implementation-artifacts/6-12-anthropic-temperature-deprecated-on-opus-4-7-f19-closure.md` (NEW — follow-up story for F19 inline-fix CR + regression tests + audit)
+- `_bmad-output/implementation-artifacts/6-13-pending-grant-promotion-on-mint-grant-f22-closure.md` (NEW — follow-up story for F22 inline-fix CR + regression tests + symmetric-demotion audit)
+- `_bmad-output/implementation-artifacts/6-14-haiku-summary-short-outcome-failed-despite-billing-f21-investigation.md` (NEW — follow-up investigation story for F21)
+- `_bmad-output/implementation-artifacts/6-15-outlook-oauth-reauthorization-runbook-and-rotation-reminder-f23-closure.md` (NEW — follow-up story for F23 re-auth runbook + alarm + auto-pause investigation; BLOCKS this story's Section B closure)
 
 ### Change Log
 
 - 2026-06-03 — Story 6-6.5 HALTED at Task 1 prerequisite check: F6 (MCP /mcp 307→404 mismatch) is NOT RESOLVED. Story flipped to `review` with `[blocked: f6-still-open]` disposition; walk deferred until F6 closes in a follow-up story.
 - 2026-06-04 — `/autonomous-story-run 6-6-5` path (a) verification-only walk: Section A PASS (10/10 agent-side checks green; F6/F7/F8/F11/SKILL.md all RESOLVED proven live); Section B QUEUED for Adam (OUTLOOK_CLIENT_SECRET + OUTLOOK_USER_EMAIL gated). Status header rescoped from `review` to `ready-for-walk` with explicit disposition note. 4 cross-doc updates (epic-5-run-flags + epic-6-run-flags + 4-0 deferred-CP amendment + this story file). 2 story-doc drift findings (F16) filed inline. Walk-record skeleton scaffolded; Adam's Section B verdicts will append to `epic-6-run-flags.md § Story 6-6.5 walk record`.
+- 2026-06-04 (third pass, agent-driven MCP walk) — CP-A PASS-WITH-FINDINGS (full wiring proven through Graph dispatch; final recipient-inbox leg F23-blocked); CP-B BLOCKED-by-F23; CP-C PASS (confidential refusal verified live); CP-D AGENT-SURROGATE-PASS retained. 4 new findings: F19 (Anthropic temperature deprecated on Opus 4.7) and F22 (no pending_grant promotion on mint_grant) both INLINE-FIXED + live-verified + filed as Stories 6-12 + 6-13. F21 (Haiku summary_short outcome=failed despite billing) filed as Story 6-14 (NON-BLOCKING). F23 (Microsoft refresh token rejected — operational, not code) filed as Story 6-15 (BLOCKS final Section B closure). Story stays `ready-for-walk` pending F23 closure + final CP-A/B live re-walk. 8 cross-doc updates: this story file (Completion Notes + File List + Change Log appended), epic-6-run-flags.md (third-pass walk record appended), sprint-status.yaml (row updated + 4 new follow-up story rows added: 6-12 / 6-13 / 6-14 / 6-15), 4 new follow-up story files created. **The walk PROVED the wired stack works end-to-end through Microsoft Graph dispatch** — Story 4-0's three deferred CPs (drainer e2e, real Graph write-back, 20-send/day cap live) are essentially closed at the wiring level; the only un-verified leg is "real send completes" which is F23-gated.
 - 2026-06-04 (same session, post-Phase-3.5 prompt) — Section B partial walk: Adam captured OUTLOOK_CLIENT_SECRET + OUTLOOK_USER_EMAIL inline; F17 discovered (ingest pipeline `sensitivity_class` step stuck on `provider_error` since 2026-06-01; 1618 unclassified backlog); follow-up Story 6-11 filed in backlog with 5-task investigation plan; CP-A/B/C marked BLOCKED-by-F17; CP-D agent-surrogate PASS (3/3 cap-check scenarios verified structurally against synthetic DB); F18 story-doc drift filed (NON-BLOCKING: failure_reason actual constant is `daily_send_cap_exceeded`, not `BUDGET_CAP_HIT`); 4 cross-doc updates propagated per CR-2 FAIL propagation rules (sprint-status row updated; epic-5-run-flags deferred-items revised to `ADAM-Section-B-PARTIAL-BLOCKED-by-F17`; Story 4-0 Change Log appended; this story file Completion Notes + File List + Change Log appended). Section B final verdict: **PARTIAL-PASS (CP-D agent-surrogate) + BLOCKED-by-F17 (CP-A/B/C live walk)**. Story stays `ready-for-walk` pending 6-11 closure + live re-walks.

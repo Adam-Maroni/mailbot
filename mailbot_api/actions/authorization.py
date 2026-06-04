@@ -36,6 +36,7 @@ from mailbot_api.db.queries import (
     ACTION_GRANT_FIND_VALID,
     ACTION_GRANT_INSERT,
     ACTION_GRANT_REVOKE,
+    PENDING_GRANT_PROMOTE_FOR_ACTION_TYPE,
 )
 
 _logger = logging.getLogger(__name__)
@@ -153,6 +154,13 @@ async def mint_grant(
         (action_type.value, email_ids_json, expires_at_iso, minted_at_iso),
     )
 
+    # F22 (Story 6-6.5 walk, 2026-06-04): wake pending_grant rows waiting on
+    # this action_type. Filters by action_type only — is_grant_valid() at
+    # drain time re-checks email_id membership against the JSON list.
+    promoted = await execute_write(
+        db_path, PENDING_GRANT_PROMOTE_FOR_ACTION_TYPE, (action_type.value,),
+    )
+
     _logger.info(
         "action grant minted",
         extra={
@@ -161,6 +169,7 @@ async def mint_grant(
             "action_type": action_type.value,
             "email_count": len(email_ids),
             "expires_at": expires_at_iso,
+            "pending_grant_promoted": promoted,
         },
     )
     return MintGrantOut(

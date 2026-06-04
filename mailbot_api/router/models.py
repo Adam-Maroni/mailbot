@@ -547,15 +547,21 @@ class AnthropicAdapter:
             MessageParam(role="user", content=user),
         ]
 
+        # F19 (Story 6-6.5 walk, 2026-06-04): Anthropic deprecated `temperature`
+        # on `claude-opus-4-7` (reasoning model); passing it returns HTTP 400.
+        # Omit on Opus 4.7; keep on Haiku and other models that still accept it.
+        request_kwargs: dict[str, Any] = {
+            "model": self.model_id,
+            "max_tokens": max_tokens_out,
+            "system": system_blocks,
+            "messages": messages,
+        }
+        if self.model_id != "claude-opus-4-7":
+            request_kwargs["temperature"] = temperature
+
         try:
             response = await asyncio.wait_for(
-                self._client.messages.create(
-                    model=self.model_id,
-                    max_tokens=max_tokens_out,
-                    temperature=temperature,
-                    system=system_blocks,
-                    messages=messages,
-                ),
+                self._client.messages.create(**request_kwargs),
                 timeout=self.timeout_seconds,
             )
         except asyncio.TimeoutError as exc:
@@ -644,12 +650,15 @@ class AnthropicAdapter:
         # Build the request kwargs. tools is omitted entirely when
         # tool_choice == "none" — see docstring + design doc §3.2.
         # F14: system field omitted entirely when no non-empty system text.
+        # F19 (Story 6-6.5 walk, 2026-06-04): `temperature` deprecated on
+        # claude-opus-4-7 (reasoning model); omit on Opus 4.7, keep on Haiku.
         request_kwargs: dict[str, Any] = {
             "model": self.model_id,
             "max_tokens": max_tokens_out,
-            "temperature": temperature,
             "messages": anthropic_messages,
         }
+        if self.model_id != "claude-opus-4-7":
+            request_kwargs["temperature"] = temperature
         if system_blocks:
             request_kwargs["system"] = system_blocks
         if tool_choice != "none":
