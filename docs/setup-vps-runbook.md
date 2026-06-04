@@ -229,3 +229,96 @@ bash tests/integration/test_deploy_scripts.sh
 ```
 
 The test harness requires Docker Desktop or a docker-in-docker-capable host; it's documented as `@manual` (not run by default `pytest`). Phase 3.5 verification surface for end-of-epic walks.
+
+## §10 — Register Hermes cron jobs (Story 6-10)
+
+Two `hermes cron` jobs must be registered inside the running Hermes container for Epic 6's notification + digest surfaces to operate. **The full spec — including 8 hard contract facts, env vars, schedule formats, and a troubleshooting table — lives in [`hermes-config/skills/mailbot/cron-jobs.md`](../hermes-config/skills/mailbot/cron-jobs.md).** Read that first. This section is the condensed operator checklist.
+
+**Status at first ship (2026-06-04):**
+
+- **Job 1 (pull loop):** Live-verified end-to-end. Delivers urgent notifications to Discord on every cron tick.
+- **Job 2 (daily digest):** Live-verified at the cron + script + delivery layer. The agent step is **F11-gated** (Story 6-9) — the digest will deliver a "No reply: the model returned empty content" stub until Story 6-9 ships OpenAI tool-calling support on `/v1/chat/completions`. The job registration AND the script work correctly; only the agent's tool-calling round-trip fails.
+
+### §10.1 — Quick reference for the live walk
+
+```sh
+# From the host (PowerShell or bash):
+
+# 1. Confirm .env has DISCORD_HOME_CHANNEL set (NOT DISCORD_CHANNEL_ID — rename if needed).
+
+# 2. Recreate the Hermes container so it picks up the new env (restart is NOT enough):
+docker compose up -d mailbot-hermes
+
+# 3. Verify the channel var reached the container:
+docker exec mailbot-hermes sh -c 'echo channel_set=$([ -n "$DISCORD_HOME_CHANNEL" ] && echo yes || echo no), length=${#DISCORD_HOME_CHANNEL}'
+# Expected: channel_set=yes, length=19
+
+# 4. Install the cron scripts into ~/.hermes/scripts/ (copies, not symlinks):
+docker exec mailbot-hermes sh -c '
+  mkdir -p /opt/data/scripts &&
+  cp /opt/data/skills/mailbot/scripts/pull_and_deliver.py /opt/data/scripts/ &&
+  cp /opt/data/skills/mailbot/scripts/digest_prepare.py /opt/data/scripts/ &&
+  cp /opt/data/skills/mailbot/scripts/_mcp_client.py /opt/data/scripts/ &&
+  chown -R hermes:hermes /opt/data/scripts/ &&
+  chmod +x /opt/data/scripts/pull_and_deliver.py /opt/data/scripts/digest_prepare.py
+'
+
+# 5. Register Job 1 — uses the Python-call workaround for the hermes-CLI --no-agent bug:
+docker exec mailbot-hermes sh -c '
+  cd /opt/hermes && python3 -c "
+import os, json
+os.chdir(\"/opt/data\")
+from tools.cronjob_tools import cronjob
+print(json.dumps(json.loads(cronjob(
+    action=\"create\",
+    schedule=\"every 1m\",
+    name=\"mailbot-notifications-pull\",
+    script=\"pull_and_deliver.py\",
+    no_agent=True,
+    deliver=\"discord:\" + os.environ[\"DISCORD_HOME_CHANNEL\"],
+)), indent=2))
+" && chown hermes:hermes /opt/data/cron/jobs.json
+'
+
+# 6. Register Job 2:
+docker exec mailbot-hermes sh -c '
+  cd /opt/hermes && python3 -c "
+import os, json
+os.chdir(\"/opt/data\")
+from tools.cronjob_tools import cronjob
+print(json.dumps(json.loads(cronjob(
+    action=\"create\",
+    schedule=\"0 8 * * *\",
+    name=\"mailbot-daily-digest\",
+    script=\"digest_prepare.py\",
+    skill=\"mailbot\",
+    deliver=\"discord:\" + os.environ[\"DISCORD_HOME_CHANNEL\"],
+)), indent=2))
+" && chown hermes:hermes /opt/data/cron/jobs.json
+'
+
+# 7. Verify both registered:
+docker exec -u hermes mailbot-hermes hermes cron list
+# Expected: both Deliver: lines end with discord:<numeric_id>, NOT bare discord.
+
+# 8. Smoke-test the pull loop (~90s until delivery):
+docker exec mailbot-api python -c "import asyncio; from mailbot_api.notifications.tiers import send_urgent; asyncio.run(send_urgent(message='cron pull smoke test', category='health', db_path='/data/mailbot.db'))"
+
+# 9. Smoke-test the digest (F11-gated until Story 6-9 ships):
+docker exec -u hermes mailbot-hermes hermes cron run mailbot-daily-digest
+```
+
+### §10.2 — Why the operator steps look complex
+
+Eight contract facts were discovered live during Story 6-10's Phase 3.5 walk on 2026-06-04. All are documented in [`cron-jobs.md`](../hermes-config/skills/mailbot/cron-jobs.md) §1. The most surprising:
+
+- **Script path:** must live in `~/.hermes/scripts/`, owned by `hermes:hermes`, **copies not symlinks** (Hermes rejects symlinks as path-traversal).
+- **`--deliver discord` alone is silently no-op** — needs `discord:<channel_id>`. The bare form produces a "no delivery target resolved" warning.
+- **`docker compose restart` keeps the old env cached** — use `docker compose up -d` to pick up `.env` changes.
+- **`hermes cron CLI --no-agent` flag has a wiring bug** that hits the validator as if `no_agent=False`. The Python-call workaround in steps 5-6 bypasses the CLI layer.
+- **Hermes's cron-with-agent contract** is: script stdout becomes the agent's prompt input. `digest_prepare.py` writes the payload to stdout AND a file; the agent reads from the stdin-prompt path.
+- **Minimum cron cadence is 1 minute.** Sub-minute schedules are rejected. Job 1's worst-case Discord SLA is ~90s, not the ~30s Story 6.3 originally aspired to.
+
+If any step fails, [`cron-jobs.md`](../hermes-config/skills/mailbot/cron-jobs.md) §5 has a troubleshooting table mapping every error message we hit during the live walk to its root cause and fix.
+
+**Dependency note:** Job 1 (pull loop) does NOT depend on Story 6-9 (F11). Verified live 2026-06-04. Job 2 (digest) DOES depend on F11 — the agent step's MCP tool calls go through `/v1/chat/completions` with `tools=[...]` which is exactly F11's gap.

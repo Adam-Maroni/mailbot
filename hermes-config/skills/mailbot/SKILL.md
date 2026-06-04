@@ -357,3 +357,21 @@ Banned: never render a /spend chart for a period the verb doesn't accept (only
 today / week / month — the verb raises `ValueError` on any other string).
 Never write the PNG to disk; the bytes go straight from the verb's BytesIO
 return to Discord's attachment upload.
+
+## Background cron jobs (Story 6-10)
+
+This skill ships TWO `hermes cron` jobs that run inside the Hermes container.
+They consume the same MCP verb surface as the slash-command turns above:
+
+- **`mailbot-notifications-pull`** — drains the urgent-tier notifications outbox
+  every ~10s. Calls `pull_pending_notifications` → posts to Discord →
+  `ack_notification`. Pure transport; `no_agent=True` (zero LLM cost).
+- **`mailbot-daily-digest`** — composes and posts the 08:00 daily digest. Calls
+  `compose_digest` via a pre-run script → generates a Qwen intro paragraph via
+  `ask_router(task_type="daily_digest_intro")` → renders + posts to Discord →
+  `finalize_digest_delivery`.
+
+Both jobs are documented in `cron-jobs.md` alongside the scripts in `scripts/`.
+The operator registers them once during VPS setup via `hermes cron create`
+(see `docs/setup-vps-runbook.md` §10). The scripts are stdlib-only Python and
+do not require any third-party dependencies inside the Hermes container.

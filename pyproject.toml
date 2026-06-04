@@ -17,6 +17,34 @@ extend-exclude = [
     "docs/external",
     "_eval-outputs",
     "hermes-docs",
+    # Third-party Hermes-bundled skill directories. MailBot's lint rules
+    # don't apply — these are upstream code shipped with the Hermes image.
+    # MailBot's own skill (`hermes-config/skills/mailbot/`) IS subject to
+    # the gate and is NOT excluded here.
+    "hermes-config/skills/apple",
+    "hermes-config/skills/autonomous-ai-agents",
+    "hermes-config/skills/creative",
+    "hermes-config/skills/data-science",
+    "hermes-config/skills/devops",
+    "hermes-config/skills/diagramming",
+    "hermes-config/skills/dogfood",
+    "hermes-config/skills/domain",
+    "hermes-config/skills/email",
+    "hermes-config/skills/gaming",
+    "hermes-config/skills/gifs",
+    "hermes-config/skills/github",
+    "hermes-config/skills/inference-sh",
+    "hermes-config/skills/mcp",
+    "hermes-config/skills/media",
+    "hermes-config/skills/mlops",
+    "hermes-config/skills/note-taking",
+    "hermes-config/skills/productivity",
+    "hermes-config/skills/red-teaming",
+    "hermes-config/skills/research",
+    "hermes-config/skills/smart-home",
+    "hermes-config/skills/social-media",
+    "hermes-config/skills/software-development",
+    "hermes-config/skills/yuanbao",
 ]
 
 [tool.ruff.lint]
@@ -48,6 +76,12 @@ disallow_untyped_defs = true
 disallow_incomplete_defs = true
 warn_unused_ignores = true
 warn_return_any = true
+# The cron-script bundle in hermes-config/skills/mailbot/scripts/ uses a
+# sibling import (`from _mcp_client import ...`) — Hermes-bundled skills
+# are stdlib-only Python invoked as scripts with their dir on sys.path,
+# not as packages. Adding the dir to MYPYPATH lets mypy resolve the
+# import for static checking from the test file.
+mypy_path = ["hermes-config/skills/mailbot/scripts"]
 exclude = [
     "\\.venv",
     "build",
@@ -57,6 +91,33 @@ exclude = [
     "docs/external",
     "_eval-outputs",
     "hermes-docs",
+    # Third-party Hermes-bundled skill directories — see ruff exclude
+    # block above for the same rationale. MailBot's own skill at
+    # `hermes-config/skills/mailbot/` is NOT excluded.
+    "hermes-config/skills/apple",
+    "hermes-config/skills/autonomous-ai-agents",
+    "hermes-config/skills/creative",
+    "hermes-config/skills/data-science",
+    "hermes-config/skills/devops",
+    "hermes-config/skills/diagramming",
+    "hermes-config/skills/dogfood",
+    "hermes-config/skills/domain",
+    "hermes-config/skills/email",
+    "hermes-config/skills/gaming",
+    "hermes-config/skills/gifs",
+    "hermes-config/skills/github",
+    "hermes-config/skills/inference-sh",
+    "hermes-config/skills/mcp",
+    "hermes-config/skills/media",
+    "hermes-config/skills/mlops",
+    "hermes-config/skills/note-taking",
+    "hermes-config/skills/productivity",
+    "hermes-config/skills/red-teaming",
+    "hermes-config/skills/research",
+    "hermes-config/skills/smart-home",
+    "hermes-config/skills/social-media",
+    "hermes-config/skills/software-development",
+    "hermes-config/skills/yuanbao",
 ]
 
 [tool.pytest.ini_options]

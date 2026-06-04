@@ -2117,7 +2117,17 @@ So that the Epic 5 capstone demonstrates the integration between the conversatio
 
 This epic completes the trust surface: `mailbot status` returns the full picture in 10 seconds, the four-tier notification system (urgent / important / informational / silent) is wired end-to-end through Discord, anti-fatigue mechanics keep MailBot quiet under normal conditions and urgent-only when Adam stops responding, the 08:00 daily digest arrives, and the `/spend` chart command renders matplotlib-PNG charts of cost-per-task posted to Discord. The cron split lands (Hermes for agent-involving jobs; mailbot-api internal scheduler for LLM-free critical infra). VPS operator scripts (`setup_vps.sh`, `deploy.sh`, `backup.sh`, `restore.sh`) ship so Adam can deploy from scratch to a fresh Hostinger box with one command.
 
-**Sequencing (per Epic 5 retro 2026-06-02):** `6.0 → 6.6 → 6.6.5 → 6.1 → 6.2 → 6.7 → 6.3 → 6.4 → 6.5 → 6.8`. The reorder front-loads Hermes-independent work while Story 6.0 closes the F3/F4/F5 Hermes runtime mismatch surfaced in Epic 5 Phase 3.5 Section B. **Closure gate between 6.7 and 6.3:** F3/F4/F5 must be marked RESOLVED in `epic-5-run-flags.md` before any Hermes-dependent story (6.3 / 6.4 / 6.5) starts.
+**Sequencing (per Epic 5 retro 2026-06-02 + Epic 6 retro 2026-06-04 Path B amendment):**
+
+- **Phase 1 (shipped 2026-06-03):** `6.0 → 6.6 → 6.1 → 6.2 → 6.7 → 6.8` front-loaded Hermes-independent work while Story 6.0 closed the F3/F4/F5 Hermes runtime mismatch surfaced in Epic 5 Phase 3.5 Section B.
+- **Phase 1 inline closures (shipped 2026-06-03):** `6.6.6 (F6) → 6.6.7 (F7) → 6.6.8 (F8) → 6.6.9 (SKILL.md frontmatter)` closed four sibling Hermes-integration contract bugs via inline-fix-and-walk loop during Phase 3.5 CP-2 walk attempts.
+- **Phase 2 (shipped 2026-06-03):** `6.3 → 6.4 → 6.5` Hermes-dependent stories landed after the closure gate.
+- **Phase 3 (filed 2026-06-04, Path B amendment):** `6.9 (F11 closure) → 6.10 (Hermes-cron-skill bundle) → 6.6.5 walk + CP-1 deploy walk + CP-2 completion walk → epic done-flip`. F11 (the actual F9 blocker per Epic 6 retro) and the two Hermes-cron-skill consumers for Story 6.3 pull loop + Story 6.5 08:00 digest are filed as Epic 6 follow-ups rather than absorbed into Epic 7 — Epic 7's identity is eval & calibration, not Router/adapter protocol extension.
+
+**Closure gates:**
+
+- **Original closure gate (closed 2026-06-03):** F3/F4/F5/F6 RESOLVED before any Hermes-dependent story (6.3 / 6.4 / 6.5) starts.
+- **Epic done-flip gate (open):** F11 must be RESOLVED (via Story 6.9) AND Hermes-cron-skill consumers must ship (via Story 6.10) AND the three Phase 3.5 walks (6.6.5 capstone, 6.7 VPS deploy, CP-2 full `/spend` round-trip) must complete before `epic-6` flips to `done`.
 
 ### Story 6.0: Hermes runtime corrective — close F3 / F4 / F5 carry-forward from Epic 5
 
@@ -2512,6 +2522,111 @@ So that AR-ANALYTICS-1's discipline (analytics verbs in `mailbot_api/verbs/analy
 **When** `tests/integration/test_spend_chart_command.py` exercises `/spend month` against a mocked Discord environment
 **Then** Discord receives a single message with an attached PNG and the documented text summary
 **And** the slash command completes within 5 seconds wall-clock (NFR-PERF-1 — chart rendering on 2 vCPU; pre-measured at typical 100k-row `router_calls` table)
+
+### Story 6.9: `/v1/chat/completions` tool-calling — OpenAI ↔ Anthropic translation (F11 closure)
+
+**Created by Epic 6 retro 2026-06-04 (Path B).** F11 surfaced during Epic 6 Phase 3.5 CP-2 walk attempt #3 as the precisely-scoped successor to the vaguer F9 carry-forward. F11 is the 5th boundary layer in the F6/F7/F8/SKILL.md sibling-quartet pattern and the single largest user-visible gap remaining at Epic 6 close. Filed as a dedicated Epic 6 follow-up story rather than absorbed into Epic 7 because the scope is fundamentally Router/adapter protocol extension — Epic 6's territory — and Epic 7's identity (eval & calibration) shouldn't carry it.
+
+As Adam,
+I want mailbot-api's `/v1/chat/completions` endpoint to accept OpenAI-shape `tools=[...]` and `tool_choice` parameters, forward them through the Router to the AnthropicAdapter, translate the OpenAI tool-call shape to Anthropic's tool-use shape on the way in and back to OpenAI's `tool_calls` shape on the way out, and audit tool-calling usage in `router_calls` — preserving sensitivity-gate preconditions, ephemeral cache (Story 2-6 Rule M), and degraded-mode logic,
+So that Hermes's main-inference path (which assembles tool-bearing OpenAI requests to expose MCP tools to the inference model) actually produces `tool_calls` responses instead of code-block-wrapped text that Hermes parses as "Empty response from model" — unblocking F9, Story 6-6.5 capstone walk CP-A/B/C, Story 6-8 live `/spend` round-trip, and any future Hermes-orchestrated slash dispatch.
+
+**Acceptance Criteria:**
+
+**Given** the current `_ChatCompletionsRequest` Pydantic schema has only `model / messages / max_tokens / temperature`
+**When** the schema is extended
+**Then** two new fields ship: `tools: list[ChatCompletionToolDef] | None = None` and `tool_choice: ChatCompletionToolChoice | None = None`
+**And** `ChatCompletionToolDef` is the OpenAI tool-definition shape: `{"type": Literal["function"], "function": {"name": str, "description": str, "parameters": dict}}`
+**And** `ChatCompletionToolChoice` is `Literal["auto", "none", "required"] | dict` (OpenAI's tool-choice constraint shape)
+**And** parsing extra fields no longer drops them silently — strict-validation guard added or extras explicitly forbidden via Pydantic config
+
+**Given** `ask_router` does not currently accept tools
+**When** `ask_router`'s signature is extended
+**Then** `tools: list[dict] | None = None` and `tool_choice: ... | None = None` parameters are added
+**And** `tools` is forwarded through `RouterResult.input` (or a new dedicated field) so the audit row carries the tool-call request shape
+**And** `tools` is forwarded to the adapter dispatch table; adapters that don't support tool-calling raise `AdapterError(reason="tools_unsupported")` rather than silently dropping
+
+**Given** `AnthropicAdapter.call` does not currently translate OpenAI tools to Anthropic tools
+**When** the adapter is extended
+**Then** OpenAI `tools=[{"type":"function","function":{"name","description","parameters"}}]` is translated to Anthropic `tools=[{"name","description","input_schema"}]`
+**And** OpenAI `tool_choice="auto"` maps to Anthropic `tool_choice={"type":"auto"}`; `tool_choice="required"` maps to `{"type":"any"}`; `tool_choice={"type":"function","function":{"name":"X"}}` maps to `{"type":"tool","name":"X"}`
+**And** Anthropic's response content blocks `[{"type":"tool_use","id","name","input"}, ...]` are translated back to OpenAI `tool_calls=[{"id","type":"function","function":{"name","arguments":<JSON string>}}, ...]`
+**And** the AnthropicAdapter response shape is extended (`AdapterResponse` or a new `AdapterToolResponse`) to carry both the text reply (when present) and the tool_calls list (when present)
+**And** multi-turn tool-use ↔ tool_result conversation history is preserved: subsequent OpenAI-shape requests with `role="tool" / tool_call_id / content` messages are translated to Anthropic's `[{"type":"tool_result","tool_use_id","content"}]` blocks
+
+**Given** `router_calls` is the canonical audit table
+**When** the schema is extended
+**Then** a new migration adds either: (a) a `tool_calls_count` integer column + `tool_call_cost_usd` real column, OR (b) a JSONB-equivalent `tool_calls_summary` text column documenting per-call dispatched-tool metadata
+**And** tool-call rows produced via `/v1/chat/completions` are auditable end-to-end: which tools were offered, which were called, the input arguments (redacted per Story 5-7's chat-input redactor), the tool_use ids, and the cost attribution
+
+**Given** Story 2-6's ephemeral prompt cache (Rule M) interacts with prompt shape
+**When** tools are forwarded
+**Then** the cache key includes the tools list shape (canonical JSON of `[(name, parameters_schema_hash), ...]`) to prevent stale-cache contamination across different tool-bearing requests
+**And** a regression test fixes the cache-key-includes-tools-hash invariant
+
+**Given** Story 4-7's sensitivity precondition layer
+**When** a tool-call request carries an email_id argument
+**Then** the existing sensitivity-gate logic in the Router precondition layer applies — `sensitivity_at IS NULL` → SENSITIVITY_NOT_CLASSIFIED; `sensitive/confidential` task without sensitivity_token → SENSITIVITY_BLOCKS_API
+**And** the precondition layer extracts `email_id` from tool-call arguments where present (covers `hydrate_email`, `draft_reply`, `propose_action`, etc.)
+
+**Given** the work is complete
+**When** `tests/integration/test_chat_completions_tool_calling.py` is implemented
+**Then** the test covers: (1) tools forwarded through `/v1/chat/completions` → ask_router → AnthropicAdapter; (2) response `tool_calls` shape returned to the caller correctly; (3) multi-turn round-trip — request with tools → response with `tool_calls` → next request with `role="tool"` results → Anthropic adapter translates correctly; (4) audit captured in `router_calls`; (5) sensitivity-gate enforced on tool-call arguments; (6) cache-key includes tools shape (regression for stale-cache); (7) degraded-mode + budget-cap interactions intact
+
+**Given** Story 6-6.5 (Epic 5 capstone walk) is currently F11-gated
+**When** F11 closes
+**Then** the closure-gate annotation in `sprint-status.yaml` is updated — Story 6-6.5 can now be walked end-to-end (modulo `OUTLOOK_CLIENT_SECRET` capture per Story 4-0 amendment)
+**And** the `epic-6-run-flags.md` F11 block is amended to "RESOLVED — see Story 6.9 walk record"
+**And** F9 (Discord round-trip "Empty response") is amended to "RESOLVED via F11 closure"
+
+### Story 6.10: Hermes-cron-skill bundle — pull loop (Story 6.3) + 08:00 daily digest trigger (Story 6.5)
+
+**Created by Epic 6 retro 2026-06-04 (Path B).** Two carry-forward Hermes-side consumers shipped as a single bundled story. Per the schema-reality reframe pattern shipped three times in Epic 6 (Stories 6-0, 6-3, 6-5): mailbot-api ships the verb + MCP-tool surface; the Hermes-side consumer is a separate follow-up. This story is the consumer side for two of those three reframes — the third (Story 6-0's Hermes runtime corrective) is fully closed.
+
+**Pre-requisite:** Story 6-9 (F11 closure) must land first OR the Hermes-cron-skill must be implemented without MailBot-side tool-calling (i.e., direct MCP `tools/call` invocations from the cron-skill itself rather than via a Hermes main-inference path). The latter is likely simpler and matches Hermes's documented cron-with-agent pattern, but the design choice is part of this story's scope.
+
+As Adam,
+I want a Hermes-side skill-bundle (or equivalent cron-skill mechanism per Hermes's documented architecture) that consumes mailbot-api's pull-based notification delivery contract and the daily digest verb surface, so urgent notifications actually reach Discord within 30 seconds of enqueue AND the 08:00 daily digest fires reliably,
+So that the four-tier notification dispatcher (Story 6.3) and daily digest (Story 6.5) work end-to-end against real Discord — closing the two largest Hermes-side carry-forwards from Epic 6.
+
+**Acceptance Criteria:**
+
+**Given** Story 6.3 ships `pull_pending_notifications` + `ack_notification` MCP tools on mailbot-api
+**When** the Hermes-side pull-loop skill is implemented
+**Then** the skill runs every ~10 seconds (configurable per the cron-skill mechanism Hermes uses)
+**And** it calls `pull_pending_notifications` MCP tool → receives the pending notification rows → for each row, posts the formatted message to Adam's Discord DM → calls `ack_notification(notification_id, delivery_status="ok" | "failed_<reason>")` to mark the row terminal
+**And** the skill honors the `final_status` Literal documented in Story 6.3 (`ok` / `failed` / `unknown` / `delivering`)
+**And** the skill emits the `notification.ack.race_loss` observability log per Story 6.3 CR HIGH-2 when an `ack_notification` call reports a status-already-terminal race
+
+**Given** Story 6.5 ships `compose_digest` + `finalize_digest_delivery` MCP tools + the `daily_digest_intro` AR-PAT-5 prompt module
+**When** the Hermes-side 08:00 trigger is implemented
+**Then** a cron job fires at 08:00 in `MAILBOT_LOCAL_TZ` (with fallback to UTC if unset, matching Story 6-4's tz handling)
+**And** the job: (1) calls `compose_digest` via MCP → receives the 4-section payload; (2) dispatches `ask_router(task_type="daily_digest_intro", content=<payload digest>, max_tokens_out=200, lane="batch", caller_origin="hermes-cron-digest")` → receives the Qwen intro paragraph; (3) renders the final Discord message (intro + unread groups + pending Tier-2 batches + queued important notifications + weekly artifacts when scheduled); (4) posts to Adam's DM; (5) calls `finalize_digest_delivery` to mark all delivered `notifications_outbox` rows with `delivery_status='ok_via_digest'`
+**And** the empty-digest case is handled: when `compose_digest` returns a payload with no unread / no pending / no queued / no artifacts, the digest still sends but with the terse fallback per Story 6.5 AC ("Inbox is clean. Nothing pending. Have a good day.")
+**And** the digest is response-cached at the verb layer per Story 2.7 (10-min TTL) so a retry within 10 minutes is cheap
+
+**Given** the Hermes-side skill-bundle infrastructure choice
+**When** the implementation begins
+**Then** the design decision is recorded in `_bmad-output/implementation-artifacts/6-10-design-decision.md`: which Hermes-side mechanism is used (skill-bundle / cron-with-agent / direct cron job invoking MCP via curl / etc.), why that choice over alternatives, and what the testing strategy is (live walk only? mock harness? Hermes's own test infrastructure?)
+**And** the choice respects RECONCILIATION-NOTES.md §6 carry-forward items (slash-command-via-skill-bundle, fallback-chain-via-CLI) — should be the same mechanism as those when implemented, not a divergent pattern
+
+**Given** the pull-loop skill is in place
+**When** the Phase 3.5 walk is performed
+**Then** an urgent notification enqueued via `notifications.send_urgent(...)` reaches Adam's DM within 30 seconds (verifiable via timestamp on the `notifications_outbox` row + Adam's Discord message timestamp)
+**And** retries on Discord rate-limit or Hermes failure follow the documented exponential backoff (5 retries max → `delivery_status="failed_max_retries"`)
+**And** the dedup collapse from Story 6.4 works end-to-end: 5 same-category urgent alerts in an hour collapse to 1 delivered message
+
+**Given** the daily digest trigger is in place
+**When** 08:00 rolls around on a non-Sunday
+**Then** the digest message lands in Adam's DM within 5 minutes of the scheduled time
+**And** the message contains all 4 sections per Story 6.5 AC: intro + unread groups + pending batches + queued important notifications
+**And** on a Sunday, the digest additionally includes the weekly_artifacts section (drift report + sampling DMs — Epic 7 will populate these; until then, the section is empty or absent)
+**And** the `router_calls` row for the `daily_digest_intro` call shows `model_chosen="qwen-coder-2.5-7b"` (or whatever Qwen variant is in policy.yaml), `caller_origin="hermes-cron-digest"`, and a hit on the response cache when re-run within 10 minutes
+
+**Given** the work is complete
+**When** `epic-6-run-flags.md` is amended
+**Then** the Story 6-3 and Story 6-5 entries in the per-story summary table are amended with "Hermes-cron-skill bundle (Story 6.10) — SHIPPED" closure annotations
+**And** the carry-forward stack §"Hermes-cron-skill for Story 6-3 pull loop" and §"Hermes-cron-skill for Story 6-5 daily digest" are both removed (closed)
 
 ---
 
