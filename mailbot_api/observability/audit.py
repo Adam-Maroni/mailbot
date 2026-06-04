@@ -85,6 +85,12 @@ class RouterCallRow(BaseModel):
     email_id: str | None = None
     sensitivity_grant_id: str | None = None
     sensitivity_grant_minted_at: str | None = None
+    # Story 6-9 (F11 closure) — only populated by dispatch_tool_call.
+    # NULL on every non-tools-bearing row. tool_calls_count==0 means tools
+    # were offered but the model chose to call none; NULL means the call
+    # wasn't tools-bearing at all.
+    tool_calls_count: int | None = None
+    tool_calls_summary: str | None = None
 
     @field_validator("model_chosen_reason")
     @classmethod
@@ -141,6 +147,8 @@ def _param_tuple(row: RouterCallRow) -> tuple[object, ...]:
         row.email_id,
         row.sensitivity_grant_id,
         row.sensitivity_grant_minted_at,
+        row.tool_calls_count,
+        row.tool_calls_summary,
     )
 
 

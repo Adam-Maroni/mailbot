@@ -17,14 +17,22 @@ the Anthropic concrete class.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import anthropic
 import ollama
 from pydantic import BaseModel, ConfigDict
 
-from mailbot_api.router.errors import sanitize_error
+from mailbot_api.router.errors import (
+    ChatCompletionToolChoice,
+    ChatCompletionToolChoiceObject,
+    ChatCompletionToolDef,
+    OpenAIToolCall,
+    OpenAIToolCallFunction,
+    sanitize_error,
+)
 
 
 class AdapterResponse(BaseModel):
@@ -37,6 +45,36 @@ class AdapterResponse(BaseModel):
     tokens_out: int
     cached_tokens_in: int
     latency_ms: int
+    raw: dict[str, Any]
+
+
+class ToolCallAdapterResponse(BaseModel):
+    """Story 6-9 (F11 closure) — adapter response for tool-bearing calls.
+
+    Parallels `AdapterResponse` but carries:
+      * `text` — optional accompanying assistant text (Anthropic CAN return
+        both text + tool_use blocks in one response). Empty string when only
+        tool_use blocks are present.
+      * `tool_calls` — list of OpenAI-shape tool_calls translated from
+        Anthropic's tool_use content blocks. Empty list when the model
+        chose to produce text only.
+      * `finish_reason` — `"tool_calls"` when any tool_use block present;
+        `"length"` when truncated by max_tokens; `"stop"` otherwise.
+
+    Adapters that don't support tool-calling raise `AdapterProviderError`
+    with `sanitized_message="tools_unsupported"` rather than returning an
+    empty-tool_calls response — silent drop would mask the gap.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    tool_calls: list[OpenAIToolCall]
+    tokens_in: int
+    tokens_out: int
+    cached_tokens_in: int
+    latency_ms: int
+    finish_reason: Literal["stop", "tool_calls", "length"]
     raw: dict[str, Any]
 
 
@@ -99,6 +137,11 @@ class ModelAdapter(Protocol):
     Story 2-4's ``ask_router`` dispatches against this protocol — no runtime
     inheritance required, so Pydantic-bearing adapter classes don't need to
     fight a metaclass with an ABC.
+
+    Story 6-9 (F11 closure): ``call_with_tools`` is the tool-calling sibling.
+    Adapters that don't support tool-calling MUST raise
+    ``AdapterProviderError(sanitized_message="tools_unsupported")`` rather
+    than silently dropping tools — silent drop is how F11 originally hid.
     """
 
     async def call(
@@ -108,6 +151,174 @@ class ModelAdapter(Protocol):
         max_tokens_out: int,
         temperature: float = 0.0,
     ) -> AdapterResponse: ...
+
+    async def call_with_tools(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[ChatCompletionToolDef],
+        tool_choice: ChatCompletionToolChoice | None = None,
+        max_tokens_out: int = 1024,
+        temperature: float = 0.0,
+    ) -> ToolCallAdapterResponse: ...
+
+
+# ---------------------------------------------------------------------------
+# Story 6-9 (F11 closure) — OpenAI ↔ Anthropic translation helpers.
+#
+# Pure functions, no I/O. Tested via unit tests that pass canned shapes
+# through the helpers and assert the translated output.
+# ---------------------------------------------------------------------------
+
+
+def _translate_tools_openai_to_anthropic(
+    tools: list[ChatCompletionToolDef],
+) -> list[dict[str, Any]]:
+    """OpenAI `tools=[{"type":"function","function":{...}}]` →
+    Anthropic `tools=[{"name","description","input_schema"}]`."""
+    return [
+        {
+            "name": t.function.name,
+            "description": t.function.description,
+            "input_schema": t.function.parameters or {"type": "object", "properties": {}},
+        }
+        for t in tools
+    ]
+
+
+_OMIT_TOOL_CHOICE = object()
+"""Sentinel returned by `_translate_tool_choice_openai_to_anthropic` to signal
+that the caller should OMIT the tool_choice field from the Anthropic request
+entirely (vs. passing an explicit `{"type":"auto"}` value). CR-8 (Story 6-9
+review): tool_choice is part of Anthropic's cached prefix per Rule M; sending
+an explicit value when the caller passed None subtly varies the cache key.
+Omitting matches Anthropic's documented default."""
+
+
+def _translate_tool_choice_openai_to_anthropic(
+    tool_choice: ChatCompletionToolChoice | None,
+) -> dict[str, Any] | None | object:
+    """OpenAI tool_choice → Anthropic tool_choice.
+
+    Return values:
+      * dict — explicit Anthropic tool_choice to send
+      * None — `"none"` semantics; caller omits both tools and tool_choice
+      * `_OMIT_TOOL_CHOICE` — caller omits tool_choice but keeps tools
+        (CR-8: caller passed None → Anthropic's documented default is auto;
+        omitting matches that default without varying the cached prefix)
+    """
+    if tool_choice is None:
+        return _OMIT_TOOL_CHOICE
+    if tool_choice == "auto":
+        return {"type": "auto"}
+    if tool_choice == "required":
+        return {"type": "any"}
+    if tool_choice == "none":
+        return None
+    if isinstance(tool_choice, ChatCompletionToolChoiceObject):
+        return {"type": "tool", "name": tool_choice.function.name}
+    # Defensive — Pydantic should have caught any other shape at parse time.
+    raise ValueError(f"unrecognized tool_choice: {tool_choice!r}")
+
+
+def _translate_messages_openai_to_anthropic(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """OpenAI messages history → Anthropic messages.
+
+    Handles three message shapes:
+      * `{"role": "user", "content": "..."}` → pass-through
+      * `{"role": "assistant", "content": "...", "tool_calls": [...]}`
+        → `{"role": "assistant", "content": [<text block?>, <tool_use blocks>]}`
+      * `{"role": "tool", "tool_call_id": "...", "content": "..."}`
+        → `{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "...", "content": "..."}]}`
+
+    Per §3.4 of 6-9-design-decision.md, tool-result messages travel as
+    `user`-role content blocks on the Anthropic side. Adjacent assistant +
+    tool messages preserve their relative order.
+    """
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        role = msg.get("role")
+        if role == "tool":
+            tool_use_id = msg.get("tool_call_id", "")
+            content = msg.get("content", "")
+            out.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": content,
+                        }
+                    ],
+                }
+            )
+            continue
+        if role == "assistant" and msg.get("tool_calls"):
+            blocks: list[dict[str, Any]] = []
+            text = msg.get("content")
+            if isinstance(text, str) and text:
+                blocks.append({"type": "text", "text": text})
+            for tc in msg["tool_calls"]:
+                fn = tc.get("function", {})
+                try:
+                    parsed_args = json.loads(fn.get("arguments", "{}"))
+                except (TypeError, json.JSONDecodeError):
+                    parsed_args = {}
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": tc.get("id", ""),
+                        "name": fn.get("name", ""),
+                        "input": parsed_args,
+                    }
+                )
+            out.append({"role": "assistant", "content": blocks})
+            continue
+        # Plain user / assistant text — pass-through.
+        out.append(
+            {"role": role or "user", "content": msg.get("content", "")}
+        )
+    return out
+
+
+def _translate_response_anthropic_to_openai_tool_calls(
+    content_blocks: list[dict[str, Any]],
+) -> tuple[str, list[OpenAIToolCall]]:
+    """Anthropic response content → (joined_text, openai_tool_calls).
+
+    Walks the Anthropic content blocks once, separating `text` blocks
+    (joined into one string) from `tool_use` blocks (translated to
+    OpenAI's `tool_calls` shape with JSON-stringified arguments).
+    """
+    text_parts: list[str] = []
+    tool_calls: list[OpenAIToolCall] = []
+    for block in content_blocks:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            text_parts.append(str(block.get("text", "")))
+        elif btype == "tool_use":
+            arg_input = block.get("input") or {}
+            try:
+                args_json = json.dumps(arg_input, separators=(",", ":"))
+            except (TypeError, ValueError):
+                args_json = "{}"
+            tool_calls.append(
+                OpenAIToolCall(
+                    id=str(block.get("id", "")),
+                    type="function",
+                    function=OpenAIToolCallFunction(
+                        name=str(block.get("name", "")),
+                        arguments=args_json,
+                    ),
+                )
+            )
+    return "".join(text_parts), tool_calls
 
 
 class OllamaAdapter:
@@ -187,6 +398,27 @@ class OllamaAdapter:
             cached_tokens_in=0,
             latency_ms=int(latency_ms),
             raw=raw_dict,
+        )
+
+    async def call_with_tools(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[ChatCompletionToolDef],
+        tool_choice: ChatCompletionToolChoice | None = None,
+        max_tokens_out: int = 1024,
+        temperature: float = 0.0,
+    ) -> ToolCallAdapterResponse:
+        """Story 6-9 (F11 closure) — Ollama tool-call surface.
+
+        Qwen 2.5 doesn't expose OpenAI-shape tool-calling at the inference
+        surface we use. Raises a structured error rather than silently
+        dropping tools — silent drop is how F11 hid for an entire epic.
+        """
+        raise AdapterProviderError(
+            model_id=self.model_id,
+            sanitized_message="tools_unsupported",
         )
 
     async def embed(self, text: str) -> EmbeddingResponse:
@@ -367,6 +599,119 @@ class AnthropicAdapter:
             raw=raw_dict,
         )
 
+    async def call_with_tools(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[ChatCompletionToolDef],
+        tool_choice: ChatCompletionToolChoice | None = None,
+        max_tokens_out: int = 1024,
+        temperature: float = 0.0,
+    ) -> ToolCallAdapterResponse:
+        """Story 6-9 (F11 closure) — Anthropic tool-call surface.
+
+        Translates the OpenAI-shape `messages` + `tools` into Anthropic's
+        Messages API shape, dispatches with Rule M ephemeral cache on the
+        system block, and translates the response content blocks back to
+        OpenAI's `tool_calls` shape via the module-level translation
+        helpers.
+
+        When `tool_choice="none"`, the tools list is omitted entirely —
+        Anthropic has no "force no tools" knob, and the contract matches
+        OpenAI's behavior of disabling tool use for that call.
+        """
+        from anthropic.types import TextBlockParam
+
+        anthropic_messages = _translate_messages_openai_to_anthropic(messages)
+        anthropic_tool_choice = _translate_tool_choice_openai_to_anthropic(tool_choice)
+
+        system_blocks: list[TextBlockParam] = [
+            TextBlockParam(
+                type="text",
+                text=system,
+                cache_control={"type": "ephemeral"},
+            )
+        ]
+
+        # Build the request kwargs. tools is omitted entirely when
+        # tool_choice == "none" — see docstring + design doc §3.2.
+        request_kwargs: dict[str, Any] = {
+            "model": self.model_id,
+            "max_tokens": max_tokens_out,
+            "temperature": temperature,
+            "system": system_blocks,
+            "messages": anthropic_messages,
+        }
+        if tool_choice != "none":
+            request_kwargs["tools"] = _translate_tools_openai_to_anthropic(tools)
+            # CR-8 (Story 6-9 review): include tool_choice only when the
+            # caller asked for one. Passing an explicit `{"type":"auto"}`
+            # when the caller defaulted to None subtly varies Rule M's
+            # cached prefix; omitting hits Anthropic's documented default.
+            if (
+                anthropic_tool_choice is not None
+                and anthropic_tool_choice is not _OMIT_TOOL_CHOICE
+            ):
+                request_kwargs["tool_choice"] = anthropic_tool_choice
+
+        start_ns = time.monotonic_ns()
+        try:
+            response = await asyncio.wait_for(
+                self._client.messages.create(**request_kwargs),
+                timeout=self.timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            raise AdapterTimeout(
+                model_id=self.model_id,
+                timeout_seconds=self.timeout_seconds,
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 — adapter boundary
+            raise AdapterProviderError(
+                model_id=self.model_id,
+                sanitized_message=sanitize_error(exc),
+            ) from exc
+
+        latency_ms = (time.monotonic_ns() - start_ns) // 1_000_000
+
+        raw_dict: dict[str, Any] = (
+            response.model_dump() if hasattr(response, "model_dump") else dict(response)
+        )
+
+        content_blocks = raw_dict.get("content") or []
+        text, tool_calls = _translate_response_anthropic_to_openai_tool_calls(
+            content_blocks if isinstance(content_blocks, list) else []
+        )
+
+        usage = raw_dict.get("usage") or {}
+        tokens_in = int(usage.get("input_tokens") or 0)
+        tokens_out = int(usage.get("output_tokens") or 0)
+        cache_read = int(usage.get("cache_read_input_tokens") or 0)
+        cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
+
+        # Map Anthropic's stop_reason to OpenAI's finish_reason.
+        # Anthropic uses: end_turn, max_tokens, stop_sequence, tool_use.
+        # Per §3.3 of design doc: any tool_use block present ⇒ "tool_calls".
+        stop_reason = raw_dict.get("stop_reason") or ""
+        finish_reason: Literal["stop", "tool_calls", "length"]
+        if tool_calls:
+            finish_reason = "tool_calls"
+        elif stop_reason == "max_tokens":
+            finish_reason = "length"
+        else:
+            finish_reason = "stop"
+
+        return ToolCallAdapterResponse(
+            text=text,
+            tool_calls=tool_calls,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cached_tokens_in=cache_read + cache_creation,
+            latency_ms=int(latency_ms),
+            finish_reason=finish_reason,
+            raw=raw_dict,
+        )
+
 
 __all__ = [
     "AdapterError",
@@ -377,4 +722,5 @@ __all__ = [
     "EmbeddingResponse",
     "ModelAdapter",
     "OllamaAdapter",
+    "ToolCallAdapterResponse",
 ]

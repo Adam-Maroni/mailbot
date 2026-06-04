@@ -72,7 +72,15 @@ CP-2 walk attempt #2 after F8 fix + rebuild:
 
 ---
 
-### F9 — Hermes main-inference DM round-trip "Empty response" — **CARRY-FORWARD** (now precisely scoped to F11 dependency)
+### F9 — Hermes main-inference DM round-trip "Empty response" — **RESOLVED via F11 closure 2026-06-04 (Story 6-9)**
+
+**Resolution shape:** F9 was a downstream symptom — Hermes's main inference path returned an empty user-facing reply because mailbot-api's `/v1/chat/completions` endpoint silently dropped Hermes's `tools=[...]` request parameter, Haiku produced text-form tool intent in a code block, and Hermes parsed no `tool_calls` field. Story 6-9 closed F11 (the upstream root cause); F9 closes by consequence. The code-level fix is the same: `mailbot_api/main.py:_ChatCompletionsRequest` now accepts and forwards `tools` + `tool_choice` via the new `dispatch_tool_call` sibling. **Live walk:** deferred to CP-2 completion walk + CP-3 capstone walk; tests cover the translation correctness.
+
+**Original carry-forward annotation preserved below for historical context:**
+
+---
+
+### F9 — Hermes main-inference DM round-trip "Empty response" — historical CARRY-FORWARD block (resolved via F11 closure 2026-06-04)
 
 **Discovered during:** Epic 6 Phase 3.5 CP-2 walk attempt #2 after F8 closure, 2026-06-03 ~20:45 UTC. **Sharpened by:** Path-1 investigation + CP-2 walk attempt #3 after Story 6-6.9, 2026-06-03 ~21:25 UTC.
 
@@ -97,7 +105,37 @@ After F8 closure verified the chat-completions HTTP plumbing works end-to-end, t
 
 ---
 
-### F11 — `/v1/chat/completions` does not support OpenAI `tools=[...]` parameter — **CARRY-FORWARD** (multi-story scope; the actual F9 blocker)
+### F11 — `/v1/chat/completions` does not support OpenAI `tools=[...]` parameter — **RESOLVED 2026-06-04 (Story 6-9)**
+
+**Resolution shape:** Story 6-9 shipped Option B from the design-decision doc (`_bmad-output/implementation-artifacts/6-9-design-decision.md`) — a sibling `dispatch_tool_call` Router function paralleling Story 3-4's `dispatch_embedding`, plus a `call_with_tools` method on `AnthropicAdapter` carrying the full OpenAI ↔ Anthropic translation. 9 files touched; +1466 / -8 LOC. 8-layer fix:
+
+1. **Request schema** (`mailbot_api/main.py`): `_ChatCompletionsRequest` extended with `tools: list[ChatCompletionToolDef] | None` + `tool_choice: ChatCompletionToolChoice | None`. `_ChatMessage` extended with `tool_calls` (assistant echo) + `tool_call_id` (tool-role). Strict validation (`extra="forbid"` on envelope, `extra="ignore"` on `_ChatMessage` for OpenAI client echo tolerance). Cross-field validator rejects `tool_choice` set when `tools` is absent (CR-5).
+2. **Router contract** (`mailbot_api/router/router.py`): new `dispatch_tool_call` sibling of `ask_router`. Honors pause kill-switch + sensitivity precondition + budget guard + per-call refusal threshold + lane semaphore. Records audit row via `finally` block. No schema-validation retry leg, no escalation, no response cache (per design doc §2).
+3. **Adapter** (`mailbot_api/router/models.py`): `AnthropicAdapter.call_with_tools` translates OpenAI tools to Anthropic `input_schema` shape; translates message history including multi-turn `tool_result` echo correctly. Rule M `cache_control: ephemeral` preserved on system block. `OllamaAdapter.call_with_tools` raises `AdapterProviderError(sanitized_message="tools_unsupported")` — silent drop is how F11 originally hid.
+4. **Response translation** (`mailbot_api/router/models.py`): Anthropic `tool_use` content blocks translate to OpenAI `tool_calls=[{id, type:"function", function:{name, arguments:<JSON-STRING>}}]`. `finish_reason="tool_calls"` when any tool_use block present.
+5. **Audit schema** (migration `022_router_calls_tool_calls.sql`): adds `tool_calls_count INTEGER NULL` + `tool_calls_summary TEXT NULL` to `router_calls`. 4-site column-order contract preserved (migration, `ROUTER_CALLS_INSERT`, `_param_tuple`, `RouterCallRow`).
+6. **Cache-key** (`mailbot_api/router/response_cache.py`): `compute_cache_key` gained optional `tools_hash=""` 5th param. Empty `tools_hash` produces the same hash as the pre-Story-6-9 4-arg form — existing production cache rows continue to hit.
+7. **Sensitivity-gate** (`dispatch_tool_call`): request-side `email_id` gating with confirmation-token handshake (per Story 4-7). Per design doc §5, response-side per-tool-call email_id extraction is out of scope (deferred).
+8. **Tests**: `tests/integration/test_chat_completions_tool_calling.py` — 42 tests covering schema, all 4 translation directions, multi-turn round-trip, audit, sensitivity, pause kill-switch, cache-key, ollama tools_unsupported, per-call threshold, CR-coverage regressions (empty tools fallback, tool_choice validator, force_override vs policy attribution, tool_calls_count=0 on failure, system multi-concat, extra=ignore tolerance, tool_choice omission, force-vs-policy degraded-mode opus block).
+
+**MANDATORY-CR landed:** 3 parallel adversarial reviewers (Blind Hunter + Edge Case Hunter + Acceptance Auditor) surfaced 23 findings. 8 HIGH/MEDIUM patches applied inline (CR-1 through CR-8). 7 LOW/MEDIUM filed as carry-forwards (non-serializable params surface as opaque PROVIDER_ERROR, oversized tool schemas bypass threshold, concurrent sensitivity-token consume race latent, tool_choice references unknown tool surfaces from Anthropic, field-name-based redaction enhancement, lane semaphore tied to hermes_aux, finish_reason precedence on max_tokens-with-tool_use). All 4 gates green: ruff clean, mypy --strict on 125 files clean, boundary clean, pytest **1047 passed + 2 skipped** (+42 net from the 1005 baseline).
+
+**Live walk:** Hermes-driven end-to-end verification deferred to Phase 3.5 walks (CP-2 completion + CP-3 capstone). Tests cover the translation correctness, audit shape, and OpenAI wire compliance; live walk verifies the round-trip against real Anthropic.
+
+**F11 unblocks (consequence map):**
+
+- **F9 RESOLVED via F11 closure** (see F9 block above — updated 2026-06-04)
+- **Story 6-10 Job 2 (08:00 digest agent step)** — unblocked. The agent step that returned "Empty response (no content or reasoning)" on Story 6-10 Phase 3.5 walk attempt #2 was F11-gated. With F11 closed, the agent step can now successfully tool-call against MailBot's MCP surface.
+- **CP-2 walk completion** — unblocked. The `/spend month` round-trip's Hermes-orchestrated `render_spend_chart` MCP tool invocation can now produce real `tool_calls` responses.
+- **CP-3 capstone walk** (Story 6-6.5) — unblocked for the CP-A/B/C draft-reply round-trips. Still credential-gated on `OUTLOOK_CLIENT_SECRET` per Story 4-0 amendment.
+- **Story 6-8 live `/spend` round-trip** — unblocked.
+- **Any future Hermes-orchestrated slash dispatch** (`/spend / /cost / /pause / /resume / /mute`) — unblocked.
+
+**Original carry-forward annotation preserved below for historical context:**
+
+---
+
+### F11 — `/v1/chat/completions` does not support OpenAI `tools=[...]` parameter — historical CARRY-FORWARD block (resolved by Story 6-9)
 
 **Discovered during:** F9 Path-1 investigation, 2026-06-03 ~21:25 UTC.
 

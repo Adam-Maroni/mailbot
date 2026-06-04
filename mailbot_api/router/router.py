@@ -1028,4 +1028,453 @@ async def dispatch_embedding(
     )
 
 
-__all__ = ["EmbeddingDispatchResult", "ask_router", "dispatch_embedding"]
+# ---------------------------------------------------------------------------
+# Story 6-9 (F11 closure) — dispatch_tool_call sibling.
+#
+# Tool-calling sibling of ask_router. Carries the OpenAI-shape messages +
+# tools through to the adapter's call_with_tools method and returns an
+# OpenAI-shape ToolCallResult. Shares the sensitivity-precondition, pause,
+# budget-guard, and audit primitives with ask_router but owns its own
+# dispatch path:
+#   * No schema-validation retry leg (tool-call responses don't have schema
+#     failure semantics)
+#   * No escalation chain (tool support is per-adapter; escalation to a
+#     non-tool-supporting model is meaningless)
+#   * No response cache (tool args may carry per-email state)
+#
+# See 6-9-design-decision.md for the full design rationale.
+# ---------------------------------------------------------------------------
+
+
+_TOOL_CALL_TASK_TYPE = "chat_completions_tool_call"
+_TOOL_CALL_PROMPT_VERSION = "v1"
+
+
+def _redact_tool_args_for_audit(arguments_json: str) -> str:
+    """Apply the same redaction rules as `sanitize_error` to a tool-call
+    arguments JSON string before persisting to the audit row.
+
+    Tool arguments can contain email subject/body fragments, OAuth tokens
+    (if the agent confuses scopes), or other sensitive payload. Pipe
+    through the shared redactor before write.
+    """
+    from mailbot_api.observability._redaction import (  # noqa: PLC0415
+        BEARER_TOKEN_RE,
+        SECRET_FILE_RE,
+        SK_KEY_RE,
+        URL_TOKEN_QUERY_RE,
+    )
+    redacted = BEARER_TOKEN_RE.sub("[REDACTED_BEARER]", arguments_json)
+    redacted = SK_KEY_RE.sub("[REDACTED_SK_KEY]", redacted)
+    redacted = URL_TOKEN_QUERY_RE.sub(r"\1[REDACTED_QUERY_TOKEN]", redacted)
+    redacted = SECRET_FILE_RE.sub("[REDACTED_PATH]", redacted)
+    return redacted
+
+
+def _build_tool_calls_summary(tool_calls: list[Any]) -> str:
+    """Compact JSON summary of dispatched tool_calls for the audit row.
+
+    Shape: `[{"name": "<tool>", "input_redacted": "<redacted args JSON>"}, ...]`
+    """
+    summary = [
+        {
+            "name": tc.function.name,
+            "input_redacted": _redact_tool_args_for_audit(tc.function.arguments),
+        }
+        for tc in tool_calls
+    ]
+    return json.dumps(summary, separators=(",", ":"))
+
+
+async def dispatch_tool_call(
+    *,
+    messages: list[dict[str, Any]],
+    tools: list[Any],  # list[ChatCompletionToolDef] — quoted to avoid forward ref
+    tool_choice: Any = None,
+    model: str,
+    is_force_override: bool = False,
+    max_tokens_out: int = 1024,
+    temperature: float = 0.0,
+    db_path: str,
+    caller_origin: str = "unknown-external",
+    caller_verb: str | None = None,
+    email_id: str | None = None,
+    confirmation_token: str | None = None,
+) -> Any:  # ToolCallResult — quoted to avoid circular import at module load
+    """Story 6-9 (F11 closure) — OpenAI-shape tool-call dispatcher.
+
+    The tool-calling sibling of `ask_router`. Translates the OpenAI-shape
+    `messages` + `tools` to the adapter, dispatches via the adapter's
+    `call_with_tools` method, and returns an OpenAI-shape `ToolCallResult`
+    carrying any `tool_calls` the model produced.
+
+    Honors:
+      * Pause kill-switch (Story 2-9)
+      * Sensitivity precondition (Story 3-3, Story 4-7) — request-side
+        email_id gating with confirmation-token handshake
+      * Budget guard (Story 2-8) — per-call refusal threshold + degraded-mode
+        demotion. NOTE: degraded mode demotes to qwen, which doesn't support
+        tools — the call will surface as `tools_unsupported` after demotion.
+        This is intentional: degraded mode is a cost-shedding safety net,
+        not a feature-preservation layer.
+      * Audit row (Story 2-1) — populated with `tool_calls_count` +
+        redacted `tool_calls_summary` for forensic queries
+
+    Does NOT apply (vs. `ask_router`):
+      * Schema-validation retry leg
+      * Escalation chain
+      * Response cache (tool args may carry per-email state)
+    """
+    from mailbot_api.router.errors import (  # noqa: PLC0415
+        ErrorCode,
+        RouterError,
+        ToolCallResult,
+        sanitize_error,
+    )
+
+    # ---- Pause kill-switch ----
+    if get_pause_state().is_paused():
+        return ToolCallResult(
+            ok=False,
+            error=RouterError(
+                code=ErrorCode.PROVIDER_ERROR,
+                message="router paused",
+                retryable=True,
+            ),
+        )
+
+    # ---- Policy snapshot ----
+    try:
+        policy: PolicyTable = snapshot_for_dispatch()
+    except RuntimeError as exc:
+        return ToolCallResult(
+            ok=False,
+            error=RouterError(
+                code=ErrorCode.PROVIDER_ERROR,
+                message=sanitize_error(exc),
+                retryable=False,
+            ),
+        )
+
+    # Tool-call dispatch doesn't tie to a prompt module — it has its own
+    # synthetic task_type for audit purposes. But it DOES need a lane for
+    # rate-limit / semaphore accounting; we synthesize one from the
+    # hermes_aux policy entry (the closest sibling — both Anthropic-bound,
+    # both Hermes-driven, both external-facing).
+    policy_entry = policy.tasks.get("hermes_aux")
+    if policy_entry is None:
+        return ToolCallResult(
+            ok=False,
+            error=RouterError(
+                code=ErrorCode.PROVIDER_ERROR,
+                message="task_type 'hermes_aux' not in policy (used as the lane proxy for tool-call dispatch)",
+                retryable=False,
+            ),
+        )
+
+    # CR-2 (Story 6-9 review 2026-06-04): default to "policy" so policy-
+    # resolved dispatches don't pollute cost-attribution queries that filter
+    # by reason. Only flip to "force_override" when the endpoint signaled
+    # this is an explicit user override (via is_force_override=True).
+    model_chosen_reason: str = "force_override" if is_force_override else "policy"
+
+    # ---- Story 2-8 Layer 3 — degraded mode gate ----
+    guard = get_guard()
+    if guard.is_degraded():
+        # CR-4 (Story 6-9 review 2026-06-04): only block opus when it was
+        # explicitly user-forced. A policy-resolved opus (unlikely today but
+        # possible if hermes_aux policy flips) should be demoted like any
+        # other model rather than refused — matches ask_router semantics.
+        if model == "claude-opus-4-7" and is_force_override:
+            return ToolCallResult(
+                ok=False,
+                error=RouterError(
+                    code=ErrorCode.DEGRADED_MODE_BLOCKED,
+                    message="degraded mode active; force_model=claude-opus-4-7 requires confirmation token",
+                    retryable=False,
+                    model_attempted=[model],
+                ),
+                model_used=model,
+            )
+        demoted = demote_model(model)
+        if demoted != model:
+            model = demoted
+            model_chosen_reason = "degraded"
+
+    # ---- Story 3-3 + 4-7 sensitivity precondition ----
+    _sensitivity_grant_id: str | None = None
+    _sensitivity_grant_minted_at: str | None = None
+    if email_id is not None:
+        sensitivity_row = await fetchone(db_path, EMAIL_SENSITIVITY_SELECT, (email_id,))
+        if sensitivity_row is None or sensitivity_row[1] is None:
+            return ToolCallResult(
+                ok=False,
+                error=RouterError(
+                    code=ErrorCode.SENSITIVITY_NOT_CLASSIFIED,
+                    message="email sensitivity must be classified before any other Router task",
+                    retryable=False,
+                ),
+            )
+        sensitivity_value, _ = sensitivity_row
+        if sensitivity_value == "confidential" and _API_BOUND_MODEL_RE.match(model) is not None:
+            return ToolCallResult(
+                ok=False,
+                error=RouterError(
+                    code=ErrorCode.SENSITIVITY_BLOCKS_API,
+                    message="confidential emails admit no API override",
+                    retryable=False,
+                    model_attempted=[model],
+                ),
+                model_used=model,
+            )
+        if sensitivity_value == "sensitive" and _API_BOUND_MODEL_RE.match(model) is not None:
+            if confirmation_token is None:
+                return ToolCallResult(
+                    ok=False,
+                    error=RouterError(
+                        code=ErrorCode.SENSITIVITY_BLOCKS_API,
+                        message="sensitive email requires per-session confirmation token to escalate to API",
+                        retryable=False,
+                        model_attempted=[model],
+                    ),
+                    model_used=model,
+                )
+            from mailbot_api.actions.sensitivity_tokens import consume as _consume_token  # noqa: PLC0415
+            try:
+                consume_result = _consume_token(confirmation_token, email_id, _TOOL_CALL_TASK_TYPE)
+            except Exception as exc:  # noqa: BLE001 — guard against token-in-traceback
+                _logger.exception(
+                    "sensitivity token consume crashed; refusing dispatch",
+                    extra={
+                        "event": "sensitivity.token.consume_crash",
+                        "email_id": email_id,
+                        "task_type": _TOOL_CALL_TASK_TYPE,
+                        "exception_type": type(exc).__name__,
+                    },
+                )
+                consume_result = None
+            if consume_result is None:
+                return ToolCallResult(
+                    ok=False,
+                    error=RouterError(
+                        code=ErrorCode.NEEDS_SENSITIVITY_CONFIRMATION,
+                        message=(
+                            "confirmation token invalid, expired, already "
+                            "consumed, or mismatched (email_id/task_type)"
+                        ),
+                        retryable=False,
+                        model_attempted=[model],
+                    ),
+                    model_used=model,
+                )
+            grant_id, minted_at = consume_result
+            _sensitivity_grant_id = grant_id
+            _sensitivity_grant_minted_at = minted_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+    # ---- Dispatch ----
+    tokens_in = 0
+    tokens_out = 0
+    cached_tokens_in = 0
+    cost_usd = 0.0
+    latency_ms = 0
+    outcome: str = "failed"
+    # CR-3 (Story 6-9 review 2026-06-04): initialize tool_calls_count=0
+    # so a tools-bearing call that fails the adapter dispatch still records
+    # `tool_calls_count=0` (NOT NULL). Per design §4: NULL means "not a
+    # tools-bearing call"; 0 means "tools were attempted". This preserves
+    # the forensic distinction for `WHERE tool_calls_count IS NOT NULL`
+    # queries identifying all tools-bearing dispatch attempts.
+    tool_calls_count: int | None = 0
+    tool_calls_summary: str | None = None
+    result: ToolCallResult
+
+    try:
+        # Resolve the adapter.
+        try:
+            adapter = get_adapter(model)
+        except KeyError as exc:
+            result = ToolCallResult(
+                ok=False,
+                error=RouterError(
+                    code=ErrorCode.PROVIDER_ERROR,
+                    message=sanitize_error(exc),
+                    retryable=False,
+                    model_attempted=[model],
+                ),
+                model_used=model,
+            )
+            return result
+
+        # Rate-limit gate (per Story 2-5 + Story 6-2).
+        breach_dim = enforce_rate_limit(policy_entry.lane, model_chosen_reason, caller_origin)
+        if breach_dim is not None:
+            result = ToolCallResult(
+                ok=False,
+                error=RouterError(
+                    code=ErrorCode.RATE_LIMITED,
+                    message=f"rate limit breached: {breach_dim}",
+                    retryable=True,
+                    model_attempted=[model],
+                ),
+                model_used=model,
+            )
+            return result
+
+        # Per-call refusal threshold (Story 2-8 Layer 4).
+        # Rough estimate: joined message text + tool schemas.
+        msg_text_total = sum(
+            len(str(m.get("content", ""))) for m in messages if isinstance(m, dict)
+        )
+        tool_text_total = sum(
+            len(t.function.description) + len(json.dumps(t.function.parameters))
+            for t in tools
+        )
+        estimated_tokens_in = (msg_text_total + tool_text_total) // 4
+        estimated_cost = estimate_cost_usd(model, estimated_tokens_in, max_tokens_out)
+        if estimated_cost > PER_CALL_REFUSAL_THRESHOLD_USD:
+            result = ToolCallResult(
+                ok=False,
+                error=RouterError(
+                    code=ErrorCode.PER_CALL_THRESHOLD_EXCEEDED,
+                    message=(
+                        f"estimated cost ${estimated_cost:.4f} exceeds "
+                        f"per-call threshold ${PER_CALL_REFUSAL_THRESHOLD_USD:.2f}"
+                    ),
+                    retryable=False,
+                    model_attempted=[model],
+                ),
+                model_used=model,
+            )
+            return result
+
+        # System prompt: concatenate ALL system messages with "\n\n"
+        # (CR-6 Story 6-9 review 2026-06-04: Hermes's main inference path
+        # carries SOUL.md + AGENTS.md + SKILL.md as separate system blocks;
+        # silently keeping only the first would lose the rest). A None
+        # content field on a system-role message is coerced to "" to keep
+        # the concatenation safe — Pydantic admits `content=None` on
+        # assistant messages, but a system message with `content=None`
+        # is a client bug we silently tolerate.
+        system_parts: list[str] = []
+        for m in messages:
+            if isinstance(m, dict) and m.get("role") == "system":
+                content = m.get("content")
+                if isinstance(content, str):
+                    system_parts.append(content)
+                # else content is None or non-string — silently skip; the
+                # validator already kept this message in the list, just
+                # don't contribute to system_text.
+        system_text = "\n\n".join(system_parts)
+        # Filter system-role messages from the messages list — Anthropic
+        # carries system as a separate top-level field, not in messages.
+        non_system_messages = [
+            m for m in messages
+            if not (isinstance(m, dict) and m.get("role") == "system")
+        ]
+
+        # Adapter dispatch via tool-calling protocol method.
+        try:
+            async with acquire_provider_slot(model):
+                tool_response = await adapter.call_with_tools(
+                    system=system_text,
+                    messages=non_system_messages,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    max_tokens_out=max_tokens_out,
+                    temperature=temperature,
+                )
+        except AdapterTimeout as exc:
+            outcome = "failed"
+            result = ToolCallResult(
+                ok=False,
+                error=RouterError(
+                    code=ErrorCode.TIMEOUT,
+                    message=sanitize_error(exc),
+                    retryable=False,
+                    model_attempted=[model],
+                ),
+                model_used=model,
+            )
+            return result
+        except AdapterProviderError as exc:
+            outcome = "failed"
+            result = ToolCallResult(
+                ok=False,
+                error=RouterError(
+                    code=ErrorCode.PROVIDER_ERROR,
+                    message=exc.sanitized_message,
+                    retryable=False,
+                    model_attempted=[model],
+                ),
+                model_used=model,
+            )
+            return result
+
+        tokens_in = tool_response.tokens_in
+        tokens_out = tool_response.tokens_out
+        cached_tokens_in = tool_response.cached_tokens_in
+        latency_ms = tool_response.latency_ms
+        cost_usd = estimate_cost_usd(model, tokens_in, tokens_out, cached_tokens_in)
+
+        tool_calls_count = len(tool_response.tool_calls)
+        tool_calls_summary = _build_tool_calls_summary(tool_response.tool_calls) if tool_response.tool_calls else None
+
+        outcome = "ok"
+        result = ToolCallResult(
+            ok=True,
+            text=tool_response.text or None,
+            tool_calls=tool_response.tool_calls or None,
+            cost_usd=cost_usd,
+            latency_ms=latency_ms,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cached_tokens_in=cached_tokens_in,
+            model_used=model,
+            finish_reason=tool_response.finish_reason,
+        )
+        await guard.add_spend(db_path, cost_usd)
+        return result
+
+    except Exception as exc:  # noqa: BLE001 — AR-PAT-4 boundary catch-all
+        outcome = "failed"
+        result = ToolCallResult(
+            ok=False,
+            error=RouterError(
+                code=ErrorCode.PROVIDER_ERROR,
+                message=sanitize_error(exc),
+                retryable=False,
+                model_attempted=[model],
+            ),
+            model_used=model,
+        )
+        return result
+    finally:
+        # Audit row.
+        row = RouterCallRow(
+            task_type=_TOOL_CALL_TASK_TYPE,
+            prompt_version=_TOOL_CALL_PROMPT_VERSION,
+            model_chosen=model,
+            model_chosen_reason=model_chosen_reason,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cached_tokens_in=cached_tokens_in,
+            cost_usd_estimated=cost_usd,
+            latency_ms=latency_ms,
+            outcome=cast(Literal["ok", "retry_recovered", "escalated", "failed"], outcome),
+            caller_verb=caller_verb,
+            caller_origin=caller_origin,
+            email_id=email_id,
+            sensitivity_grant_id=_sensitivity_grant_id,
+            sensitivity_grant_minted_at=_sensitivity_grant_minted_at,
+            tool_calls_count=tool_calls_count,
+            tool_calls_summary=tool_calls_summary,
+        )
+        await record_router_call(row, db_path=db_path)
+
+
+__all__ = [
+    "EmbeddingDispatchResult",
+    "ask_router",
+    "dispatch_embedding",
+    "dispatch_tool_call",
+]

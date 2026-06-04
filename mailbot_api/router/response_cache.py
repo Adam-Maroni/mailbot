@@ -20,9 +20,29 @@ from mailbot_api.db import connection, queries
 from mailbot_api.observability.timestamps import utc_z_now
 
 
-def compute_cache_key(model: str, temperature: float, system: str, user: str) -> str:
-    """Stable sha256 hex digest used as the response-cache primary key."""
-    payload = f"{model}|{temperature}|{system}|{user}"
+def compute_cache_key(
+    model: str,
+    temperature: float,
+    system: str,
+    user: str,
+    tools_hash: str = "",
+) -> str:
+    """Stable sha256 hex digest used as the response-cache primary key.
+
+    Story 6-9 (F11 closure 2026-06-04): `tools_hash` was added defensively.
+    Existing call sites pass nothing (empty string) — and crucially, the
+    digest formula does NOT include the trailing `|{tools_hash}` separator
+    when `tools_hash` is empty, so existing production cache rows (written
+    with the pre-Story-6-9 4-arg form) continue to hit. When
+    `dispatch_tool_call` later wires up its own caching (currently
+    disabled per 6-9 design doc §6), it MUST pass a non-empty stable hash
+    of the tools list to prevent a tools-bearing cache entry from being
+    returned to a tools-free call.
+    """
+    if tools_hash:
+        payload = f"{model}|{temperature}|{system}|{user}|{tools_hash}"
+    else:
+        payload = f"{model}|{temperature}|{system}|{user}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

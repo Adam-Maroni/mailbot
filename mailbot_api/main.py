@@ -16,10 +16,10 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from mailbot_api.config import SecretMissing, get_secret, get_secret_optional
 from mailbot_api.db.migrations_runner import apply_pending_migrations
@@ -27,6 +27,10 @@ from mailbot_api.mcp_server import build_mcp_server
 from mailbot_api.observability.logging import configure_logging
 from mailbot_api.router.anomaly import AnomalyDetector
 from mailbot_api.router.budget import get_guard
+from mailbot_api.router.errors import (
+    ChatCompletionToolChoice,
+    ChatCompletionToolDef,
+)
 from mailbot_api.router.lanes import LaneScheduler
 from mailbot_api.router.pause import get_pause_state
 from mailbot_api.router.policy import (
@@ -326,18 +330,94 @@ async def health_v1() -> dict[str, Any]:
 
 
 # --- Story 2-10: /v1/chat/completions OpenAI-compatible endpoint ---
+# Story 6-9 (F11 closure 2026-06-04): extended with OpenAI tools=[...] +
+# tool_choice support. When request.tools is present, the endpoint dispatches
+# via the dispatch_tool_call sibling rather than ask_router — see
+# _bmad-output/implementation-artifacts/6-9-design-decision.md.
+
+
+class _ChatMessageToolCallFunction(BaseModel):
+    """Story 6-9: function sub-object on an assistant tool_call echoed
+    back in subsequent-turn requests."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    arguments: str  # JSON-stringified per OpenAI wire shape
+
+
+class _ChatMessageToolCall(BaseModel):
+    """Story 6-9: one tool_call element on an assistant message."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    type: Literal["function"]
+    function: _ChatMessageToolCallFunction
 
 
 class _ChatMessage(BaseModel):
-    role: str
-    content: str
+    """OpenAI-shape message. Story 6-9 extends with tool-calling fields:
+      * `tool_calls` — present on assistant messages echoing tool_use
+      * `tool_call_id` — present on tool-role messages
+    `content` is optional on assistant messages that carry only tool_calls.
+
+    `extra="ignore"` (vs. the envelope's `extra="forbid"`): real OpenAI
+    clients echo back assistant messages with non-standard fields
+    (`refusal`, `audio`, deprecated `function_call`, streaming-specific
+    fields). A multi-turn round-trip with these fields shouldn't 422 at
+    our boundary — we just ignore the unknown fields.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str | None = None
+    tool_calls: list[_ChatMessageToolCall] | None = None
+    tool_call_id: str | None = None
 
 
 class _ChatCompletionsRequest(BaseModel):
+    """OpenAI-compatible chat-completions request.
+
+    Story 6-9 (F11 closure): extended with `tools` + `tool_choice`. Strict
+    validation — extras forbidden so a future field-name typo from Hermes
+    surfaces as a 422 rather than a silent drop (the exact failure mode F11
+    originally hid behind for an entire epic).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     model: str
     messages: list[_ChatMessage]
     max_tokens: int = 1024
     temperature: float = 0.0
+    tools: list[ChatCompletionToolDef] | None = None
+    tool_choice: ChatCompletionToolChoice | None = None
+
+    @model_validator(mode="after")
+    def _check_tool_choice_requires_tools(self) -> _ChatCompletionsRequest:
+        """Story 6-9 CR-5: reject `tool_choice` set when `tools` is absent.
+
+        OpenAI's spec leaves this undefined; we 422 at the boundary so the
+        caller's intent is never silently dropped. The two failure modes
+        we reject:
+          * `tool_choice="required"` with no tools — meaningless (nothing to require)
+          * `tool_choice={"type": "function", ...}` with no tools — references
+            a tool that's not in the request
+        `tool_choice="auto"` or `"none"` with no tools is harmless and accepted.
+        """
+        if self.tool_choice is None:
+            return self
+        # tool_choice provided — verify tools is non-empty
+        if not self.tools:
+            # Allow only "auto"/"none" semantic choices with no tools list
+            if self.tool_choice in ("auto", "none"):
+                return self
+            raise ValueError(
+                "tool_choice requires tools=[...] to be present and non-empty"
+            )
+        return self
 
 
 def _check_bearer_auth(authorization: str | None) -> None:
@@ -409,17 +489,38 @@ async def chat_completions(
             },
         )
 
+    caller_origin = x_mailbot_caller_origin if x_mailbot_caller_origin else "unknown-external"
+
+    # Story 6-9 (F11 closure): branch on tools presence. When the caller
+    # supplies `tools=[...]`, dispatch via the dispatch_tool_call sibling
+    # rather than ask_router. The two paths share sensitivity-gate, pause,
+    # budget-guard primitives but have different output shapes (tool_calls
+    # vs. validated text), different failure chains (no schema-retry on
+    # tool calls), and different audit columns.
+    #
+    # CR-1 (Story 6-9 review 2026-06-04): branch only on non-empty tools.
+    # An explicitly empty `tools=[]` falls through to the text-only path —
+    # Anthropic's Messages API rejects empty tools lists with a 400, so
+    # we'd surface a confusing 502 to Hermes otherwise. Treating empty list
+    # as "no tools intent" matches OpenAI's behavior.
+    if request.tools:
+        return await _chat_completions_tools_path(
+            request=request,
+            raw_request=raw_request,
+            caller_origin=caller_origin,
+            db_path=db_path,
+        )
+
+    # ---- Story 2-10 original text-only path ----
     # Render OpenAI messages array into our prompt template's `content` dict.
     # Hermes-aux prompts use a minimal template that accepts the joined
     # message content; the prompt module lives at
     # mailbot_api/prompts/hermes_aux/v1.py.
-    joined = "\n".join(f"{m.role}: {m.content}" for m in request.messages)
+    joined = "\n".join(f"{m.role}: {m.content or ''}" for m in request.messages)
     content = {"messages": joined}
 
     # Late import to avoid the lifespan circular-import surface.
     from mailbot_api.router import ask_router as _ask_router
-
-    caller_origin = x_mailbot_caller_origin if x_mailbot_caller_origin else "unknown-external"
 
     # F8 closure (Story 6-6.8, 2026-06-03): if the client sends the task-type
     # name as the model id (Hermes's documented contract — `hermes-config/
@@ -470,6 +571,114 @@ async def chat_completions(
                 "index": 0,
                 "message": {"role": "assistant", "content": output_text},
                 "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": result.tokens_in,
+            "completion_tokens": result.tokens_out,
+            "total_tokens": result.tokens_in + result.tokens_out,
+            "cached_input_tokens": result.cached_tokens_in,
+        },
+    }
+
+
+async def _chat_completions_tools_path(
+    *,
+    request: _ChatCompletionsRequest,
+    raw_request: Request,
+    caller_origin: str,
+    db_path: str,
+) -> dict[str, Any]:
+    """Story 6-9 (F11 closure) — tool-calling branch of /v1/chat/completions.
+
+    Dispatches via `dispatch_tool_call` and translates the resulting
+    `ToolCallResult` back to OpenAI's chat.completion response shape with
+    `tool_calls` populated when the model produced any.
+
+    The `model` resolution mirrors Story 6-6.8's F8 fix: if the caller
+    sends `"hermes_aux"` as the model name (Hermes's documented alias for
+    "use the policy default"), we resolve to the policy entry's actual
+    model. Any other model name flows through as a force-target.
+    """
+    from mailbot_api.router import dispatch_tool_call as _dispatch_tool_call  # noqa: PLC0415
+    from mailbot_api.router.policy import snapshot_for_dispatch as _snap  # noqa: PLC0415
+
+    # Resolve "hermes_aux" alias to its policy-default model. CR-2/CR-4
+    # (Story 6-9 review 2026-06-04): track whether the caller explicitly
+    # forced a model so dispatch_tool_call can attribute the audit row's
+    # `model_chosen_reason` correctly and gate the degraded-mode opus
+    # block on user-force only.
+    if request.model == "hermes_aux":
+        try:
+            policy_snapshot = _snap()
+            entry = policy_snapshot.tasks.get("hermes_aux")
+            resolved_model = entry.model if entry is not None else "claude-haiku-4-5-20251001"
+        except RuntimeError:
+            resolved_model = "claude-haiku-4-5-20251001"
+        is_force_override = False
+    else:
+        resolved_model = request.model
+        is_force_override = True
+
+    # Convert pydantic _ChatMessage list back to plain dicts for translation
+    # downstream (the translator works with plain dicts so it's not pinned
+    # to our specific Pydantic shape).
+    plain_messages: list[dict[str, Any]] = []
+    for m in request.messages:
+        msg: dict[str, Any] = {"role": m.role}
+        if m.content is not None:
+            msg["content"] = m.content
+        if m.tool_calls is not None:
+            msg["tool_calls"] = [tc.model_dump() for tc in m.tool_calls]
+        if m.tool_call_id is not None:
+            msg["tool_call_id"] = m.tool_call_id
+        plain_messages.append(msg)
+
+    result = await _dispatch_tool_call(
+        messages=plain_messages,
+        tools=request.tools or [],
+        tool_choice=request.tool_choice,
+        model=resolved_model,
+        is_force_override=is_force_override,
+        max_tokens_out=request.max_tokens,
+        temperature=request.temperature,
+        db_path=db_path,
+        caller_origin=caller_origin,
+        caller_verb="hermes_aux_tools",
+    )
+
+    if not result.ok:
+        detail = "router refused" if result.error is None else result.error.message
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "error": {
+                    "type": "router_error",
+                    "message": detail,
+                }
+            },
+        )
+
+    # Build the assistant message. Per OpenAI's spec, `content` is null
+    # (not empty string) when the assistant produced only tool_calls.
+    message_payload: dict[str, Any] = {"role": "assistant"}
+    if result.text:
+        message_payload["content"] = result.text
+    else:
+        message_payload["content"] = None
+    if result.tool_calls:
+        message_payload["tool_calls"] = [tc.model_dump() for tc in result.tool_calls]
+
+    return {
+        "id": f"chatcmpl-mailbot-{id(raw_request):x}",
+        "object": "chat.completion",
+        "created": 0,
+        "model": result.model_used,
+        "choices": [
+            {
+                "index": 0,
+                "message": message_payload,
+                "finish_reason": result.finish_reason,
             }
         ],
         "usage": {

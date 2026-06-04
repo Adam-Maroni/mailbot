@@ -21,6 +21,7 @@ will be wired up in Stories 2-2 through 2-10.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -105,6 +106,122 @@ class RouterResult(BaseModel):
         return self
 
 
+# ---------------------------------------------------------------------------
+# Story 6-9 (F11 closure) — OpenAI-shape tool-calling contract.
+#
+# These shapes are the Router public contract for the dispatch_tool_call
+# sibling of ask_router. They mirror OpenAI's tool-calling API so Hermes's
+# main-inference path (which assembles OpenAI tools=[...] requests to expose
+# MCP tools) can flow through /v1/chat/completions and receive a tool_calls
+# response.
+#
+# The Anthropic-side translation is encapsulated entirely inside
+# AnthropicAdapter.call_with_tools (router/models.py) — these shapes never
+# leak Anthropic-side field names.
+# ---------------------------------------------------------------------------
+
+
+class ChatCompletionFunctionDef(BaseModel):
+    """The `function` sub-object of an OpenAI tool definition."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str = ""
+    # `parameters` is JSON Schema; we accept arbitrary dict — translation to
+    # Anthropic `input_schema` is a field-rename (see adapter).
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChatCompletionToolDef(BaseModel):
+    """OpenAI tool-definition shape: `{"type":"function","function":{...}}`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["function"]
+    function: ChatCompletionFunctionDef
+
+
+class ChatCompletionToolChoiceFunction(BaseModel):
+    """`{"type":"function","function":{"name":"X"}}` choice form."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+
+
+class ChatCompletionToolChoiceObject(BaseModel):
+    """Object-form tool_choice: `{"type":"function","function":{"name":"X"}}`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["function"]
+    function: ChatCompletionToolChoiceFunction
+
+
+# OpenAI's tool_choice union: literal string ("auto"/"none"/"required") OR
+# object selecting a specific function.
+ChatCompletionToolChoice = (
+    Literal["auto", "none", "required"] | ChatCompletionToolChoiceObject
+)
+
+
+class OpenAIToolCallFunction(BaseModel):
+    """The `function` sub-object on an assistant tool_call.
+
+    `arguments` is a JSON STRING (per OpenAI's wire shape), not a dict.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    arguments: str
+
+
+class OpenAIToolCall(BaseModel):
+    """One element of `message.tool_calls` on an assistant response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    type: Literal["function"]
+    function: OpenAIToolCallFunction
+
+
+class ToolCallResult(BaseModel):
+    """Return shape of `dispatch_tool_call` (Story 6-9 F11 closure).
+
+    Parallel to `RouterResult` but tailored to tool-call dispatch:
+      * No `output: BaseModel` — tool-call responses don't have a prompt
+        OUTPUT_SCHEMA; the OpenAI-shape `tool_calls` IS the structured output.
+      * `text` carries the optional accompanying assistant text (Anthropic
+        can return both text + tool_use blocks in one response).
+      * `finish_reason` is `"tool_calls"` when any tool_use block present.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    ok: bool
+    text: str | None = None
+    tool_calls: list[OpenAIToolCall] | None = None
+    error: RouterError | None = None
+    cost_usd: float = 0.0
+    latency_ms: int = 0
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cached_tokens_in: int = 0
+    model_used: str = ""
+    finish_reason: Literal["stop", "tool_calls", "length"] = "stop"
+
+    @model_validator(mode="after")
+    def _check_ok_error_consistency(self) -> ToolCallResult:
+        if self.ok and self.error is not None:
+            raise ValueError("ToolCallResult.ok=True requires error to be None")
+        if not self.ok and self.error is None:
+            raise ValueError("ToolCallResult.ok=False requires error to be populated")
+        return self
+
+
 def sanitize_error(exc: BaseException) -> str:
     """Return a single-line, secret-redacted string for ``RouterError.message``.
 
@@ -149,8 +266,16 @@ def sanitize_error(exc: BaseException) -> str:
 
 
 __all__: list[str] = [
+    "ChatCompletionFunctionDef",
+    "ChatCompletionToolChoice",
+    "ChatCompletionToolChoiceFunction",
+    "ChatCompletionToolChoiceObject",
+    "ChatCompletionToolDef",
     "ErrorCode",
+    "OpenAIToolCall",
+    "OpenAIToolCallFunction",
     "RouterError",
     "RouterResult",
+    "ToolCallResult",
     "sanitize_error",
 ]
