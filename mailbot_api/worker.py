@@ -255,6 +255,12 @@ async def _worker_main(db_path: str) -> None:
     """Story 6-6 worker entry — wires all dormant background work.
 
     Construction order:
+      0. (Story 6-11) Initialize per-process pipeline runtime — policy
+         snapshot, sensitivity patterns, adapter registry, budget guard,
+         pause state. Must precede `register_interval_task("ingest_pipeline",
+         ...)` because the FR-2.5 per-call safeguard in
+         `mailbot_api/sensitivity/classifier.py` reads `snapshot_for_dispatch()`
+         on every ingest tick.
       1. Build sync state + heartbeat-producing iteration factory.
       2. Construct managed instances (CacheWarmer, AnomalyDetector).
       3. Construct OutlookGraphWriteAdapter from the sync token provider.
@@ -267,6 +273,19 @@ async def _worker_main(db_path: str) -> None:
     event — scheduler stops all interval + managed tasks, drainer task is
     cancelled, the process exits.
     """
+    # Story 6-11 (F17 closure): mirror the FastAPI lifespan + CLI init so the
+    # worker process's `run_drain_loop` → `process_email` → `classify_sensitivity`
+    # → `snapshot_for_dispatch()` chain finds a populated policy snapshot
+    # rather than RuntimeError("policy not loaded"). The helper is idempotent
+    # at the migration step (apply_pending_migrations is a no-op the second
+    # call) and the snapshot setters overwrite per-process module globals.
+    from mailbot_api.ingest.pipeline import init_pipeline_runtime
+    await init_pipeline_runtime(db_path)
+    logger.info(
+        "worker pipeline runtime initialized",
+        extra={"event": "worker.startup.pipeline_runtime_ready"},
+    )
+
     sync_state = WorkerState()
 
     # Outlook write-back adapter + sync-callable token cache.

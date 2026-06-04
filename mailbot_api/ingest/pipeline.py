@@ -345,6 +345,11 @@ async def process_email(
                 "email_id": email_id,
                 "task_type": "sensitivity_class",
                 "error_code": (sensitivity_result.error.code.value if sensitivity_result.error else "unknown"),
+                # Story 6-11 F17: surface the underlying error string. Already
+                # sanitized at the Router boundary (see router.py PROVIDER_ERROR
+                # construction sites which all call sanitize_error()) so passing
+                # through is NFR-SEC-4 safe.
+                "error_message": (sensitivity_result.error.message if sensitivity_result.error else "no error object"),
             },
         )
         return result
@@ -666,20 +671,33 @@ async def _cli_async_main(args: argparse.Namespace) -> int:
     # snapshots and registers adapters before any ask_router / pipeline call.
     # The CLI bypasses the lifespan, so we must mirror that init here or every
     # `process_email` call fails immediately at sensitivity_class.
-    await _cli_init_runtime(db_path)
+    await init_pipeline_runtime(db_path)
 
     result = await process_email(email_id=args.email_id, db_path=db_path)
     print(result.model_dump_json(indent=2))  # noqa: T201 — CLI prints to stdout
     return 0 if result.ok else 1
 
 
-async def _cli_init_runtime(db_path: str) -> None:
+async def init_pipeline_runtime(db_path: str) -> None:
     """Initialize the module-level runtime that process_email depends on.
 
     Mirrors mailbot_api/main.py lifespan() ordering: policy first, then
     sensitivity patterns, then adapters, then budget guard, then pause state.
     Apply pending migrations to make sure the DB schema is current for the
-    invoking process (lifespan does this; CLI must too).
+    invoking process (lifespan does this; CLI + worker must too).
+
+    Story 6-11 (F17 closure): promoted from `_cli_init_runtime` to a public
+    helper. The worker process (`mailbot_api/worker.py`) was added by Story 6-6
+    as a third interpreter that runs ingest ticks, but Story 6-6 missed wiring
+    this init — so `classify_sensitivity` failed every tick with
+    `provider_error: policy not loaded` because the per-process module
+    snapshots were empty. Three call sites now share this exact body: api
+    lifespan (open-coded, retains test-flag branches), CLI (`_cli_async_main`),
+    and worker (`_worker_main`).
+
+    Honors MAILBOT_SKIP_POLICY=1 and MAILBOT_SKIP_PATTERNS=1 (mirrors the api
+    lifespan in `main.py`) so test boots that don't need the sensitivity gate
+    can still drive ingest-adjacent code. Production env never sets these.
     """
     from pathlib import Path
 
@@ -694,22 +712,28 @@ async def _cli_init_runtime(db_path: str) -> None:
         set_patterns_snapshot as _set_sensitivity_patterns,
     )
 
+    skip_policy = get_secret_optional("MAILBOT_SKIP_POLICY", "0") == "1"
+    skip_patterns = get_secret_optional("MAILBOT_SKIP_PATTERNS", "0") == "1"
+
     apply_pending_migrations(db_path)
 
-    policy_path = Path(get_secret_optional("MAILBOT_POLICY_PATH", "/app/router/policy.yaml"))
-    set_policy_snapshot(load_policy(policy_path))
-    # CR-3-5-7: mirror the FastAPI lifespan's FR-2.5 startup check. The
-    # per-call safeguard in classifier.py would catch a drifted policy at
-    # first dispatch, but the CLI's job is fail-fast at init — same shape
-    # as the lifespan at main.py.
-    assert_qwen_only(snapshot_for_dispatch())
+    if not skip_policy:
+        policy_path = Path(get_secret_optional("MAILBOT_POLICY_PATH", "/app/router/policy.yaml"))
+        set_policy_snapshot(load_policy(policy_path))
+        # CR-3-5-7: mirror the FastAPI lifespan's FR-2.5 startup check. The
+        # per-call safeguard in classifier.py would catch a drifted policy at
+        # first dispatch, but the CLI's job is fail-fast at init — same shape
+        # as the lifespan at main.py.
+        assert_qwen_only(snapshot_for_dispatch())
 
-    patterns_path = Path(
-        get_secret_optional("MAILBOT_PATTERNS_PATH", "/app/router/sensitivity_patterns.yaml")
-    )
-    _set_sensitivity_patterns(load_patterns(patterns_path))
+        if not skip_patterns:
+            patterns_path = Path(
+                get_secret_optional("MAILBOT_PATTERNS_PATH", "/app/router/sensitivity_patterns.yaml")
+            )
+            _set_sensitivity_patterns(load_patterns(patterns_path))
 
-    init_default_adapters()
+        init_default_adapters()
+
     await get_guard().initialize(db_path)
     await get_pause_state().initialize(db_path)
 
@@ -727,6 +751,7 @@ __all__ = [
     "ProcessEmailResult",
     "RunBatchResult",
     "apply_derived_field_write",
+    "init_pipeline_runtime",
     "process_email",
     "record_idempotency",
     "run_batch",

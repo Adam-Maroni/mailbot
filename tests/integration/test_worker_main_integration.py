@@ -40,6 +40,13 @@ async def test_worker_main_writes_heartbeats_for_all_components(
     db_path = str(tmp_path / "test.db")
     apply_pending_migrations(db_path)
 
+    # Story 6-11 (F17 closure): `_worker_main` now initializes pipeline runtime
+    # (policy + patterns + adapters + budget + pause) before scheduler start.
+    # This test verifies heartbeat plumbing, not classification — skip the
+    # policy/patterns YAML loads (mirrors the api lifespan's SKIP flags).
+    monkeypatch.setenv("MAILBOT_SKIP_POLICY", "1")
+    monkeypatch.setenv("MAILBOT_SKIP_PATTERNS", "1")
+
     # Aggressively shorten intervals so heartbeats land within the test window.
     monkeypatch.setattr("mailbot_api.worker.SYNC_INTERVAL_SECONDS", 0.05)
     monkeypatch.setattr("mailbot_api.worker.INGEST_PIPELINE_INTERVAL_SECONDS", 0.05)

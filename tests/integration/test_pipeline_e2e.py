@@ -461,8 +461,12 @@ async def test_pipeline_records_idempotency_rows(tmp_path: Path, _clean_state: A
 async def test_cli_init_runtime_loads_policy_patterns_and_adapters(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The CLI helper must load every snapshot/registry process_email reads from."""
-    from mailbot_api.ingest.pipeline import _cli_init_runtime
+    """The shared pipeline-runtime helper must load every snapshot/registry
+    process_email reads from. Story 6-11 (F17 closure) promoted this helper
+    from `_cli_init_runtime` to `init_pipeline_runtime` so the worker process
+    can share it too.
+    """
+    from mailbot_api.ingest.pipeline import init_pipeline_runtime
     from mailbot_api.router import policy as policy_module
     from mailbot_api.router import registry as registry_module
     from mailbot_api.sensitivity import patterns as patterns_module
@@ -488,7 +492,7 @@ async def test_cli_init_runtime_loads_policy_patterns_and_adapters(
     assert policy_module._policy is None  # noqa: SLF001
     assert patterns_module._PATTERN_SNAPSHOT is None  # noqa: SLF001
 
-    await _cli_init_runtime(db_path)
+    await init_pipeline_runtime(db_path)
 
     # Post-conditions: everything that process_email reads is now ready.
     assert policy_module._policy is not None  # noqa: SLF001

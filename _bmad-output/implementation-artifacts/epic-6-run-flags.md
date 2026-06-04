@@ -801,22 +801,22 @@ Two gaps confirm Epic 6 retro A3 verdict: **capstone walk is OUTLOOK_CLIENT_SECR
 - Story 6-6.5 Task 3 column reference `sensitivity_class` is doc drift — actual column is `sensitivity` (also `sensitivity_at` for timestamp). Pure doc drift — Section A query corrected inline.
 - **Implication for Section B**: Adam needs to either (a) seed 3 fresh fixture emails covering normal/sensitive/confidential, or (b) reuse existing normal/sensitive rows and seed one `confidential` (no existing row matches the confidential pattern set).
 
-### Section B — Status as of 2026-06-04 14:45 UTC
+### Section B — Status as of 2026-06-04 15:20 UTC (post-Story-6-11 F17 closure)
 
 **Prereqs status (post-Adam-action 2026-06-04):**
 
 - ✅ `OUTLOOK_CLIENT_SECRET` captured (presence + non-empty + length=40 typical Entra secret length; no value echo).
 - ✅ `OUTLOOK_USER_EMAIL` captured (presence + non-empty + email-shaped; doc-only rubric for Epic 6 retro A6; code paths use `/me/...` Graph endpoints so refresh-token identity binds the user, not this var).
-- ❌ **`confidential` fixture seed BLOCKED by F17** — ingest pipeline `sensitivity_class` step has been stuck on `provider_error` since 2026-06-01 21:02 UTC. 1618 emails unclassified backlog. See F17 finding above. **Follow-up Story 6-11 filed** as backlog with surgical investigation plan.
+- ✅ **F17 RESOLVED 2026-06-04 by Story 6-11** — worker-process pipeline-runtime init gap closed (Story 6-6 missed porting `set_policy_snapshot` / `init_default_adapters` / patterns / budget / pause into the worker; ingest ticks now dispatch successfully). Live verification: first post-fix tick at 2026-06-04T15:16:51Z produced `router_calls(task_type='sensitivity_class', outcome='retry_recovered')` and `emails(sensitivity='confidential')` exists for the first time. Backlog draining (1620 → 1618 in one tick). See F17 block below for resolution detail.
 
-**CP status per F17 blast radius:**
+**CP status per F17 closure:**
 
 | CP | Live path | Verdict | Evidence |
 | --- | --- | --- | --- |
-| CP-A (normal email happy path) | Live Discord → Hermes → Router → Anthropic Opus → drainer → Graph send → test recipient inbox | 🛑 **BLOCKED by F17** | Requires fresh ingest classification → `sensitivity='normal'` row → bot draft surface. Re-walks after 6-11 closes. |
-| CP-B (sensitive-email handshake) | Live Discord defender `/confirm` flow → `mint_sensitivity_token` → consume-aware Router precondition → draft_reply Opus call | 🛑 **BLOCKED by F17** | Requires `sensitivity='sensitive'` classification. Re-walks after 6-11 closes. |
-| CP-C (confidential-email refusal) | Live Discord defender refusal, no Router dispatch | 🛑 **BLOCKED by F17** | Requires `sensitivity='confidential'` row in DB; zero exist; classifier failure exits before `force_confidential` pattern override fires. Re-walks after 6-11 closes. |
-| CP-D (20-send/day cap) | Quick-budget-burn via DB manipulation + 1 real send → 21st returns `daily_send_cap_exceeded` | ⏯ **AGENT-SURROGATE PASS** (live verification still requires Adam-driven Discord flow + F17 unblock) | See CP-D agent-surrogate evidence block below. |
+| CP-A (normal email happy path) | Live Discord → Hermes → Router → Anthropic Opus → drainer → Graph send → test recipient inbox | ⏯ **QUEUED — F17 closed by Story 6-11 on 2026-06-04; CP re-walk pending** | Fresh `sensitivity='normal'` rows now landing as backlog drains. Re-walk requires Adam at Discord client. |
+| CP-B (sensitive-email handshake) | Live Discord defender `/confirm` flow → `mint_sensitivity_token` → consume-aware Router precondition → draft_reply Opus call | ⏯ **QUEUED — F17 closed by Story 6-11 on 2026-06-04; CP re-walk pending** | Fresh `sensitivity='sensitive'` rows now possible. Re-walk requires Adam at Discord client. |
+| CP-C (confidential-email refusal) | Live Discord defender refusal, no Router dispatch | ⏯ **QUEUED — F17 closed by Story 6-11 on 2026-06-04; CP re-walk pending** | DB now contains 1 `sensitivity='confidential'` row (first ever); more landing as backlog drains. Re-walk requires Adam at Discord client. |
+| CP-D (20-send/day cap) | Quick-budget-burn via DB manipulation + 1 real send → 21st returns `daily_send_cap_exceeded` | ⏯ **AGENT-SURROGATE PASS** (live verification still requires Adam-driven Discord flow) | See CP-D agent-surrogate evidence block below. F17 unblock no longer a blocker. |
 
 ### CP-D agent-surrogate evidence (2026-06-04 14:55 UTC)
 
@@ -882,7 +882,13 @@ These are story-spec drift that surface when an autonomous walk follows the stor
 
 ---
 
-## F17 — Ingest pipeline `sensitivity_class` step stuck on `provider_error` (3-day backlog of 1618 emails) — NEW FINDING 2026-06-04
+## F17 — Ingest pipeline `sensitivity_class` step stuck on `provider_error` (3-day backlog of 1618 emails) — **RESOLVED 2026-06-04 by Story 6-11**
+
+**STATUS: RESOLVED 2026-06-04T15:16:51Z by Story 6-11.** Root cause: Story 6-6 (worker process integration) moved the ingest-tick dispatcher from the api process into the worker process but did NOT port the per-process module-state init (policy snapshot, sensitivity patterns, adapter registry, budget guard, pause state). The FR-2.5 per-call safeguard at `mailbot_api/sensitivity/classifier.py:_assert_qwen_only_per_call` then crashed every ingest tick with `RouterError(code=provider_error, message="sensitivity classifier could not read policy snapshot: policy not loaded — set_policy_snapshot(load_policy(path)) must be called by the FastAPI lifespan before get_policy()")`. The pipeline log line at `mailbot_api/ingest/pipeline.py:341-348` silently dropped `error.message` (only logged `error_code`), which masked the real root cause for 3 days. Originally filed with `SecretMissing` as the top hypothesis (down-ranked to LOW during story creation after a code audit found no `get_secret` on the path); Hypothesis 1 (Story 6-9 column-order regression) was wrong direction (right time-of-arrival, wrong process). Actual root cause was missed in both filing and create-story analysis because the worker-process boundary wasn't enumerated. Fix: (a) promote `_cli_init_runtime` → public `init_pipeline_runtime` in `mailbot_api/ingest/pipeline.py`; (b) call from `_worker_main` before scheduler start; (c) extend `pipeline.py:341-348` log line to include `error_message` so the next process-boundary regression is visible in <1 ingest tick. Live evidence: first post-fix tick at 15:16:51Z produced `router_calls(task_type='sensitivity_class', outcome='retry_recovered')`; `emails.sensitivity='confidential'` row exists for the first time in the DB; backlog dropped 1620 → 1618 in one tick. See `_bmad-output/implementation-artifacts/6-11-ingest-pipeline-provider-error-investigation.md` for full investigation + fix detail.
+
+---
+
+**(Original finding preserved below for historical context — discovered during Story 6-6.5 Section B prereq fulfillment.)**
 
 **Discovered during:** Story 6-6.5 Section B prereq fulfillment (immediately after Adam captured `OUTLOOK_CLIENT_SECRET` + `OUTLOOK_USER_EMAIL`, while trying to seed a `confidential`-classified fixture email for CP-C). The agent queried the live DB to confirm a fresh fixture would classify and discovered classification has been broken since 2026-06-01.
 
