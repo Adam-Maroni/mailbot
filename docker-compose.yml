@@ -56,6 +56,12 @@ services:
       # See RECONCILIATION-NOTES §2.5.
       - PUID=${PUID:-}
       - PGID=${PGID:-}
+      # Display timezone for `date`, log timestamps, and Hermes cron evaluation.
+      # All MailBot Python code uses tz=timezone.utc explicitly (architecture
+      # §AR-PAT-3) so this only affects human-facing time AND Hermes's
+      # native-cron schedule interpretation (per Story 6-10 cron-jobs.md,
+      # the 08:00 daily digest cron is documented as Paris-local with TZ set).
+      - TZ=Europe/Paris
     depends_on:
       mailbot-api:
         condition: service_healthy
@@ -81,6 +87,11 @@ services:
       - MAILBOT_DB_PATH=/data/mailbot.db
       - OLLAMA_URL=http://ollama:11434
       - MAILBOT_ROUTER_KEY=${MAILBOT_ROUTER_KEY:-}
+      # Display timezone — see note on mailbot-hermes service above. All
+      # mailbot_api Python code uses tz=timezone.utc explicitly (architecture
+      # §AR-PAT-3) so router_calls.ts, emails.*_at, log JSON ts, etc. stay UTC.
+      # This only affects human-facing `date` + log-prefix timestamps.
+      - TZ=Europe/Paris
     depends_on:
       ollama:
         condition: service_healthy

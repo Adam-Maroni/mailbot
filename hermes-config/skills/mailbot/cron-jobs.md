@@ -51,7 +51,7 @@ These rules MUST be honored; each one corresponds to a failure mode we hit and c
 1. Pre-run script (`digest_prepare.py`) calls `compose_digest` MCP tool → writes payload to both a file AND stdout (the stdout part is the AGENT'S prompt input per §1 rule 7).
 2. Agent step generates the Qwen intro paragraph via `ask_router(task_type="daily_digest_intro")` → renders the digest → posts to Discord → calls `finalize_digest_delivery`.
 
-**Schedule:** `0 8 * * *` — 5-field cron, 08:00 UTC daily.
+**Schedule:** `0 8 * * *` — 5-field cron, 08:00 daily in the container's local TZ. With `TZ=Europe/Paris` set on the `mailbot-hermes` service (docker-compose.yml), this fires at 08:00 Europe/Paris (≈ 06:00 UTC summer / 07:00 UTC winter). If the TZ env is changed or unset, fires at 08:00 UTC. To verify the resolved firing time, run `docker compose exec mailbot-hermes date`.
 
 **Mode:** `no_agent=False` (default) — agent runs each tick with the `mailbot` skill attached.
 
