@@ -46,6 +46,7 @@ from mailbot_api.db.queries import (
 )
 from mailbot_api.ingest.embedding import EmbedEmailResult, embed_email, read_embedding
 from mailbot_api.ingest.idempotency import compute_idempotency_key
+from mailbot_api.observability.logging import sanitize as _sanitize_log_value
 from mailbot_api.observability.timestamps import utc_z_now
 from mailbot_api.router import ask_router
 from mailbot_api.router.errors import ErrorCode, RouterError, RouterResult
@@ -345,11 +346,18 @@ async def process_email(
                 "email_id": email_id,
                 "task_type": "sensitivity_class",
                 "error_code": (sensitivity_result.error.code.value if sensitivity_result.error else "unknown"),
-                # Story 6-11 F17: surface the underlying error string. Already
-                # sanitized at the Router boundary (see router.py PROVIDER_ERROR
-                # construction sites which all call sanitize_error()) so passing
-                # through is NFR-SEC-4 safe.
-                "error_message": (sensitivity_result.error.message if sensitivity_result.error else "no error object"),
+                # Story 6-11 F17: surface the underlying error string. Defense-in-depth
+                # re-sanitization: most RouterError.message values are already sanitized at
+                # router.py PROVIDER_ERROR construction sites, but classifier.py:97-101 (and
+                # siblings) build messages via raw f-string from a caught RuntimeError and do
+                # NOT pass through sanitize_error. NFR-SEC-4 requires every exception-derived
+                # log field to flow through redaction; this wrapper enforces that contract at
+                # the pipeline boundary regardless of upstream behavior.
+                "error_message": (
+                    _sanitize_log_value(sensitivity_result.error.message)
+                    if sensitivity_result.error
+                    else "no error object"
+                ),
             },
         )
         return result
