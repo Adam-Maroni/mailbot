@@ -753,3 +753,166 @@ All 8 contract facts ([cron-jobs.md §1](../../hermes-config/skills/mailbot/cron
 The Story 6-10 Phase 3.5 walk did NOT unblock any other carry-forward; all four remain F11-dependent on Job 2-shaped paths. **But Story 6-10 itself closes** — the dev-codeable side ships, the deployable cron procedure ships with verified-live operator steps, and the F11 dependency on Job 2 was already documented in the carry-forward stack before this walk began.
 
 ---
+
+## Story 6-6.5 walk record — Epic 5 capstone carry-forward (Section A complete, Section B awaiting Adam)
+
+**Date:** 2026-06-04
+**Story file:** [6-6-5-epic-5-capstone-carry-forward-walk.md](./6-6-5-epic-5-capstone-carry-forward-walk.md)
+**Walk type:** Section A (agent-side) — offline + DB-real + live-stack-up verification. Section B (live Discord ↔ Outlook ↔ Anthropic round-trip) **REQUIRES ADAM at the keyboard** and is queued at the Phase 3.5 manual-verification gate at end-of-run.
+**Trigger:** `/autonomous-story-run 6-6-5` (path (a) verification-only walk per disposition-story pattern).
+**Pre-walk gate status:** F6 RESOLVED (Story 6-6.6), F7 RESOLVED (Story 6-6.7), F8 RESOLVED (Story 6-6.8), SKILL.md frontmatter RESOLVED (Story 6-6.9), F11 RESOLVED (Story 6-9). Sibling-quartet + F11 = full Hermes-integration contract stack closed. Capstone unblocked at the code layer.
+
+### Section A — agent-side verification (PASS)
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Scheduler import (host `.venv`) | ✅ PASS | `from mailbot_api.worker import _worker_main` exits 0 |
+| Hermes config schema | ✅ PASS | `scripts/check_hermes_config.py` → `OK: hermes-config/config.yaml shape verified against real Hermes schema.` |
+| Drainer wiring integration tests | ✅ PASS | `tests/integration/test_worker_drainer_wiring.py` 4/4 passed in 1.18s |
+| Story 5-9 orchestrator tests | ✅ PASS (with story-doc drift note) | `tests/integration/test_draft_reply_orchestrator.py` 14/14 passed in 2.43s. Story 6-6.5 Task 1 references `test_draft_reply_capstone*.py`; actual filename is `test_draft_reply_orchestrator.py`. Pure doc drift — no code impact. |
+| Stack health: mailbot-api | ✅ HEALTHY | Container Up 6 hours (healthy); started 2026-06-04 08:35 UTC (post Story 6-9 + 6-10 ship). `GET /health` → 200 `{"ok":true,"sync_last_heartbeat_at":"2026-06-04T14:11:32Z","sync_last_outcome":"ok","sync_minutes_since_last_ok":3.6,"sync_health_alarm":false}` |
+| Stack health: mailbot-hermes | ✅ RUNNING | Container Up 5 hours, no restart-loop, recent logs benign (MEDIA path warning + keepalive reconnect — both known soft warnings post-F11 closure). No fresh 422/empty-response errors. **(Log-window note**: 30-min `--since 30m` window returned 3 benign lines; the 422 + empty-response errors visible in the full `--tail 30` log are **HISTORICAL** — pre-date F12/F13/F14/F15 closures shipped 2026-06-04 14:04 UTC per Story 6-9 CP-2 walk evidence. The currently-running Hermes container is NOT throwing them.) |
+| Stack health: ollama | ✅ HEALTHY | Container Up 6 hours (healthy) |
+| MCP discovery live (F6 RESOLVED verify) | ✅ PASS | `POST /mcp/ HTTP/1.1 200 OK` from Hermes (172.19.0.3) to mailbot-api in last 5 min; `pull_pending_notifications` MCP tool round-trip latency_ms=0 |
+| Drainer scheduler live | ✅ PASS | Drainer ticking every 2s — `action.drainer.tick.start` + `action.drainer.tick.done` pairs in mailbot-api log; prefetch_count=0 (no actions pending in idle state, as expected) |
+| Sync worker live | ✅ PASS | sync heartbeat 3.6 minutes ago, outcome=ok, alarm=false |
+
+**`.env` credential audit (Epic 6 retro A6 + A3 rubric):**
+
+| Key | Present | Non-empty | Verdict |
+| --- | --- | --- | --- |
+| `OUTLOOK_CLIENT_ID` | ✅ | ✅ | OK |
+| `OUTLOOK_CLIENT_SECRET` | ❌ MISSING | — | **🛑 BLOCKS Section B CP-A/D (real Graph send)** |
+| `OUTLOOK_TENANT_ID` | ✅ | ✅ | OK |
+| `OUTLOOK_USER_EMAIL` | ❌ MISSING | — | **🛑 BLOCKS Section B (test-account identity)** |
+| `OUTLOOK_REFRESH_TOKEN` | ✅ | ✅ | OK |
+| `ANTHROPIC_API_KEY` | ✅ | ✅ | OK |
+| `DISCORD_BOT_TOKEN` | ✅ | ✅ | OK |
+| `DISCORD_ALLOWED_USERS` | ✅ | ✅ | OK (Story 4-0 amendment retro A6 applied) |
+| `MAILBOT_ROUTER_KEY` | ✅ | ✅ | OK |
+| `DISCORD_HOME_CHANNEL` | ✅ | ✅ | OK (post-rename from DISCORD_CHANNEL_ID per Epic 6 retro A6) |
+
+Two gaps confirm Epic 6 retro A3 verdict: **capstone walk is OUTLOOK_CLIENT_SECRET-gated** (and `OUTLOOK_USER_EMAIL` also needs capture). Story 4-0 credential rubric amendment per retro A6 is the structural fix; this run surfaces the operational consequence.
+
+**DB seed state (Task 3 pre-check):**
+
+- 1622 total emails in `emails` table (live sync has been running for weeks).
+- Classified subset (recent): 2 `normal` + 2 `sensitive` + **0 `confidential`** (sensitivity distribution skewed; latest classifications dated 2026-06-01).
+- Story 6-6.5 Task 3 column reference `sensitivity_class` is doc drift — actual column is `sensitivity` (also `sensitivity_at` for timestamp). Pure doc drift — Section A query corrected inline.
+- **Implication for Section B**: Adam needs to either (a) seed 3 fresh fixture emails covering normal/sensitive/confidential, or (b) reuse existing normal/sensitive rows and seed one `confidential` (no existing row matches the confidential pattern set).
+
+### Section B — Status as of 2026-06-04 14:45 UTC
+
+**Prereqs status (post-Adam-action 2026-06-04):**
+
+- ✅ `OUTLOOK_CLIENT_SECRET` captured (presence + non-empty + length=40 typical Entra secret length; no value echo).
+- ✅ `OUTLOOK_USER_EMAIL` captured (presence + non-empty + email-shaped; doc-only rubric for Epic 6 retro A6; code paths use `/me/...` Graph endpoints so refresh-token identity binds the user, not this var).
+- ❌ **`confidential` fixture seed BLOCKED by F17** — ingest pipeline `sensitivity_class` step has been stuck on `provider_error` since 2026-06-01 21:02 UTC. 1618 emails unclassified backlog. See F17 finding above. **Follow-up Story 6-11 filed** as backlog with surgical investigation plan.
+
+**CP status per F17 blast radius:**
+
+| CP | Live path | Verdict | Evidence |
+| --- | --- | --- | --- |
+| CP-A (normal email happy path) | Live Discord → Hermes → Router → Anthropic Opus → drainer → Graph send → test recipient inbox | 🛑 **BLOCKED by F17** | Requires fresh ingest classification → `sensitivity='normal'` row → bot draft surface. Re-walks after 6-11 closes. |
+| CP-B (sensitive-email handshake) | Live Discord defender `/confirm` flow → `mint_sensitivity_token` → consume-aware Router precondition → draft_reply Opus call | 🛑 **BLOCKED by F17** | Requires `sensitivity='sensitive'` classification. Re-walks after 6-11 closes. |
+| CP-C (confidential-email refusal) | Live Discord defender refusal, no Router dispatch | 🛑 **BLOCKED by F17** | Requires `sensitivity='confidential'` row in DB; zero exist; classifier failure exits before `force_confidential` pattern override fires. Re-walks after 6-11 closes. |
+| CP-D (20-send/day cap) | Quick-budget-burn via DB manipulation + 1 real send → 21st returns `daily_send_cap_exceeded` | ⏯ **AGENT-SURROGATE PASS** (live verification still requires Adam-driven Discord flow + F17 unblock) | See CP-D agent-surrogate evidence block below. |
+
+### CP-D agent-surrogate evidence (2026-06-04 14:55 UTC)
+
+Live full-walk of CP-D is BLOCKED by F17 + needs Adam at the Discord client (it drives 2 real chat-initiated sends through `chat → propose SEND_REPLY → cool-off → drain → Graph send`). However, the cap-enforcement code path can be verified structurally **right now** against a synthetic DB seeded to the threshold — proving the cap fires correctly at 20, does NOT fire prematurely at 19, and resets at UTC midnight rollover. This gives strong evidence the live walk will produce the expected verdict once F17 closes.
+
+**Verification approach:** invoke the production cap-check function `mailbot_api.actions.drainer._send_cap_exceeded()` against a tmp SQLite DB seeded with `pending_actions` rows in the exact production shape (action_type from the `send_family` set, `budget_consumed=1`, `terminal_at` formatted via the production `_iso()` helper).
+
+| Scenario | Seeded state | `_send_cap_exceeded()` | Expected | Verdict |
+| --- | --- | --- | --- | --- |
+| Cap threshold (20 rows) | 20 same-day `send_reply` rows, `terminal_at=_iso(now)`, `budget_consumed=1` | `True` | `True` | ✅ PASS |
+| Below threshold (19 rows) | 19 same-day rows (same shape) | `False` | `False` | ✅ PASS |
+| UTC midnight rollover (yesterday's 25 rows) | 25 rows with `terminal_at=_iso(yesterday)`, all `budget_consumed=1` | `False` | `False` (yesterday's count doesn't carry into today) | ✅ PASS |
+
+**Code-path proof points captured:**
+
+- `DAILY_SEND_CAP = 20` (constant at `mailbot_api/actions/drainer.py:71`) — matches AC-4 "20 successful sends... 21st returns BUDGET_CAP_HIT."
+- The cap-check SQL filters on `terminal_at >= today_midnight_utc` (not `proposed_at`) — meaning the day-counter is keyed off action TERMINATION not PROPOSAL. Sends proposed today but terminating tomorrow count toward tomorrow, not today. This is the correct semantic for "today's budget."
+- Send-family enumeration at `mailbot_api/db/queries.py:806`: `('send_reply', 'send_new_email', 'send_forward', 'reply_to_inactive_thread')` — covers all 4 outbound send action types.
+- Failure path at `mailbot_api/actions/drainer.py:515-517`: when an inbound row is `is_send_family()` AND the cap is hit, `_mark_failed(row, "daily_send_cap_exceeded")` runs BEFORE Graph dispatch — meaning the 21st action lands in `pending_actions` with `status=failed, failure_reason="daily_send_cap_exceeded"` and no email leaves the system.
+
+**Story-doc drift filed as F18 (NON-BLOCKING):** Story 6-6.5 Task 7 references the failure_reason string as `BUDGET_CAP_HIT`. Actual code constant is `daily_send_cap_exceeded` (`mailbot_api/actions/drainer.py:516`). Same shape as F16-A + F16-B story-doc drifts — pure task-text typo, no code impact. Adam's live CP-D walk should look for the actual constant name when querying `pending_actions.failure_reason`.
+
+**Carry-forward to live CP-D walk (after F17 closes):**
+
+1. Adam drives chat-initiated SEND_REPLY → wait for it to land in `pending_actions` with `budget_consumed=0, status=pending`.
+2. Set day_sent-equivalent state via DB-direct: insert 19 synthetic same-day `terminal_at=_iso(now), budget_consumed=1, action_type='send_reply', status='applied'` rows (Adam's own user_id, on the production DB — clean up afterwards). Equivalent to "19 sends already landed today."
+3. Drainer ticks → claims the real row → `is_send_family() && _send_cap_exceeded()=False` (because 19, not 20) → Graph dispatch fires → row 20.
+4. Adam drives a SECOND chat-initiated SEND_REPLY → 21st action lands in `pending_actions`.
+5. Drainer ticks → claims row 21 → `_send_cap_exceeded()=True` (because 20 same-day budget_consumed rows now exist) → `_mark_failed(row, "daily_send_cap_exceeded")` → no Graph dispatch.
+6. SQLite verification: query `pending_actions WHERE id=<21st> → status='failed', failure_reason='daily_send_cap_exceeded'`. Test recipient does NOT receive a 21st email.
+7. Clean up the 19 synthetic rows.
+
+**Re-invocation contract for Section B:** once F17 closes (via Story 6-11), the walk can be resumed either by (a) Adam running it manually with this walk record as the checklist, or (b) starting a new Claude Code conversation where the agent tails logs + answers DB queries as Adam works through each CP. **Do NOT re-invoke `/autonomous-story-run 6-6-5`** — see story file `Dev Notes § Re-invocation guidance for Section B` for why (the `ready-for-walk` status falls through the skill's Phase 2.1 entry-point table and mis-routes to a fresh dev-story).
+
+**CP-FAIL propagation rules (added per CR-2):** if Adam Section-B verdict is FAIL on ANY CP (A/B/C/D), the following propagations MUST happen — NOT silent close:
+
+1. Append the FAIL verdict to this walk record's Section B row for that CP with: timestamp, redacted evidence (recipient address, error message, DB state of `pending_actions` / `router_calls`), root-cause hypothesis.
+2. Flip `sprint-status.yaml § 6-6-5-epic-5-capstone-carry-forward-walk` from `ready-for-walk` to `in-progress` with a comment citing the failed CP.
+3. Update `epic-5-run-flags.md § Aggregated [deferred:*] items § Story 5-9 capstone carry-forward` row: change `ADAM-Section-B-CLOSED` to `ADAM-Section-B-FAILED — CP-{X} failed; see epic-6-run-flags.md`. The deferred items STAY OPEN until a follow-up story fixes the failure and Section B is re-walked.
+4. Update `4-0-interactive-credential-capture-and-phase-3-5-verification.md § Change Log`: append entry citing which of the 3 deferred CPs (drainer e2e / real Graph write-back / 20-send/day cap live) is now blocked again by the FAIL.
+5. File a follow-up story in `_bmad-output/planning-artifacts/epics.md` AND `_bmad-output/implementation-artifacts/sprint-status.yaml` (e.g., `6-6.5-fix-CP-{X}-{reason}`). Epic 6's done-flip blocks until that story closes + Section B re-walks to PASS.
+6. Do NOT mark Epic 6 done. The closure-gate annotation between Stories 6-7 and 6-3 in sprint-status.yaml correctly enforces this regardless of which CP failed.
+
+**PASS / PASS WITH FINDINGS propagation rules:** flip sprint-status row from `ready-for-walk` to `done` with a comment citing the verdict; flip `epic-5-run-flags.md § Aggregated [deferred:*] items § Story 5-9 capstone carry-forward` `ADAM-Section-B-CLOSED → CLOSED-PASS` (or `CLOSED-PASS-WITH-FINDINGS` + one-line note); update `4-0-...md § Change Log` with the final close; if PASS WITH FINDINGS, route the findings to an Epic 6 backlog item OR a planning amendment per the orchestrator's standard "no silent close" rule.
+
+### Carry-forward dispositions (deferred CP closures stay open)
+
+- **Story 4-0 deferred CPs** (drainer e2e, real Graph write-back, 20-send/day cap live): **STAY DEFERRED** pending Section B walk. The Section A evidence confirms the wiring is live (drainer ticking, scheduler healthy, MCP discovery green) but cannot prove real Graph write-back without `OUTLOOK_CLIENT_SECRET`.
+- **Epic 5 capstone carry-forward** (`epic-5-run-flags.md` F-deferred items): **STAY OPEN** pending Section B. Will close to "CLOSED-via-6-6-5" once Section B verdicts land.
+
+### Story-doc drift findings (no code impact)
+
+Two pure documentation drifts surfaced during Section A; both are story-text-only:
+
+1. Task 1 references `tests/integration/test_draft_reply_capstone*.py` — actual filename is `test_draft_reply_orchestrator.py` (14 tests, all green).
+2. Task 3 SQL references column `sensitivity_class` — actual column is `sensitivity` (also `sensitivity_at` for timestamp).
+
+These are story-spec drift that surface when an autonomous walk follows the story text literally. Filed as **F16 (DOC-DRIFT, NON-BLOCKING)**: Story 6-6.5 task text should match real source paths and DB schema. Not opening a follow-up story — too small. The corrected commands are recorded in this walk record so the next runner uses them.
+
+### Verdict (Section A)
+
+**Section A: ✅ PASS.** Wiring proven live at every layer the agent can verify without Adam-side input — scheduler, drainer, sync, MCP discovery, Hermes runtime, Story 5-9 orchestrator surface. The agent halts cleanly; **Section B QUEUED for Adam** with the missing-credentials gate (`OUTLOOK_CLIENT_SECRET` + `OUTLOOK_USER_EMAIL`) as the explicit blocker.
+
+---
+
+## F17 — Ingest pipeline `sensitivity_class` step stuck on `provider_error` (3-day backlog of 1618 emails) — NEW FINDING 2026-06-04
+
+**Discovered during:** Story 6-6.5 Section B prereq fulfillment (immediately after Adam captured `OUTLOOK_CLIENT_SECRET` + `OUTLOOK_USER_EMAIL`, while trying to seed a `confidential`-classified fixture email for CP-C). The agent queried the live DB to confirm a fresh fixture would classify and discovered classification has been broken since 2026-06-01.
+
+**Symptom:**
+
+- `GET /admin/status`: `ingest.unprocessed_count = 1618`, `ingest.backpressure_active = true`, `ingest.last_outcome = "ok"`, `budget.degraded_mode_active = false`, `router.paused = false`.
+- mailbot-api log (2026-06-04 14:10:53 UTC, ingest tick): ~30+ consecutive `level=warning event=ingest.step.failed task_type=sensitivity_class error_code=provider_error` lines, one per attempted email. **No underlying error message logged** — only the `provider_error` code.
+- `router_calls` audit: 4 `sensitivity_class` rows total, ALL on 2026-06-01 between 20:54-21:02 UTC, ALL with `outcome=retry_recovered`. **Zero `outcome=ok` `sensitivity_class` rows ever**, and zero `sensitivity_class` rows AT ALL after 2026-06-01 21:02 UTC.
+- Other Router task types ARE going through fine: 63 total `router_calls` spanning 2026-06-01 to 2026-06-04 — `hermes_aux`, `chat_completions_tool_call`, etc. all reach the Router. **The bug is `sensitivity_class`-specific OR exits before reaching `ask_router`**.
+- DB: 1622 emails total; 4 classified (2 normal + 2 sensitive, all from 2026-06-01); 1618 unclassified.
+
+**Likely cause space (not investigated to root cause — this is a finding, not a fix):**
+
+1. **Most likely — SecretMissing at the verb boundary**: `mailbot_api/config.py:18` documents that `SecretMissing` exceptions surface as `RouterError(code="provider_error", message="secret missing: <name>")` "at the verb boundary — never the raw exception (NFR-SEC-4)." The ingest pipeline's `error_code=provider_error` log line carries no `message` field, which exactly matches the redacted shape. A required env var (likely something the classifier path reads but other Router paths don't) is missing from `.env`. Candidate vars to check: `MAILBOT_PATTERNS_PATH` (referenced at `mailbot_api/ingest/pipeline.py:708`), or a model-adapter secret read only when `task_type='sensitivity_class'`.
+
+2. **Less likely — adapter dispatch table gap**: a regression where `sensitivity_class` was removed from the adapter dispatch table or the Qwen adapter rejects the prompt module's request shape. Counter-evidence: the 4 successful 2026-06-01 calls used `qwen2.5:3b-instruct-q4_K_M` (same model still loaded in Ollama today per `/api/tags`). Whatever broke happened between 21:02 UTC on 2026-06-01 and the next ingest tick.
+
+3. **Less likely — prompt-module version mismatch**: a `prompt_version` migration could have orphaned `sensitivity_class` prompts. No evidence either way without checking.
+
+**Time bounds:** last successful `sensitivity_class` call = `2026-06-01T21:02:22Z`. First confirmed broken state = `2026-06-04T14:10:53Z` (this walk). **Backlog accrued at ~535 emails/day average** — but most are sync-pulls of historical messages, so the per-day failure shape is constant once broken. The 3-day window suggests a code or config change between 2026-06-01 21:02 UTC and the next attempted classification.
+
+**Scope of impact on Story 6-6.5 Section B walk:**
+
+- **CP-A (normal email happy path)** — **BLOCKED**: requires fresh ingest to produce a `sensitivity='normal'` row that the bot can draft against. Stale 2026-06-01 normal emails could potentially be reused but the AC implicitly assumes a freshly-arrived email (Adam DMing "draft a reply to that" on something in his Discord context).
+- **CP-B (sensitive-email handshake)** — **BLOCKED**: same as CP-A.
+- **CP-C (confidential-email refusal)** — **BLOCKED**: requires `sensitivity='confidential'` row in DB. **Zero exist.** Even the deterministic-pattern path (`password reset code` regex force-promotes to `confidential`) runs the pattern override AFTER the classifier — the classifier failure causes early-exit before the override fires.
+- **CP-D (20-send/day cap)** — **NOT BLOCKED**: doesn't depend on fresh classification; can be walked against stale 2026-06-01 normal/sensitive rows with mocked-budget-state DB manipulation.
+
+**Filed as:** **follow-up story `6-11-ingest-pipeline-provider-error-investigation` (new)** — surgical investigation story to identify the root cause, fix it, and unstick the 1618-email backlog. Story 6-6.5 Section B re-walks (CP-A/B/C) once Story 6-11 closes. Per the disposition-story pattern + Epic 4 retro action #6 structural-backstop rule — this stays its own story, NOT folded into Story 6-6.5's ACs.
+
+**NOT a regression introduced by Story 6-6.5 or any Story 6-9/6-10/CP-2-walk closure.** This walk surfaces a latent bug that's been live since 2026-06-02 — multiple Epic 6 stories ran past it because none of them ran the live ingest path under sustained load against unclassified emails. The Section A wiring check in this walk happens to be the first integration probe that crossed the `unprocessed_count > 0` boundary against the live `/admin/status` endpoint, which is why F17 surfaces now.
+
+---

@@ -424,6 +424,8 @@ Story 4-0a (or per-story fixes): F5 + F7 (HIGH/MEDIUM combined ~1h of work). F5 
 | 2026-06-01 | Mid-story scope expansion #3 (Finding 6): patched init_default_adapters to register nomic-embed-text; added 1 regression test. |
 | 2026-06-01 | Task 8 complete: Phase 3.5 walkthrough CP-A..CP-K against real Docker stack — 9 PASS, 1 SKIP, 1 PARTIAL. Privacy invariants CP-C + CP-F both PASS. |
 | 2026-06-01 | Task 9 complete: verdict PASS WITH FINDINGS; B2 flag flipped in Epic 2 and Epic 3 run-flags files. Phase 3.5 three-epic deferral CLOSED. Story Status → review. |
+| 2026-06-04 | Story 6-6.5 Section A walk PASS — wiring proven live (drainer ticking, scheduler healthy, MCP discovery green). The 3 deferred CPs (drainer e2e, real Graph write-back, 20-send/day cap live) close to **ADAM-Section-B-CLOSED** once Adam captures `OUTLOOK_CLIENT_SECRET` + `OUTLOOK_USER_EMAIL` (both still missing from `.env` per Epic 6 retro A3 + A6) and walks CP-A/B/C/D in Discord. See `epic-6-run-flags.md § Story 6-6.5 walk record`. NOT silent close — the gate is explicit. |
+| 2026-06-04 | `OUTLOOK_CLIENT_SECRET` + `OUTLOOK_USER_EMAIL` captured by Adam. Section B prereq fulfillment surfaced **F17** (ingest pipeline `sensitivity_class` provider_error, 1618-email backlog since 2026-06-01). 3 deferred CPs status revised: **drainer e2e + real Graph write-back BLOCKED-by-F17** (require fresh `sensitivity` classification for CP-A/B/C drafting); **20-send/day cap CP-D walkable independently** (no classification dependency). Follow-up Story 6-11 filed (backlog) to fix F17. Final 3-CP closure deferred until 6-11 lands + CP-A/B/C re-walk. CP-D verdict will append when walked. |
 
 ### File List
 

@@ -102,3 +102,58 @@ This file collects flags raised by `autonomous-story-run` runs. One block per in
 **Disposition:** Story 5-2 flipped review → done. Verbose row in sprint-status.yaml truncated to one-line headline per Step 2.4.8; full narrative preserved in this flags-file block + story file Completion Notes.
 
 ---
+
+## Story 6-6.5 — 2026-06-04 14:20 (path (a) verification-only walk)
+
+**Headline:** Section A PASS (10/10 agent-side wiring checks green); Section B QUEUED for Adam (OUTLOOK_CLIENT_SECRET + OUTLOOK_USER_EMAIL gated per Epic 6 retro A3+A6).
+
+**Trigger:** `/autonomous-story-run 6-6-5` with explicit path (a) verification-only walk disposition (Phase 0 surfaced disposition-story gate; Adam confirmed (a)).
+
+**Dev model:** claude-opus-4-7 (1M context).
+**Review model:** claude-sonnet-4-6 (dispatch pending — see below).
+**Review rounds:** 1 round queued; not yet dispatched.
+
+**Gate verdicts:**
+
+- 2.3.5 (pre-review self-audit) — PENDING
+- 2.4.4 (Dev Agent Record completeness) — PENDING
+- 2.4.5 (UI-scope pre-flight) — N/A (no graphical frontend on MailBot)
+- 2.4.6 (File-List-vs-git untracked check) — PENDING
+- 2.4.7 (middleware-real-bootstrap) — N/A (no code changes; pure walk-record + doc updates)
+- 2.4.8 (verbose-row truncation) — PENDING
+- Step 2.5 (dev-env verification) — N/A (no code changes; stack already verified live during Section A)
+
+**Aggregated [deferred:*] items:** none from this story; Story 4-0 deferred CPs (drainer e2e, real Graph write-back, 20-send/day cap live) close to ADAM-Section-B-CLOSED disposition pending Adam's Section B walk.
+
+**Story-doc drift findings filed inline (NON-BLOCKING):**
+
+- **F16-A (DOC-DRIFT)**: Story 6-6.5 Task 1 references `tests/integration/test_draft_reply_capstone*.py`; actual filename is `test_draft_reply_orchestrator.py`. 14/14 tests passed when running the correct filename.
+- **F16-B (DOC-DRIFT)**: Story 6-6.5 Task 3 SQL references column `sensitivity_class`; actual column is `sensitivity` (also `sensitivity_at` for timestamp). Corrected query used inline; 1622 emails in DB, 4 classified (2 normal + 2 sensitive + 0 confidential).
+
+Neither warrants a follow-up story. Corrected commands are recorded in `epic-6-run-flags.md § Story 6-6.5 walk record` so the next runner uses them.
+
+**Permission-prompt summary:** No permission log configured on the target. Zero prompts observed during Section A.
+
+
+## Story 6-6.5 — 2026-06-04 14:55 (Section B partial walk, post-prereq fulfillment)
+
+**Trigger:** continuation of the same `/autonomous-story-run 6-6-5` session — Adam answered the Phase 3.5 manual-verification prompt with "I will now proceed to complying to Prerequisites before walking Section B" and asked the agent to walk through interactively.
+
+**Outcome:** Section B PARTIAL — 2 prereqs captured + 1 prereq blocked by new finding F17 + CP-D agent-surrogate PASS + CP-A/B/C BLOCKED-by-F17.
+
+**New flags:**
+
+- **F17 (CRITICAL, BLOCKING-Section-B-CP-A/B/C)** — Ingest pipeline `sensitivity_class` step stuck on bare `error_code=provider_error` since 2026-06-01 21:02 UTC; 1618-email unclassified backlog. Router/Ollama/budget all healthy; bug exits before reaching `ask_router`. Most likely cause: SecretMissing per `mailbot_api/config.py:18` (a required env var read by the classifier path only). Filed as new **Story 6-11** in backlog with 5-task investigation plan. See `epic-6-run-flags.md § F17`.
+- **F18 (INFO, NON-BLOCKING, story-doc drift)** — Story 6-6.5 Task 7 references failure_reason `BUDGET_CAP_HIT`; actual code constant is `daily_send_cap_exceeded` at `mailbot_api/actions/drainer.py:516`. Same shape as F16-A + F16-B. No code impact.
+
+**CP-D agent-surrogate evidence (PASS):**
+
+- 20 same-day `terminal_at=_iso(now)` send_reply rows with `budget_consumed=1` → `_send_cap_exceeded() = True` ✅
+- 19 same-day rows → `_send_cap_exceeded() = False` ✅
+- 25 yesterday-`terminal_at` rows → `_send_cap_exceeded() = False` ✅ (UTC midnight rollover)
+- `DAILY_SEND_CAP=20`, send-family enum confirmed, failure path at `drainer.py:515-517` runs `_mark_failed(row, "daily_send_cap_exceeded")` BEFORE Graph dispatch.
+
+**Final disposition:** Story 6-6.5 stays `ready-for-walk`. Section A PASS (locked). Section B verdict: PARTIAL-PASS (CP-D agent-surrogate) + BLOCKED-by-F17 (CP-A/B/C live walk). Re-walks once Story 6-11 closes.
+
+**Permission-prompt summary:** No permission log configured on the target. Zero prompts observed during the partial walk.
+

@@ -140,7 +140,8 @@ The Hermes side is what needs a follow-up epic.
 ## Aggregated `[deferred:*]` items
 
 - **5-4 AC-7** — `hermes-config/config.yaml` boundary checker extension; deferred per AC's explicit deferral clause. Filed as follow-up if a Python consumer appears.
-- **5-4 Phase 3.5 F3/F4/F5** — Hermes deploy shape + config schema (see Phase 3.5 walk record above). **Carry-forward to Epic 6.**
+- **5-4 Phase 3.5 F3/F4/F5** — Hermes deploy shape + config schema (see Phase 3.5 walk record above). **RESOLVED 2026-06-03 (Story 6-0 Hermes-runtime corrective walk); see `epic-6-run-flags.md § Story 6-0 walk record`.**
+- **Story 5-9 capstone carry-forward** (drainer e2e + real Graph write-back + 20-send/day cap live) — Section A of Story 6-6.5 walk **PASS 2026-06-04** (wiring proven live: scheduler ticking, drainer ticking, MCP discovery green, sync healthy). **Section B PARTIAL-BLOCKED 2026-06-04** by **F17** (ingest pipeline `sensitivity_class` step stuck on `provider_error` since 2026-06-01; 1618 unclassified backlog). CP-A/B/C BLOCKED-by-F17; CP-D walkable independently (doesn't need fresh classification). Follow-up **Story 6-11** filed (backlog) to investigate + fix F17. Capstone carry-forward stays **ADAM-Section-B-PARTIAL-BLOCKED-by-F17** until 6-11 closes + CP-A/B/C re-walk lands. CP-D verdict will be appended when walked. See `epic-6-run-flags.md § Story 6-6.5 walk record` + `§ F17`. NOT silent close — explicit gate on 6-11.
 - **5-6 Defer 1** — TOCTOU on `mute_category` upsert. Single-user system; low risk.
 - **5-6 Defer 2** — Discord choices schema (subsumed by 5-4 F5 carry-forward).
 - **5-6 Defer 3** — authorization gate on `pause_router` / `resume_router` / `reset_degraded_mode` at MCP layer. Dispatcher-side per Rule P.

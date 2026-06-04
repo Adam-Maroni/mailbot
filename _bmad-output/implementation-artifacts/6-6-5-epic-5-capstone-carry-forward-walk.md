@@ -4,7 +4,9 @@ baseline_commit: 4412da006f66930eecd36f7b5be004b3d98edd96
 
 # Story 6.6.5: Epic 5 capstone carry-forward walk — verify the wiring resurrects the dormant capstone
 
-Status: review
+Status: ready-for-walk
+
+> **2026-06-04 rescope — disposition-story pattern (autonomous-story-run path (a))**: Prior `[blocked: f6-still-open]` disposition is **stale**. F6 RESOLVED 2026-06-03 (Story 6-6.6); F11 RESOLVED 2026-06-04 (Story 6-9); sibling-quartet F6/F7/F8/SKILL.md all closed. This story is now **F11-unblocked but OUTLOOK_CLIENT_SECRET-gated** per Epic 6 retro A3. Autonomous-story-run executed path (a) verification-only walk: Tasks 1 (Section A offline checks), 2 (stack-up), 3 (fixture plan), 8 (walk-record skeleton), 9 (teardown). **Tasks 4-7 (CP-A/B/C/D live Discord ↔ Outlook ↔ Anthropic round-trip) REQUIRE ADAM at the keyboard** — surfaced via Phase 3.5 manual-verification prompt at end-of-run. Live walk verdicts will be appended to `epic-6-run-flags.md § Story 6-6.5 walk record` by Adam (or by a future autonomous-story-run re-invocation once the secret is captured).
 
 ## Story
 
@@ -110,6 +112,7 @@ This is NOT a code-implementation story. It's a Phase 3.5 walk story per the str
 - **Adam walks Section B** (live operator-only checkpoints): Tasks 4, 5, 6, 7 — these REQUIRE Adam at the Discord client, real Outlook inbox, and a SECOND email account to send test fixtures from.
 
 The agent's job during Section B is to:
+
 1. Be ready to answer DB-query questions ("did `pending_actions.id=X` flip to applied?")
 2. Tail the relevant logs and surface anomalies in real time
 3. Record the walk evidence into `epic-6-run-flags.md` as Adam confirms each CP
@@ -117,6 +120,7 @@ The agent's job during Section B is to:
 ### Walk-record evidence convention
 
 Per the autonomous-epic-run skill's Walk-Evidence Convention, evidence sub-folder:
+
 - `_bmad-output/implementation-artifacts/6-6-5-uat-evidence/` for any screenshots, CSV exports, JSON dumps
 - Inline ≥1 most-diagnostic screenshot per CP in the walk record using markdown image syntax
 - Stage explicitly per Step 2.6 (no `git add -A`)
@@ -148,6 +152,7 @@ This is a common-cause hazard: the autonomous loop sequenced 6-0 → 6-6 → 6-6
 CP-A requires Adam to have a SECOND email account he controls — the bot's "send a reply" target. Story 4-0 captured credentials but did NOT establish a test-recipient. Recommended: Adam uses any non-MailBot-monitored email account (Gmail, personal Outlook, etc.). The bot's draft_reply targets the original sender's address, so the SECOND account is the sender of the test emails.
 
 Flow:
+
 1. Adam, from `test-sender@gmail.com`, sends a test email to `adam-mailbot@outlook.com` (the MailBot-monitored account).
 2. MailBot syncs + ingests + classifies.
 3. Adam DMs bot "draft a reply to that".
@@ -163,6 +168,16 @@ Use the corpus from Story 7-1 if it exists by the time this story runs; if NOT (
 - **confidential**: e.g., "Per our NDA discussion — here's the unreleased product spec attached." — triggers patterns like `NDA`, `confidential`, `unreleased`.
 
 `sensitivity_patterns.yaml` lists the actual trigger patterns; consult it to pick triggers that match your local config.
+
+### Re-invocation guidance for Section B (added 2026-06-04 per CR-1)
+
+The status `ready-for-walk` is non-standard — it's NOT in the autonomous-story-run skill's Phase 2.1 entry-point table (`backlog` / `ready-for-dev` / `in-progress` / `review` / `done`). If Adam re-invokes `/autonomous-story-run 6-6-5` after capturing `OUTLOOK_CLIENT_SECRET` + `OUTLOOK_USER_EMAIL`, the skill will fall through to a fresh `dev-story` invocation rather than resume at Section B. **That is the WRONG behavior** — Section A is already complete; the agent should NOT re-do it.
+
+**Recommended re-invocation paths (in priority order):**
+
+1. **Manual walk by Adam** (preferred): use the Section B QUEUED rows in `epic-6-run-flags.md § Story 6-6.5 walk record § Section B` as a checklist. Run each CP at the Discord client + Outlook inbox. Append verdicts to the same walk-record section. Flip sprint-status row from `ready-for-walk` to `done` (PASS / PASS WITH FINDINGS) or to `in-progress` (FAIL) yourself.
+2. **Agent-assisted walk with explicit instructions** (if you want help): start a new Claude Code conversation, paste the walk-record section, and say "I'm walking Section B of Story 6-6.5 — please tail logs and answer DB queries as I work through CP-A/B/C/D." Do NOT use `/autonomous-story-run` — that skill is for dev-codeable stories.
+3. **Re-invoking `/autonomous-story-run 6-6-5`** (NOT recommended without modification): would mis-route to fresh dev-story. If you must, first flip sprint-status row status to `review` and add an inline `[mid-walk: section-A-done]` disposition string so the entry-point picks `review` (code-review) — but the agent will still try to spawn code-review on a story with no diff. Best avoided.
 
 ### What this story does NOT touch
 
@@ -214,21 +229,57 @@ claude-opus-4-7 (1M context)
 
 ### Completion Notes List
 
-- **[BLOCKED: f6-still-open]** Story 6-6.5 cannot proceed. F6 (MCP `/mcp` 307→404 redirect mismatch between FastMCP at `mailbot-api:8000/mcp` and Hermes's MCP client) is the prerequisite for every CP in this walk:
-  - **CP-A (normal email happy path)**: requires Hermes to dispatch `find_emails` / `propose_action` MCP verbs → blocked.
-  - **CP-B (sensitive-email handshake)**: requires Hermes to dispatch `mint_sensitivity_token` MCP verb → blocked.
-  - **CP-C (confidential-email refusal)**: requires Hermes to even know the verb surface to refuse against → blocked.
-  - **CP-D (20-send/day cap)**: depends on CP-A's drain path being live → blocked.
-- **Resolution path**: F6 must close in a follow-up story BEFORE Story 6-6.5 can be re-run. Per Story 6-0 RECONCILIATION-NOTES, the fix space is one of: (1) trailing-slash on `mcp_servers.mailbot-api.url` (`http://mailbot-api:8000/mcp/`); (2) FastMCP mount-path adjustment on the mailbot-api side; (3) Hermes redirect-follow configuration. The orchestrator did NOT autonomously dispatch F6 work because it was filed as carry-forward, not as a sequenced story. **Recommended: Adam files a NEW story (e.g., `6-6.6-mcp-redirect-fix-f6-closure`) and dispatches it manually before re-running 6-6.5.**
-- **What this story SHOULD have done if F6 were resolved**: Tasks 1-3 (agent-side Section A — offline checks + Docker stack bring-up + test fixture seeding); Tasks 4-7 surfaced to Adam (Section B requires Adam at the keyboard for real Discord ↔ Outlook ↔ Anthropic round-trip); Task 8-9 walk-record write + teardown.
-- **Phase 3.5 gate consequence**: the autonomous-epic-run skill's end-of-epic Phase 3.5 manual-verification gate will fire when Epic 6 closes. At that point either (a) F6 is fixed and the gate walks Story 6-6.5's CPs, OR (b) F6 is still open and Phase 3.5 verdict is FAIL — epic stays `in-progress` until F6 resolves. **The orchestrator should NOT mark Epic 6 done until Story 6-6.5 walk completes; the closure-gate annotation between Stories 6-7 and 6-3 in sprint-status.yaml correctly enforces this.**
-- **Story status flipped to `review` with `[blocked: f6-still-open]` disposition** rather than left `in-progress`: the agent-side verification work this story owns (F6 prerequisite check) IS complete; the remaining work belongs to a downstream story + Adam's Phase 3.5 walk. Marking `review` keeps the orchestrator's main loop moving without falsely claiming `done`. The walk record at `epic-6-run-flags.md` § Story 6-6.5 will be appended when Adam walks the live CPs post-F6-fix.
+#### 2026-06-04 — Path (a) verification-only walk (`/autonomous-story-run 6-6-5`)
+
+The original 2026-06-03 HALT disposition (`[blocked: f6-still-open]`) is **superseded**. F6 RESOLVED 2026-06-03 (Story 6-6.6); F11 RESOLVED 2026-06-04 (Story 6-9). The sibling-quartet F6/F7/F8/SKILL.md + F11 closures unblock the code-side of every CP. **Capstone walk is now `OUTLOOK_CLIENT_SECRET`-gated only** per Epic 6 retro action A3.
+
+- **Section A (agent-side) PASS** — all 10 verification checks green: scheduler import via host `.venv`, Hermes config schema check, drainer wiring integration tests (4/4), Story 5-9 orchestrator tests (14/14), mailbot-api `/health` 200 + sync heartbeat 3.6 min ago, mailbot-api/hermes/ollama all healthy, MCP `POST /mcp/ 200 OK` round-trips live (F6 RESOLVED proven), drainer ticking every 2s in mailbot-api log, sync worker alive, 1622 emails in DB (2 normal + 2 sensitive + 0 confidential — Adam needs to seed confidential fixture for CP-C). Full table in `epic-6-run-flags.md § Story 6-6.5 walk record § Section A`.
+- **Section B (live Adam walk) QUEUED** — Tasks 4-7 (CP-A/B/C/D) REQUIRE Adam at the keyboard for real Discord ↔ Outlook ↔ Anthropic round-trip. `.env` audit shows two missing keys: `OUTLOOK_CLIENT_SECRET` (BLOCKS Graph write-back) + `OUTLOOK_USER_EMAIL` (BLOCKS test-account identity). Both align with Epic 6 retro A3 verdict (OUTLOOK_CLIENT_SECRET-gated) and A6 (Story 4-0 credential rubric amendment).
+- **Story-doc drift findings (NON-BLOCKING, F16)**: (1) Task 1 references `test_draft_reply_capstone*.py`; actual filename is `test_draft_reply_orchestrator.py`. (2) Task 3 SQL references column `sensitivity_class`; actual column is `sensitivity`. Both surfaced when the autonomous walk followed story text literally. Corrected commands recorded in the walk record so the next runner uses them. Not filing a follow-up story — too small for ceremony.
+- **Carry-forward dispositions**: Story 4-0 deferred CPs (drainer e2e, real Graph write-back, 20-send/day cap live) and Epic 5 capstone carry-forward both close to **ADAM-Section-B-CLOSED** once Adam walks Tasks 4-7 — NOT silent close. Audit-trail entries added to `epic-5-run-flags.md § Aggregated [deferred:*] items` and `4-0-...md § Change Log`.
+- **Status disposition**: stays `ready-for-walk` (NOT flipped to `done` and NOT flipped to `in-progress`). Adam's Phase 3.5 manual-verification verdict at the end of this autonomous-story-run invocation determines the final disposition: PASS → flip to `done` (epic-done flip blocked anyway until other Phase 3.5 walks land); PASS WITH FINDINGS / FAIL → stays `ready-for-walk` with findings logged.
+- **Stack left UP** post-walk so Adam can continue directly into Section B without re-stack-up wait. Section A teardown deferred — Adam runs `docker compose down` after Section B if desired.
+
+#### 2026-06-04 — Section B prereq fulfillment + partial walk (same session, after Phase 3.5 prompt)
+
+In the same session, Adam captured the two prereq credentials inline and asked the agent to walk through Section B interactively. Sequence of events:
+
+1. **Prereq 1: `OUTLOOK_CLIENT_SECRET`** ✅ Adam pasted the value into `.env` (security-disciplined — no value crossed the chat channel). Agent verified `present=True, non_empty=True, len=40` (typical Entra secret length).
+2. **Prereq 2: `OUTLOOK_USER_EMAIL`** ✅ Adam clarified this differs from `OUTLOOK_CLIENT_ID` (which we'd already established was public/non-secret). Investigation showed the env var is **NOT a code-side requirement** — every action in `outlook_adapter.py` uses `/me/...` Graph endpoints (refresh-token-bound identity), with only `TOUCH_DELEGATED_MAILBOX` using `/users/{upn}/...` (not in any CP scope). The env var is doc-side rubric only per Epic 6 retro A6. Adam captured it anyway for audit-trail traceability. Verified `present=True, non_empty=True, len=20, email-shaped`.
+3. **Prereq 3: confidential fixture seed** ❌ BLOCKED by **F17** (new finding). The agent went to query the live DB to confirm the seed path would work, and discovered:
+   - DB has 1622 emails, only 4 classified (all from 2026-06-01), 1618 unclassified.
+   - `/admin/status` reports `ingest.unprocessed_count=1618, ingest.backpressure_active=true, ingest.last_outcome='ok'`. Router NOT paused, NOT degraded ($0.08 spent today). Ollama healthy with qwen2.5:3b loaded.
+   - mailbot-api logs show every `sensitivity_class` ingest tick failing with `error_code=provider_error` (no underlying message).
+   - **Zero `sensitivity_class` `router_calls` rows exist after 2026-06-01 21:02 UTC** — bug is `sensitivity_class`-specific OR exits before reaching `ask_router`.
+   - Most likely cause: `SecretMissing → RouterError(code="provider_error", message="secret missing: <name>")` per `mailbot_api/config.py:18` contract. A required env var is missing for the classifier path only.
+4. **F17 filing**: New finding added to `epic-6-run-flags.md`. Follow-up **Story 6-11** filed (backlog) with surgical 5-task investigation plan (reproduce + add debug log to surface the redacted secret name; root-cause; fix + regression test; backlog drain; unblock 6-6.5 Section B).
+5. **CP-A/B/C marked BLOCKED-by-F17**: all 3 require fresh `sensitivity` classification. CP-FAIL propagation rules (per CR-2 in pre-review self-audit) applied: `epic-5-run-flags.md § Aggregated [deferred:*]` updated to `ADAM-Section-B-PARTIAL-BLOCKED-by-F17`; Story 4-0 Change Log appended with the same disposition.
+6. **CP-D agent-surrogate PASS**: live full-walk also blocked by F17 (needs `sensitivity='normal'` row to draft against AND Adam at Discord), BUT the cap-enforcement code path verified structurally against a synthetic DB:
+   - 20 same-day `terminal_at=_iso(now)` send_reply rows → `_send_cap_exceeded() = True` ✅
+   - 19 same-day rows → `_send_cap_exceeded() = False` ✅ (no premature firing)
+   - 25 yesterday `terminal_at=_iso(yesterday)` rows → `_send_cap_exceeded() = False` ✅ (UTC midnight rollover proven)
+   - Cap-check SQL filters on `terminal_at`, NOT `proposed_at` (subtle but correct semantic).
+   - Failure path: `_mark_failed(row, "daily_send_cap_exceeded")` at `drainer.py:515-517` BEFORE Graph dispatch.
+7. **F18 (story-doc drift, NON-BLOCKING)**: Task 7 references failure_reason `BUDGET_CAP_HIT`; actual code constant is `daily_send_cap_exceeded`. Pure task-text typo, no code impact. Same shape as F16-A + F16-B doc-drifts.
+
+**Final Section B verdict: PARTIAL-PASS (CP-D agent-surrogate) + BLOCKED-by-F17 (CP-A/B/C live walk).** Story status stays `ready-for-walk` pending 6-11 closure + CP-A/B/C live re-walk + CP-D live full-walk-with-Adam.
+
+#### 2026-06-03 — Original HALT disposition (SUPERSEDED 2026-06-04)
+
+(Preserved for audit trail.) Story 6-6.5 cannot proceed: F6 (MCP `/mcp` 307→404 redirect mismatch) was NOT RESOLVED at story-kickoff time. Story flipped to `review` with `[blocked: f6-still-open]` disposition; walk deferred until F6 closes in a follow-up story. The sibling-quartet inline closures (Stories 6-6.6 → 6-6.7 → 6-6.8 → 6-6.9 → 6-9) resolved F6 + F7 + F8 + SKILL.md frontmatter + F11 between 2026-06-03 and 2026-06-04, unblocking this story.
 
 ### File List
 
-- `_bmad-output/implementation-artifacts/6-6-5-epic-5-capstone-carry-forward-walk.md` (this story file)
-- `_bmad-output/implementation-artifacts/sprint-status.yaml` (status flip ready-for-dev → review-with-block-note)
+- `_bmad-output/implementation-artifacts/6-6-5-epic-5-capstone-carry-forward-walk.md` (this story file — Status header rescoped; Completion Notes + Change Log appended; File List updated)
+- `_bmad-output/implementation-artifacts/epic-6-run-flags.md` (appended `## Story 6-6.5 walk record — Section A complete, Section B awaiting Adam` section with 10-row Section A evidence table + 10-row .env audit + Section B QUEUED rows)
+- `_bmad-output/implementation-artifacts/epic-5-run-flags.md` (Aggregated `[deferred:*]` items updated: 5-4 Phase 3.5 marked RESOLVED via Story 6-0; new Story 5-9 capstone carry-forward entry pointing to 6-6.5 walk record with ADAM-Section-B-CLOSED disposition)
+- `_bmad-output/implementation-artifacts/4-0-interactive-credential-capture-and-phase-3-5-verification.md` (Change Log entry for 2026-06-04 closing the 3 deferred CPs to ADAM-Section-B-CLOSED with explicit gate citation)
+- `_bmad-output/implementation-artifacts/story-run-flags.md` (autonomous-story-run output appended)
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` (Story 6-6.5 row comment updated 2026-06-04 — twice; first pass: Section A PASS + Section B QUEUED; second pass after F17 discovery: Section A PASS + Section B PARTIAL — CP-D agent-surrogate PASS + CP-A/B/C BLOCKED-by-F17; ALSO added new 6-11 row in backlog)
+- `_bmad-output/implementation-artifacts/6-11-ingest-pipeline-provider-error-investigation.md` (NEW — follow-up story stub for F17 root-cause investigation; 4 ACs + 5-task investigation plan)
 
 ### Change Log
 
 - 2026-06-03 — Story 6-6.5 HALTED at Task 1 prerequisite check: F6 (MCP /mcp 307→404 mismatch) is NOT RESOLVED. Story flipped to `review` with `[blocked: f6-still-open]` disposition; walk deferred until F6 closes in a follow-up story.
+- 2026-06-04 — `/autonomous-story-run 6-6-5` path (a) verification-only walk: Section A PASS (10/10 agent-side checks green; F6/F7/F8/F11/SKILL.md all RESOLVED proven live); Section B QUEUED for Adam (OUTLOOK_CLIENT_SECRET + OUTLOOK_USER_EMAIL gated). Status header rescoped from `review` to `ready-for-walk` with explicit disposition note. 4 cross-doc updates (epic-5-run-flags + epic-6-run-flags + 4-0 deferred-CP amendment + this story file). 2 story-doc drift findings (F16) filed inline. Walk-record skeleton scaffolded; Adam's Section B verdicts will append to `epic-6-run-flags.md § Story 6-6.5 walk record`.
+- 2026-06-04 (same session, post-Phase-3.5 prompt) — Section B partial walk: Adam captured OUTLOOK_CLIENT_SECRET + OUTLOOK_USER_EMAIL inline; F17 discovered (ingest pipeline `sensitivity_class` step stuck on `provider_error` since 2026-06-01; 1618 unclassified backlog); follow-up Story 6-11 filed in backlog with 5-task investigation plan; CP-A/B/C marked BLOCKED-by-F17; CP-D agent-surrogate PASS (3/3 cap-check scenarios verified structurally against synthetic DB); F18 story-doc drift filed (NON-BLOCKING: failure_reason actual constant is `daily_send_cap_exceeded`, not `BUDGET_CAP_HIT`); 4 cross-doc updates propagated per CR-2 FAIL propagation rules (sprint-status row updated; epic-5-run-flags deferred-items revised to `ADAM-Section-B-PARTIAL-BLOCKED-by-F17`; Story 4-0 Change Log appended; this story file Completion Notes + File List + Change Log appended). Section B final verdict: **PARTIAL-PASS (CP-D agent-surrogate) + BLOCKED-by-F17 (CP-A/B/C live walk)**. Story stays `ready-for-walk` pending 6-11 closure + live re-walks.
