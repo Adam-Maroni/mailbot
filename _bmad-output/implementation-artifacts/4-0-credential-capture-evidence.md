@@ -20,21 +20,22 @@ hash — that would be a finding to fix before commit. None of the cells do.
 
 ## Capture summary table
 
-| # | Key                       | Status | Length | Last 4 | Captured at (UTC)     | Verified by                                     |
-|---|---------------------------|--------|--------|--------|-----------------------|-------------------------------------------------|
-| 1 | OUTLOOK_CLIENT_ID         | set    | 36     | 88f1   | 2026-06-01T19:50Z     | `check_graph_auth.py` exit 0 (sub-step 4)       |
-| 2 | OUTLOOK_TENANT_ID         | set    | 9      | mers   | 2026-06-01T19:51Z     | `check_graph_auth.py` exit 0 (consumers route)  |
-| 3 | OUTLOOK_REDIRECT_URI      | set    | 30     | back   | 2026-06-01T19:52Z     | `mint_refresh_token.py` consumed callback OK    |
-| 4 | OUTLOOK_CLIENT_SECRET     | set    | 40     | fcuj   | 2026-06-01T19:53Z     | (initially required for confidential-client; after AADSTS90023 finding + public-client patch, value retained in `.env` but ignored by code) |
-| 5 | OUTLOOK_REFRESH_TOKEN     | set    | 481    | 9g$$   | 2026-06-01T19:56Z     | `check_graph_auth.py` exit 0 — signed in as 'Adam Maroni' (adamaroni@hotmail.fr) |
-| 6 | ANTHROPIC_API_KEY         | set    | 108    | dAAA   | 2026-06-01T20:18Z     | Router smoke dispatch via `ask_router('hermes_aux')` — `model_used=claude-haiku-4-5-20251001`, `tokens_in=33`, `tokens_out=5`, `cost_usd=$0.000058`, `latency_ms=782` (after $20 credit top-up resolved initial 400 'credit balance too low') |
-| 7 | DISCORD_BOT_TOKEN         | set    | 72     | wY0c   | 2026-06-01T20:32Z     | Deferred to Story 6-3 (notification-tier dispatcher) — Hermes container not yet running |
-| 8 | DISCORD_CHANNEL_ID        | set    | 19     | 3532   | 2026-06-01T20:33Z     | Deferred to Story 6-3                           |
-| 9 | DISCORD_USER_ID           | set    | 18     | 9136   | 2026-06-01T20:33Z     | Deferred to Story 6-3                           |
-| 10 | MAILBOT_ROUTER_KEY       | set    | 43     | 4_DU   | 2026-06-01T20:36Z     | Self-issued via `secrets.token_urlsafe(32)`; smoke deferred to CP-H in Phase 3.5 walkthrough (Task 8) |
-| 11 | MAILBOT_DB_PATH          | set    | 16     | t.db   | 2026-06-01T20:40Z     | Container default `/data/mailbot.db`; verified by Task 8 CP-A `docker compose up` |
-| 12 | MAILBOT_POLICY_PATH      | set    | 23     | yaml   | 2026-06-01T20:40Z     | Container default `/app/router/policy.yaml`; verified by Task 8 CP-A `docker compose up` |
-| 13 | OLLAMA_URL               | set    | 19     | 1434   | 2026-06-01T20:40Z     | Container default `http://ollama:11434`; verified by Task 8 CP-A ollama healthcheck |
+| #  | Key                       | Status | Length | Last 4 | Captured at (UTC)     | Verified by                                     |
+|----|---------------------------|--------|--------|--------|-----------------------|-------------------------------------------------|
+| 1  | OUTLOOK_CLIENT_ID         | set    | 36     | 88f1   | 2026-06-01T19:50Z     | `check_graph_auth.py` exit 0 (sub-step 4)       |
+| 2  | OUTLOOK_TENANT_ID         | set    | 9      | mers   | 2026-06-01T19:51Z     | `check_graph_auth.py` exit 0 (consumers route)  |
+| 3  | OUTLOOK_REDIRECT_URI      | set    | 30     | back   | 2026-06-01T19:52Z     | `mint_refresh_token.py` consumed callback OK    |
+| 4  | OUTLOOK_CLIENT_SECRET     | set    | 40     | fcuj   | 2026-06-01T19:53Z     | (initially required for confidential-client; after AADSTS90023 finding + public-client patch, value retained in `.env` but ignored by code) |
+| 5  | OUTLOOK_REFRESH_TOKEN     | set    | 481    | 9g$$   | 2026-06-01T19:56Z     | `check_graph_auth.py` exit 0 — signed in as 'Adam Maroni' (adamaroni@hotmail.fr) |
+| 6  | ANTHROPIC_API_KEY         | set    | 108    | dAAA   | 2026-06-01T20:18Z     | Router smoke dispatch via `ask_router('hermes_aux')` — `model_used=claude-haiku-4-5-20251001`, `tokens_in=33`, `tokens_out=5`, `cost_usd=$0.000058`, `latency_ms=782` (after $20 credit top-up resolved initial 400 'credit balance too low') |
+| 7  | DISCORD_BOT_TOKEN         | set    | 72     | wY0c   | 2026-06-01T20:32Z     | Deferred to Story 6-3 (notification-tier dispatcher) — Hermes container not yet running |
+| 8  | DISCORD_HOME_CHANNEL      | set    | 19     | 3532   | 2026-06-04T11:18Z     | Renamed 2026-06-04 (Epic 6 retro action A6 — was `DISCORD_CHANNEL_ID`; Hermes binding contract uses `DISCORD_HOME_CHANNEL` everywhere — docker-compose.yml, .env.example, hermes-config/config.yaml, setup_vps.sh). Discovered during Story 6-10 Phase 3.5 live walk: digest cron posted nothing because the canonical key was empty. Populated inline. |
+| 9  | DISCORD_USER_ID           | set    | 18     | 9136   | 2026-06-01T20:33Z     | Deferred to Story 6-3                           |
+| 10 | DISCORD_ALLOWED_USERS     | set    | 18     | 9136   | 2026-06-03T20:09Z     | Added 2026-06-04 to rubric (Epic 6 retro A6). Discovered during Story 6-6.7 Phase 3.5 walk: Hermes emitted `WARNING gateway.run: No user allowlists configured. All unauthorized users will be denied.` Populated inline to Adam's DISCORD_USER_ID value. |
+| 11 | MAILBOT_ROUTER_KEY        | set    | 43     | 4_DU   | 2026-06-01T20:36Z     | Self-issued via `secrets.token_urlsafe(32)`; smoke deferred to CP-H in Phase 3.5 walkthrough (Task 8) |
+| 12 | MAILBOT_DB_PATH           | set    | 16     | t.db   | 2026-06-01T20:40Z     | Container default `/data/mailbot.db`; verified by Task 8 CP-A `docker compose up` |
+| 13 | MAILBOT_POLICY_PATH       | set    | 23     | yaml   | 2026-06-01T20:40Z     | Container default `/app/router/policy.yaml`; verified by Task 8 CP-A `docker compose up` |
+| 14 | OLLAMA_URL                | set    | 19     | 1434   | 2026-06-01T20:40Z     | Container default `http://ollama:11434`; verified by Task 8 CP-A ollama healthcheck |
 
 ### Explicit non-captures (per AC-7)
 

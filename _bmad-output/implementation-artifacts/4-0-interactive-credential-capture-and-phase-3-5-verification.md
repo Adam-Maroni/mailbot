@@ -82,7 +82,9 @@ so that Epics 1–3 stop carrying the three-epic Phase 3.5 deferral, the privacy
 
 **Then** Amelia opens `discord.com/developers/applications` in the browser (or walks Adam there in chat), guides Adam to create a new application named `MailBot` (or reuse an existing one), navigate to the Bot tab, and "Reset Token" → copy the value. Adam pastes; Amelia writes to `.env` as `DISCORD_BOT_TOKEN`.
 
-**And** Amelia ALSO captures the **channel ID** Adam wants Hermes to use for notifications + the **user ID** Adam wants Hermes to DM for prompts (Epic 6 territory, but cheap to capture now). These go into `.env` as `DISCORD_CHANNEL_ID` and `DISCORD_USER_ID` even though no Epic-3-or-earlier code reads them yet — they're Epic 6 inputs being captured ahead of need.
+**And** Amelia ALSO captures the **channel ID** Adam wants Hermes to use for notifications + the **user ID** Adam wants Hermes to DM for prompts + the **allow-listed user ID(s)** Hermes will accept commands from (Epic 6 territory, but cheap to capture now). These go into `.env` as `DISCORD_HOME_CHANNEL`, `DISCORD_USER_ID`, and `DISCORD_ALLOWED_USERS` even though no Epic-3-or-earlier code reads them yet — they're Epic 6 inputs being captured ahead of need.
+
+> **AMENDMENT 2026-06-04 (Epic 6 retro action item A6):** Earlier drafts of this AC named the channel-ID variable `DISCORD_CHANNEL_ID` — that name does NOT match the binding contract on the Hermes side. The canonical name across `docker-compose.yml`, `.env.example`, `hermes-config/config.yaml`, and `scripts/setup_vps.sh` is `DISCORD_HOME_CHANNEL`. Discovery context: during Story 6-10 Phase 3.5 live walk, the digest cron job posted nothing because `DISCORD_HOME_CHANNEL` was empty in `.env`; the variable Adam had populated under the old name (`DISCORD_CHANNEL_ID`) was ignored by Hermes. Rename was applied inline during the walk. **`DISCORD_ALLOWED_USERS` was also missed by the original rubric** — it surfaced during Epic 6 Phase 3.5 CP-2 walk attempt #1 when Hermes emitted `WARNING gateway.run: No user allowlists configured. All unauthorized users will be denied.` The fix here is rubric-only — captures both keys at the same prompt where `DISCORD_BOT_TOKEN` is captured, with the same redacted-echo treatment.
 
 **And** Amelia explicitly notes that no smoke test will be run against Discord in this story — the Hermes container isn't running yet (Epic 5 ships Hermes wiring; Epic 6 ships the notification dispatcher). The smoke test for Discord is **deferred to Epic 6's Story 6-3** (notification-tier dispatcher) and recorded as a TODO in this story's Completion Notes.
 
@@ -131,8 +133,9 @@ so that Epics 1–3 stop carrying the three-epic Phase 3.5 deferral, the privacy
 | OUTLOOK_REFRESH_TOKEN     | set    | 1057   | qR8m   | check_graph_auth.py + sync-now CP-6  |
 | ANTHROPIC_API_KEY         | set    | 108    | k9pL   | router smoke dispatch (haiku, $0.00006) |
 | DISCORD_BOT_TOKEN         | set    | 70     | jH2n   | deferred to Story 6-3                |
-| DISCORD_CHANNEL_ID        | set    | 19     | 7821   | deferred to Story 6-3                |
+| DISCORD_HOME_CHANNEL      | set    | 19     | 7821   | deferred to Story 6-3                |
 | DISCORD_USER_ID           | set    | 18     | 4493   | deferred to Story 6-3                |
+| DISCORD_ALLOWED_USERS     | set    | 18     | 4493   | deferred to Story 6-3                |
 | MAILBOT_ROUTER_KEY        | set    | 43     | vXyZ   | /v1/chat/completions 200 (CP-10)     |
 | MAILBOT_DB_PATH           | set    | 17     | t.db   | docker compose up + lifespan OK      |
 | MAILBOT_POLICY_PATH       | set    | 26     | .yaml  | docker compose up + lifespan OK      |
@@ -231,8 +234,8 @@ so that Epics 1–3 stop carrying the three-epic Phase 3.5 deferral, the privacy
 - [x] **Task 4**: Discord block (AC-5)
   - [x] Walk Adam through `discord.com/developers/applications`; create or reuse the `MailBot` app
   - [x] Capture `DISCORD_BOT_TOKEN` (Adam wrote to .env directly; not echoed; one-time security warning given)
-  - [x] Capture `DISCORD_CHANNEL_ID` and `DISCORD_USER_ID`
-  - [x] Write all three to `.env`
+  - [x] Capture `DISCORD_HOME_CHANNEL`, `DISCORD_USER_ID`, and `DISCORD_ALLOWED_USERS` (rubric-corrected per 2026-06-04 amendment; see AC-5 amendment note)
+  - [x] Write all four to `.env`
   - [x] Smoke test: explicitly DEFERRED to Story 6-3; record in Completion Notes
 
 - [x] **Task 5**: Router bearer self-issue (AC-6)
@@ -359,21 +362,22 @@ _(filled at run time)_
 
 #### AC-8 redacted capture summary (mirror — full table + findings in evidence file)
 
-| # | Key                       | Status | Length | Last 4 | Verified by                                     |
-|---|---------------------------|--------|--------|--------|-------------------------------------------------|
-| 1 | OUTLOOK_CLIENT_ID         | set    | 36     | 88f1   | `check_graph_auth.py` exit 0                    |
-| 2 | OUTLOOK_TENANT_ID         | set    | 9      | mers   | `check_graph_auth.py` exit 0 (consumers route)  |
-| 3 | OUTLOOK_REDIRECT_URI      | set    | 30     | back   | `mint_refresh_token.py` consumed callback OK    |
-| 4 | OUTLOOK_CLIENT_SECRET     | set    | 40     | fcuj   | Retained in `.env` but ignored by post-patch code (public-client mode) |
-| 5 | OUTLOOK_REFRESH_TOKEN     | set    | 481    | 9g$$   | `check_graph_auth.py` exit 0 — 'Adam Maroni' (adamaroni@hotmail.fr) |
-| 6 | ANTHROPIC_API_KEY         | set    | 108    | dAAA   | Router smoke: haiku-4-5, tokens 33/5, cost $0.000058 (after $20 credit top-up) |
-| 7 | DISCORD_BOT_TOKEN         | set    | 72     | wY0c   | Deferred to Story 6-3                           |
-| 8 | DISCORD_CHANNEL_ID        | set    | 19     | 3532   | Deferred to Story 6-3                           |
-| 9 | DISCORD_USER_ID           | set    | 18     | 9136   | Deferred to Story 6-3                           |
-| 10 | MAILBOT_ROUTER_KEY       | set    | 43     | 4_DU   | Self-issued via `secrets.token_urlsafe(32)`; smoke deferred to CP-H |
-| 11 | MAILBOT_DB_PATH          | set    | 16     | t.db   | Container default `/data/mailbot.db`; verified by CP-A |
-| 12 | MAILBOT_POLICY_PATH      | set    | 23     | yaml   | Container default `/app/router/policy.yaml`; verified by CP-A |
-| 13 | OLLAMA_URL               | set    | 19     | 1434   | Container default `http://ollama:11434`; verified by CP-A |
+| #  | Key                       | Status | Length | Last 4 | Verified by                                     |
+|----|---------------------------|--------|--------|--------|-------------------------------------------------|
+| 1  | OUTLOOK_CLIENT_ID         | set    | 36     | 88f1   | `check_graph_auth.py` exit 0                    |
+| 2  | OUTLOOK_TENANT_ID         | set    | 9      | mers   | `check_graph_auth.py` exit 0 (consumers route)  |
+| 3  | OUTLOOK_REDIRECT_URI      | set    | 30     | back   | `mint_refresh_token.py` consumed callback OK    |
+| 4  | OUTLOOK_CLIENT_SECRET     | set    | 40     | fcuj   | Retained in `.env` but ignored by post-patch code (public-client mode) |
+| 5  | OUTLOOK_REFRESH_TOKEN     | set    | 481    | 9g$$   | `check_graph_auth.py` exit 0 — 'Adam Maroni' (adamaroni@hotmail.fr) |
+| 6  | ANTHROPIC_API_KEY         | set    | 108    | dAAA   | Router smoke: haiku-4-5, tokens 33/5, cost $0.000058 (after $20 credit top-up) |
+| 7  | DISCORD_BOT_TOKEN         | set    | 72     | wY0c   | Deferred to Story 6-3                           |
+| 8  | DISCORD_HOME_CHANNEL      | set    | 19     | 3532   | Renamed 2026-06-04 (Epic 6 retro A6 — was `DISCORD_CHANNEL_ID`; canonical name lives in docker-compose.yml + hermes-config) |
+| 9  | DISCORD_USER_ID           | set    | 18     | 9136   | Deferred to Story 6-3                           |
+| 10 | DISCORD_ALLOWED_USERS     | set    | 18     | 9136   | Added 2026-06-04 (Epic 6 retro A6 — Hermes refused all commands during CP-2 walk attempt #1 because no allow-list configured; populated inline to Adam's DISCORD_USER_ID) |
+| 11 | MAILBOT_ROUTER_KEY        | set    | 43     | 4_DU   | Self-issued via `secrets.token_urlsafe(32)`; smoke deferred to CP-H |
+| 12 | MAILBOT_DB_PATH           | set    | 16     | t.db   | Container default `/data/mailbot.db`; verified by CP-A |
+| 13 | MAILBOT_POLICY_PATH       | set    | 23     | yaml   | Container default `/app/router/policy.yaml`; verified by CP-A |
+| 14 | OLLAMA_URL                | set    | 19     | 1434   | Container default `http://ollama:11434`; verified by CP-A |
 
 #### Mid-story scope expansion — Finding 1 (HIGH)
 
