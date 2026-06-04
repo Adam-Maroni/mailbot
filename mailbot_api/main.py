@@ -12,13 +12,15 @@ Story 5-2: MCP server mounted at /mcp via FastMCP streamable-HTTP transport.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from mailbot_api.config import SecretMissing, get_secret, get_secret_optional
@@ -380,13 +382,22 @@ class _ChatMessage(BaseModel):
 class _ChatCompletionsRequest(BaseModel):
     """OpenAI-compatible chat-completions request.
 
-    Story 6-9 (F11 closure): extended with `tools` + `tool_choice`. Strict
-    validation — extras forbidden so a future field-name typo from Hermes
-    surfaces as a 422 rather than a silent drop (the exact failure mode F11
-    originally hid behind for an entire epic).
+    Story 6-9 (F11 closure): extended with `tools` + `tool_choice`.
+
+    Story 6-9 F12 closure (2026-06-04, discovered during CP-2 walk attempt
+    #4): switched from `extra="forbid"` to `extra="ignore"`. Hermes sends
+    `stream: True` + `stream_options: {"include_usage": True}` on every
+    OpenAI-compatible request — both are legitimate OpenAI wire fields, not
+    field-name typos. The original design rationale ("forbid catches typos
+    that hid F11 for an entire epic") was wrong: OpenAI's wire shape has
+    dozens of legitimate fields (`stream`, `stream_options`, `response_format`,
+    `seed`, `top_p`, `frequency_penalty`, `presence_penalty`, `logit_bias`,
+    `logprobs`, `n`, `stop`, `user`, etc.). Rejecting them breaks real
+    clients. Regression coverage for field-name correctness lives in the
+    integration tests instead.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     model: str
     messages: list[_ChatMessage]
@@ -394,6 +405,12 @@ class _ChatCompletionsRequest(BaseModel):
     temperature: float = 0.0
     tools: list[ChatCompletionToolDef] | None = None
     tool_choice: ChatCompletionToolChoice | None = None
+    # F13 (Story 6-9 CP-2 walk attempt #4, 2026-06-04): Hermes sends
+    # `stream: True` on every OpenAI request. The tools-path branch
+    # honors this by returning SSE-framed chunks; the text-only path
+    # continues to ignore (no use case has driven streaming for aux tasks).
+    stream: bool = False
+    stream_options: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _check_tool_choice_requires_tools(self) -> _ChatCompletionsRequest:
@@ -461,13 +478,13 @@ def _check_bearer_auth(authorization: str | None) -> None:
         )
 
 
-@app.post("/v1/chat/completions")
+@app.post("/v1/chat/completions", response_model=None)
 async def chat_completions(
     request: _ChatCompletionsRequest,
     raw_request: Request,
     authorization: str | None = Header(default=None),
     x_mailbot_caller_origin: str | None = Header(default=None),
-) -> dict[str, Any]:
+) -> dict[str, Any] | StreamingResponse:
     """OpenAI-compatible chat-completions endpoint.
 
     Translates the OpenAI request shape into ``ask_router(task_type='hermes_aux',
@@ -504,11 +521,34 @@ async def chat_completions(
     # we'd surface a confusing 502 to Hermes otherwise. Treating empty list
     # as "no tools intent" matches OpenAI's behavior.
     if request.tools:
-        return await _chat_completions_tools_path(
+        result = await _chat_completions_tools_dispatch(
             request=request,
-            raw_request=raw_request,
             caller_origin=caller_origin,
             db_path=db_path,
+        )
+        _raise_router_error_if_failed(result)
+
+        # F13 (Story 6-9 CP-2 walk attempt #4): branch on `stream` field.
+        # Hermes's main-inference path sends `stream=True` by default; an
+        # OpenAI SDK client in streaming mode iterates over SSE chunks and
+        # gets zero items if we return application/json — interpreted as
+        # "empty response" → retry → failure.
+        if request.stream:
+            include_usage = bool(
+                request.stream_options
+                and request.stream_options.get("include_usage")
+            )
+            return StreamingResponse(
+                _tool_call_completion_sse_chunks(
+                    result=result,
+                    raw_request=raw_request,
+                    include_usage=include_usage,
+                ),
+                media_type="text/event-stream",
+            )
+        return _build_tool_call_completion_response(
+            result=result,
+            raw_request=raw_request,
         )
 
     # ---- Story 2-10 original text-only path ----
@@ -582,23 +622,16 @@ async def chat_completions(
     }
 
 
-async def _chat_completions_tools_path(
+async def _chat_completions_tools_dispatch(
     *,
     request: _ChatCompletionsRequest,
-    raw_request: Request,
     caller_origin: str,
     db_path: str,
-) -> dict[str, Any]:
-    """Story 6-9 (F11 closure) — tool-calling branch of /v1/chat/completions.
+) -> Any:  # ToolCallResult
+    """Shared dispatch helper for the tool-calling branch of /v1/chat/completions.
 
-    Dispatches via `dispatch_tool_call` and translates the resulting
-    `ToolCallResult` back to OpenAI's chat.completion response shape with
-    `tool_calls` populated when the model produced any.
-
-    The `model` resolution mirrors Story 6-6.8's F8 fix: if the caller
-    sends `"hermes_aux"` as the model name (Hermes's documented alias for
-    "use the policy default"), we resolve to the policy entry's actual
-    model. Any other model name flows through as a force-target.
+    Returns the raw `ToolCallResult` so the caller can shape it as either
+    a non-streaming JSON response OR a streaming SSE response (F13).
     """
     from mailbot_api.router import dispatch_tool_call as _dispatch_tool_call  # noqa: PLC0415
     from mailbot_api.router.policy import snapshot_for_dispatch as _snap  # noqa: PLC0415
@@ -634,7 +667,7 @@ async def _chat_completions_tools_path(
             msg["tool_call_id"] = m.tool_call_id
         plain_messages.append(msg)
 
-    result = await _dispatch_tool_call(
+    return await _dispatch_tool_call(
         messages=plain_messages,
         tools=request.tools or [],
         tool_choice=request.tool_choice,
@@ -647,6 +680,9 @@ async def _chat_completions_tools_path(
         caller_verb="hermes_aux_tools",
     )
 
+
+def _raise_router_error_if_failed(result: Any) -> None:
+    """Helper: raise HTTPException(502) for a failed ToolCallResult."""
     if not result.ok:
         detail = "router refused" if result.error is None else result.error.message
         raise HTTPException(
@@ -659,8 +695,15 @@ async def _chat_completions_tools_path(
             },
         )
 
-    # Build the assistant message. Per OpenAI's spec, `content` is null
-    # (not empty string) when the assistant produced only tool_calls.
+
+def _build_tool_call_completion_response(
+    *,
+    result: Any,
+    raw_request: Request,
+) -> dict[str, Any]:
+    """Shape a successful ToolCallResult into an OpenAI chat.completion dict
+    (non-streaming response). Per OpenAI's spec, `content` is null (not
+    empty string) when the assistant produced only tool_calls."""
     message_payload: dict[str, Any] = {"role": "assistant"}
     if result.text:
         message_payload["content"] = result.text
@@ -688,6 +731,103 @@ async def _chat_completions_tools_path(
             "cached_input_tokens": result.cached_tokens_in,
         },
     }
+
+
+def _tool_call_completion_sse_chunks(
+    *,
+    result: Any,
+    raw_request: Request,
+    include_usage: bool,
+) -> Iterator[str]:
+    """F13 (Story 6-9 CP-2 walk attempt #4, 2026-06-04) — emit OpenAI-shape
+    SSE chunks for a streaming tool-call response.
+
+    MVP: yields the COMPLETE response as a single delta chunk (carrying both
+    optional text content AND all tool_calls at once) followed by a final
+    chunk with `finish_reason` and the `[DONE]` sentinel. This is not "true"
+    streaming — the underlying dispatch is non-streaming — but it satisfies
+    OpenAI client SDKs in streaming mode (e.g., Hermes's main inference path
+    which uses `stream=True` by default).
+
+    Per OpenAI's wire shape, each chunk is `data: <json>\\n\\n` and the
+    terminator is `data: [DONE]\\n\\n`.
+    """
+    chunk_id = f"chatcmpl-mailbot-{id(raw_request):x}"
+    base = {
+        "id": chunk_id,
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": result.model_used,
+    }
+
+    # Chunk 1: role-only delta (OpenAI clients expect this to fire `role` first)
+    yield "data: " + json.dumps({
+        **base,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"role": "assistant"},
+                "finish_reason": None,
+            }
+        ],
+    }) + "\n\n"
+
+    # Chunk 2: content + tool_calls delta (combined since MVP emits at once).
+    # Per OpenAI streaming spec, tool_calls in deltas carry an `index` field
+    # so the client can accumulate them across chunks. Since we emit each
+    # tool_call complete in one chunk, the index is simply the position.
+    delta: dict[str, Any] = {}
+    if result.text:
+        delta["content"] = result.text
+    if result.tool_calls:
+        delta["tool_calls"] = [
+            {
+                "index": i,
+                "id": tc.id,
+                "type": tc.type,
+                "function": {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
+                },
+            }
+            for i, tc in enumerate(result.tool_calls)
+        ]
+    if delta:
+        yield "data: " + json.dumps({
+            **base,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": delta,
+                    "finish_reason": None,
+                }
+            ],
+        }) + "\n\n"
+
+    # Chunk 3: terminator with finish_reason.
+    final_chunk: dict[str, Any] = {
+        **base,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {},
+                "finish_reason": result.finish_reason,
+            }
+        ],
+    }
+    if include_usage:
+        # OpenAI streaming with `stream_options: {"include_usage": True}`
+        # adds a `usage` field on the FINAL chunk before [DONE].
+        final_chunk["usage"] = {
+            "prompt_tokens": result.tokens_in,
+            "completion_tokens": result.tokens_out,
+            "total_tokens": result.tokens_in + result.tokens_out,
+            "cached_input_tokens": result.cached_tokens_in,
+        }
+    yield "data: " + json.dumps(final_chunk) + "\n\n"
+
+    # SSE terminator per OpenAI wire shape.
+    yield "data: [DONE]\n\n"
 
 
 @app.post("/v1/embeddings")

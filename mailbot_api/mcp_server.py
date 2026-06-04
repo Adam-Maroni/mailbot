@@ -681,6 +681,20 @@ def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
         # Discord slash command's `required: false` period option works
         # end-to-end. The verb itself raises ValueError on any other string
         # via _period_window_start.
+        #
+        # F15 closure (Story 6-9 CP-2 walk attempt #4, 2026-06-04): the MCP
+        # wrapper returns a tuple `(Image, metadata_dict)` so FastMCP emits
+        # TWO content blocks per call — an `ImageContent` carrying the PNG
+        # (which Hermes's `_cache_mcp_image_block` auto-caches and surfaces
+        # as a native Discord attachment via the MEDIA tag pipeline) AND a
+        # `TextContent` carrying the human/agent-readable metadata
+        # (total_usd, task_count, top_task, etc.) so the assistant can
+        # compose the documented "$X.XX spent {period}. Top task: ..."
+        # summary line without a sibling MCP call.
+        #
+        # Non-MCP callers of `_render_spend_chart` (direct verb invocation,
+        # CP-2 supplementary evidence path, tests) continue to receive the
+        # `RenderSpendChartOut` Pydantic shape unchanged.
         sid = _session_id_from_ctx(ctx)
         t0 = time.perf_counter()
         try:
@@ -692,9 +706,28 @@ def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
         code = _maybe_error_code(out)
         if code:
             _log_error_as_data("render_spend_chart", sid, code, latency_ms)
-        else:
-            _log_ok("render_spend_chart", sid, latency_ms)
-        return out
+            # Error-as-data path: no PNG to wrap; return the structured
+            # error shape so the agent sees the failure reason.
+            return out
+        _log_ok("render_spend_chart", sid, latency_ms)
+
+        # F15: split the PNG bytes out into an MCP Image content block.
+        # FastMCP's `_convert_to_content` flattens tuples into multiple
+        # content blocks (Image → ImageContent, dict → TextContent).
+        from mcp.server.fastmcp.utilities.types import Image as _MCPImage  # noqa: PLC0415
+
+        metadata = {
+            "mime_type": out.mime_type,
+            "period": out.period,
+            "total_usd": out.total_usd,
+            "task_count": out.task_count,
+            "top_task": out.top_task,
+            "top_task_usd": out.top_task_usd,
+        }
+        return (
+            _MCPImage(data=out.image_bytes, format="png"),
+            metadata,
+        )
 
     return {
         "find_emails": find_emails,

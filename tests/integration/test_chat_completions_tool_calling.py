@@ -461,21 +461,37 @@ def test_chat_completions_accepts_tools_in_request(
     assert r.status_code == 200, r.text
 
 
-def test_chat_completions_rejects_unknown_fields_in_request(
+def test_chat_completions_ignores_unknown_openai_fields(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Strict-validation guard: extras forbidden so future field-name typos
-    surface as 422 rather than silent drop (the F11 failure mode)."""
+    """Story 6-9 F12 closure (CP-2 walk attempt #4, 2026-06-04): legitimate
+    OpenAI wire fields (`stream`, `stream_options`, `response_format`, etc.)
+    are tolerated silently. The original `extra="forbid"` design rejected
+    Hermes's standard `stream: True` + `stream_options: {"include_usage": True}`
+    with a 422 during the live walk. Field-name regression coverage now lives
+    in the integration tests (e.g. test_chat_completions_tools_forwarded_*)
+    rather than the schema."""
     app, _, _ = _bootstrap(tmp_path, monkeypatch)
     with TestClient(app) as client:
+        register_adapter("claude-haiku-4-5-20251001", _FakeToolAdapter(
+            tool_calls_raw=[{"type": "text", "text": "ok"}]
+        ))
         payload = _tools_payload()
-        payload["this_field_does_not_exist"] = "should-422"
+        # OpenAI streaming fields — Hermes sends these on every request.
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
+        # Other legitimate OpenAI fields we silently ignore (not implemented).
+        payload["response_format"] = {"type": "text"}
+        payload["seed"] = 42
+        payload["top_p"] = 0.95
+        # Truly typo'd / unknown field — also ignored, not 422.
+        payload["this_field_does_not_exist"] = "ignored"
         r = client.post(
             "/v1/chat/completions",
             headers=_VALID_BEARER,
             json=payload,
         )
-    assert r.status_code == 422
+    assert r.status_code == 200, r.text
 
 
 def test_chat_completions_tools_forwarded_to_adapter(
@@ -1315,3 +1331,300 @@ def test_degraded_mode_blocks_force_opus_only_not_policy_opus(
         # the assertion is that the failure mode is NOT degraded_mode_blocked.
         if not result_b.ok:
             assert result_b.error.code.value != "degraded_mode_blocked"
+
+
+# ---------------------------------------------------------------------------
+# Story 6-9 CP-2 walk attempt #4 (2026-06-04) — F13 + F14 regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_stream_true_returns_sse_chunks_with_tool_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F13: when caller sends `stream=True`, the endpoint returns SSE-framed
+    chunks (text/event-stream content-type, `data: <json>\\n\\n` frames,
+    final `data: [DONE]\\n\\n` terminator). Hermes's main-inference path
+    requires this; non-streaming response causes the OpenAI SDK iterator
+    to yield zero chunks and surface as "Empty response from model"."""
+    import json as _json
+
+    app, _, _ = _bootstrap(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        register_adapter("claude-haiku-4-5-20251001", _FakeToolAdapter(
+            tool_calls_raw=[
+                {
+                    "type": "tool_use",
+                    "id": "toolu_01ABC",
+                    "name": "render_spend_chart",
+                    "input": {"period": "month"},
+                },
+            ],
+        ))
+        payload = _tools_payload()
+        payload["stream"] = True
+        r = client.post(
+            "/v1/chat/completions",
+            headers=_VALID_BEARER,
+            json=payload,
+        )
+    assert r.status_code == 200, r.text
+    assert "text/event-stream" in r.headers["content-type"]
+
+    # Parse SSE frames.
+    body = r.text
+    frames = [
+        line[len("data: "):]
+        for line in body.split("\n\n")
+        if line.startswith("data: ")
+    ]
+    # Expected: role-only delta, content/tool_calls delta, finish_reason+usage final, [DONE]
+    assert len(frames) >= 3, f"too few SSE frames: {frames}"
+    assert frames[-1] == "[DONE]", f"missing [DONE] terminator: {frames}"
+
+    # First chunk: role delta.
+    first = _json.loads(frames[0])
+    assert first["object"] == "chat.completion.chunk"
+    assert first["choices"][0]["delta"]["role"] == "assistant"
+    assert first["choices"][0]["finish_reason"] is None
+
+    # Tool-call chunk: delta carries tool_calls with id + name + arguments.
+    found_tool_calls = False
+    for frame in frames[1:-1]:  # skip first role chunk + [DONE]
+        chunk = _json.loads(frame)
+        delta = chunk["choices"][0].get("delta", {})
+        if "tool_calls" in delta:
+            found_tool_calls = True
+            tc = delta["tool_calls"][0]
+            assert tc["id"] == "toolu_01ABC"
+            assert tc["function"]["name"] == "render_spend_chart"
+            # OpenAI wire shape: arguments is a JSON string, not a dict
+            assert isinstance(tc["function"]["arguments"], str)
+            assert "month" in tc["function"]["arguments"]
+    assert found_tool_calls, "no tool_calls delta found in SSE stream"
+
+    # Final non-[DONE] chunk: finish_reason populated.
+    final = _json.loads(frames[-2])
+    assert final["choices"][0]["finish_reason"] == "tool_calls"
+
+
+def test_stream_true_with_include_usage_emits_usage_on_final_chunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F13: when `stream_options={"include_usage": True}` (Hermes default),
+    the final chunk before [DONE] carries a `usage` block per OpenAI spec."""
+    import json as _json
+
+    app, _, _ = _bootstrap(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        register_adapter("claude-haiku-4-5-20251001", _FakeToolAdapter(
+            tool_calls_raw=[{"type": "text", "text": "ok"}],
+        ))
+        payload = _tools_payload()
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
+        r = client.post(
+            "/v1/chat/completions",
+            headers=_VALID_BEARER,
+            json=payload,
+        )
+    assert r.status_code == 200, r.text
+    frames = [
+        line[len("data: "):]
+        for line in r.text.split("\n\n")
+        if line.startswith("data: ") and line != "data: [DONE]"
+    ]
+    final = _json.loads(frames[-1])
+    assert "usage" in final
+    assert final["usage"]["prompt_tokens"] == 42
+    assert final["usage"]["completion_tokens"] == 17
+
+
+def test_stream_false_still_returns_json_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F13: explicit `stream=False` preserves the non-streaming JSON
+    response. Backwards-compatible with non-streaming OpenAI SDK clients."""
+    app, _, _ = _bootstrap(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        register_adapter("claude-haiku-4-5-20251001", _FakeToolAdapter(
+            tool_calls_raw=[
+                {
+                    "type": "tool_use",
+                    "id": "toolu_01ABC",
+                    "name": "x",
+                    "input": {},
+                }
+            ],
+        ))
+        payload = _tools_payload()
+        payload["stream"] = False
+        r = client.post(
+            "/v1/chat/completions",
+            headers=_VALID_BEARER,
+            json=payload,
+        )
+    assert r.status_code == 200, r.text
+    assert "application/json" in r.headers["content-type"]
+    body = r.json()
+    assert body["object"] == "chat.completion"
+    assert body["choices"][0]["message"]["tool_calls"][0]["id"] == "toolu_01ABC"
+
+
+def test_stream_omitted_defaults_to_non_streaming(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F13: when `stream` is omitted, the endpoint returns a non-streaming
+    JSON response (matches OpenAI's documented default)."""
+    app, _, _ = _bootstrap(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        register_adapter("claude-haiku-4-5-20251001", _FakeToolAdapter(
+            tool_calls_raw=[{"type": "text", "text": "ok"}],
+        ))
+        payload = _tools_payload()
+        # No `stream` field.
+        r = client.post(
+            "/v1/chat/completions",
+            headers=_VALID_BEARER,
+            json=payload,
+        )
+    assert r.status_code == 200, r.text
+    assert "application/json" in r.headers["content-type"]
+
+
+def test_anthropic_adapter_skips_system_block_when_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch  # noqa: ARG001
+) -> None:
+    """F14: when system text is empty (or whitespace-only), the adapter
+    omits the `system` field from the Anthropic request entirely instead of
+    sending an empty cache_control block. Anthropic rejects empty cached
+    blocks with `system.0: cache_control cannot be set for empty text blocks`.
+
+    Verified by introspecting AnthropicAdapter.call_with_tools's request_kwargs
+    construction via a patched client."""
+
+    captured_kwargs: dict[str, Any] = {}
+
+    class _CapturingAsyncClient:
+        class _Messages:
+            @staticmethod
+            async def create(**kwargs: Any) -> Any:
+                captured_kwargs.update(kwargs)
+
+                class _Resp:
+                    @staticmethod
+                    def model_dump() -> dict[str, Any]:
+                        return {
+                            "content": [{"type": "text", "text": "ok"}],
+                            "usage": {"input_tokens": 1, "output_tokens": 1},
+                            "stop_reason": "end_turn",
+                        }
+                return _Resp()
+        messages = _Messages()
+
+    from mailbot_api.router.models import AnthropicAdapter
+    adapter = AnthropicAdapter(model_id="claude-haiku-4-5-20251001")
+    adapter._client = _CapturingAsyncClient()  # type: ignore[assignment]
+
+    import asyncio as _aio
+    _aio.run(adapter.call_with_tools(
+        system="",  # empty system text — must NOT trigger Anthropic 400
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[ChatCompletionToolDef(
+            type="function",
+            function=ChatCompletionFunctionDef(name="x", parameters={}),
+        )],
+    ))
+    # F14: system field omitted entirely when empty.
+    assert "system" not in captured_kwargs, (
+        f"system field should be omitted on empty input; got keys: {sorted(captured_kwargs.keys())}"
+    )
+
+
+def test_anthropic_adapter_skips_system_block_when_whitespace_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch  # noqa: ARG001
+) -> None:
+    """F14: whitespace-only system text is treated identically to empty —
+    no cache_control on a meaningless block."""
+    captured_kwargs: dict[str, Any] = {}
+
+    class _CapturingAsyncClient:
+        class _Messages:
+            @staticmethod
+            async def create(**kwargs: Any) -> Any:
+                captured_kwargs.update(kwargs)
+
+                class _Resp:
+                    @staticmethod
+                    def model_dump() -> dict[str, Any]:
+                        return {
+                            "content": [{"type": "text", "text": "ok"}],
+                            "usage": {"input_tokens": 1, "output_tokens": 1},
+                            "stop_reason": "end_turn",
+                        }
+                return _Resp()
+        messages = _Messages()
+
+    from mailbot_api.router.models import AnthropicAdapter
+    adapter = AnthropicAdapter(model_id="claude-haiku-4-5-20251001")
+    adapter._client = _CapturingAsyncClient()  # type: ignore[assignment]
+
+    import asyncio as _aio
+    _aio.run(adapter.call_with_tools(
+        system="   \n\t  ",  # whitespace-only
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[ChatCompletionToolDef(
+            type="function",
+            function=ChatCompletionFunctionDef(name="x", parameters={}),
+        )],
+    ))
+    assert "system" not in captured_kwargs
+
+
+def test_anthropic_adapter_includes_system_block_when_non_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch  # noqa: ARG001
+) -> None:
+    """F14 negative case: non-empty system text DOES emit the cached block."""
+    captured_kwargs: dict[str, Any] = {}
+
+    class _CapturingAsyncClient:
+        class _Messages:
+            @staticmethod
+            async def create(**kwargs: Any) -> Any:
+                captured_kwargs.update(kwargs)
+
+                class _Resp:
+                    @staticmethod
+                    def model_dump() -> dict[str, Any]:
+                        return {
+                            "content": [{"type": "text", "text": "ok"}],
+                            "usage": {"input_tokens": 1, "output_tokens": 1},
+                            "stop_reason": "end_turn",
+                        }
+                return _Resp()
+        messages = _Messages()
+
+    from mailbot_api.router.models import AnthropicAdapter
+    adapter = AnthropicAdapter(model_id="claude-haiku-4-5-20251001")
+    adapter._client = _CapturingAsyncClient()  # type: ignore[assignment]
+
+    import asyncio as _aio
+    _aio.run(adapter.call_with_tools(
+        system="You are MailBot.",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[ChatCompletionToolDef(
+            type="function",
+            function=ChatCompletionFunctionDef(name="x", parameters={}),
+        )],
+    ))
+    assert "system" in captured_kwargs
+    assert len(captured_kwargs["system"]) == 1
+    # Cache_control IS attached on the non-empty block.
+    sb = captured_kwargs["system"][0]
+    if hasattr(sb, "model_dump"):
+        sb = sb.model_dump()
+    elif hasattr(sb, "__dict__"):
+        sb = dict(sb.__dict__) if not isinstance(sb, dict) else sb
+    # TextBlockParam may be a TypedDict or pydantic model — either way the
+    # text field carries the value.
+    text = sb["text"] if isinstance(sb, dict) else getattr(sb, "text", None)
+    assert text == "You are MailBot."

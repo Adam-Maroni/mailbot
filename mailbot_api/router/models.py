@@ -626,23 +626,32 @@ class AnthropicAdapter:
         anthropic_messages = _translate_messages_openai_to_anthropic(messages)
         anthropic_tool_choice = _translate_tool_choice_openai_to_anthropic(tool_choice)
 
-        system_blocks: list[TextBlockParam] = [
-            TextBlockParam(
-                type="text",
-                text=system,
-                cache_control={"type": "ephemeral"},
+        # F14 (Story 6-9 CP-2 walk attempt #4, 2026-06-04): Anthropic rejects
+        # `cache_control: ephemeral` on empty text blocks with
+        # `"system.0: cache_control cannot be set for empty text blocks"`.
+        # When the caller passes no system message (or only whitespace), skip
+        # the system block entirely rather than emit an empty cached block.
+        system_blocks: list[TextBlockParam] = []
+        if system and system.strip():
+            system_blocks.append(
+                TextBlockParam(
+                    type="text",
+                    text=system,
+                    cache_control={"type": "ephemeral"},
+                )
             )
-        ]
 
         # Build the request kwargs. tools is omitted entirely when
         # tool_choice == "none" — see docstring + design doc §3.2.
+        # F14: system field omitted entirely when no non-empty system text.
         request_kwargs: dict[str, Any] = {
             "model": self.model_id,
             "max_tokens": max_tokens_out,
             "temperature": temperature,
-            "system": system_blocks,
             "messages": anthropic_messages,
         }
+        if system_blocks:
+            request_kwargs["system"] = system_blocks
         if tool_choice != "none":
             request_kwargs["tools"] = _translate_tools_openai_to_anthropic(tools)
             # CR-8 (Story 6-9 review): include tool_choice only when the

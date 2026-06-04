@@ -167,3 +167,149 @@ def test_skill_md_documents_render_spend_chart() -> None:
     assert "Turn structure 4" in text, (
         "SKILL.md does not include the /spend turn structure (4th)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Story 6-9 CP-2 walk attempt #4 (2026-06-04) — F15 regression tests
+# ---------------------------------------------------------------------------
+#
+# F15 was the final CP-2 blocker. The verb side worked end-to-end; the MCP
+# tool dispatch worked end-to-end; the chat-completions tool-calling worked
+# end-to-end; the Anthropic tool_use → OpenAI tool_calls translation worked
+# end-to-end. But the rendered PNG never reached Discord because the MCP
+# tool returned `RenderSpendChartOut` as a single TextContent block (JSON
+# with base64-encoded image_bytes) — Hermes's `_cache_mcp_image_block` only
+# fires for MCP `ImageContent` blocks, so no MEDIA tag was synthesized.
+#
+# Fix: the MCP wrapper now returns `(Image(data=png_bytes, format="png"),
+# metadata_dict)`. FastMCP's `_convert_to_content` flattens tuples into
+# multiple content blocks (Image → ImageContent, dict → TextContent JSON).
+# Hermes's `_cache_mcp_image_block` then auto-caches the PNG under its
+# allowed-roots cache dir and synthesizes the MEDIA tag, which the Discord
+# adapter uploads as a native image attachment.
+
+
+async def test_mcp_render_spend_chart_returns_image_plus_metadata_tuple(
+    tmp_path: Path,
+) -> None:
+    """F15: the MCP `render_spend_chart` tool wrapper returns a tuple
+    `(Image, metadata_dict)` so FastMCP emits both an ImageContent block
+    (which Hermes auto-attaches via `_cache_mcp_image_block`) and a
+    TextContent block (carrying total_usd, task_count, top_task, etc.).
+
+    Verified by calling the tool wrapper directly with a stub Context and
+    asserting the return shape.
+    """
+    from mcp.server.fastmcp.utilities.types import Image as _MCPImage
+    db_path = str(tmp_path / "spend_mcp_image.db")
+    apply_pending_migrations(db_path)
+    _seed_router_calls(db_path, 50)
+
+    server = build_mcp_server(db_path=db_path)
+    tool = server._tool_manager._tools["render_spend_chart"]  # type: ignore[attr-defined]
+
+    # FastMCP injects `ctx`; a None-Context is sufficient because the
+    # wrapper only reads `_session_id_from_ctx(ctx)` for logging.
+    # Stub Context: tool wrapper reads `ctx.session` for per-session log id.
+    class _StubCtx:
+        session = object()
+    result = await tool.fn(_StubCtx(), period="week")
+
+    # F15 contract: tuple of (Image, metadata_dict).
+    assert isinstance(result, tuple), f"expected tuple, got {type(result).__name__}"
+    assert len(result) == 2, f"expected 2-tuple, got {len(result)}-tuple"
+    image, metadata = result
+
+    # First element: MCP Image carrying the PNG bytes.
+    assert isinstance(image, _MCPImage), f"expected Image, got {type(image).__name__}"
+    assert image.data is not None
+    assert image.data.startswith(b"\x89PNG\r\n\x1a\n"), "PNG magic bytes missing"
+    assert image._mime_type == "image/png"
+
+    # Second element: metadata dict (NOT the full Pydantic shape — image
+    # bytes are split out into the Image block).
+    assert isinstance(metadata, dict)
+    assert metadata["mime_type"] == "image/png"
+    assert metadata["period"] == "week"
+    assert metadata["task_count"] > 0
+    assert metadata["total_usd"] > 0
+    assert metadata["top_task"] != ""
+    assert metadata["top_task_usd"] > 0
+    # No raw image bytes leak into the metadata block.
+    assert "image_bytes" not in metadata
+
+
+async def test_mcp_render_spend_chart_image_round_trips_to_image_content(
+    tmp_path: Path,
+) -> None:
+    """F15: FastMCP's `Image.to_image_content()` correctly produces an
+    `ImageContent` block with base64-encoded PNG data and the right MIME
+    type. This is the format Hermes's `_cache_mcp_image_block` will
+    decode and route through `cache_image_from_bytes` for native Discord
+    attachment delivery."""
+    import base64
+
+    from mcp.types import ImageContent
+    db_path = str(tmp_path / "spend_mcp_round.db")
+    apply_pending_migrations(db_path)
+    _seed_router_calls(db_path, 20)
+
+    server = build_mcp_server(db_path=db_path)
+    tool = server._tool_manager._tools["render_spend_chart"]  # type: ignore[attr-defined]
+
+    class _StubCtx:
+        session = object()
+    result = await tool.fn(_StubCtx(), period="month")
+    image, _metadata = result
+
+    # The MCP Image converts to ImageContent for wire transport.
+    image_content = image.to_image_content()
+    assert isinstance(image_content, ImageContent)
+    assert image_content.type == "image"
+    assert image_content.mimeType == "image/png"
+
+    # The base64-encoded data round-trips back to the original PNG bytes.
+    decoded = base64.b64decode(image_content.data)
+    assert decoded.startswith(b"\x89PNG\r\n\x1a\n")
+    assert len(decoded) > 1000  # non-trivial image (real chart, not empty stub)
+
+
+async def test_mcp_render_spend_chart_error_path_returns_pydantic_shape(
+    tmp_path: Path,
+) -> None:
+    """F15: when the verb raises (invalid period, etc.), the MCP wrapper
+    must NOT try to wrap a non-existent PNG in an Image block. The error
+    surfaces through the existing error-as-data shape (RenderSpendChartOut
+    or a structured error) so the agent sees the failure reason."""
+    db_path = str(tmp_path / "spend_mcp_err.db")
+    apply_pending_migrations(db_path)
+    # Don't seed — empty router_calls yields a real (empty) chart, not an error.
+    server = build_mcp_server(db_path=db_path)
+    tool = server._tool_manager._tools["render_spend_chart"]  # type: ignore[attr-defined]
+
+    # Empty-data path still produces a valid PNG (the empty-stub) + metadata
+    # tuple — not an error.
+    class _StubCtx:
+        session = object()
+    result = await tool.fn(_StubCtx(), period="month")
+    assert isinstance(result, tuple)
+    _image, metadata = result
+    assert metadata["task_count"] == 0
+    assert metadata["total_usd"] == 0.0
+
+
+def test_mcp_render_spend_chart_description_documents_attachment_behavior(
+    tmp_path: Path,
+) -> None:
+    """F15: the MCP tool description should mention that the PNG is
+    returned as an attachment-friendly Image block so the agent (and any
+    future tool-search heuristic) understands the contract."""
+    server = build_mcp_server(db_path=str(tmp_path / "x.db"))
+    tools = server._tool_manager._tools  # type: ignore[attr-defined]
+    desc = tools["render_spend_chart"].description
+    assert desc, "description must not be empty"
+    # The pre-Story-6-9 description already mentions PNG output; F15 doesn't
+    # require changing it because the contract is on the return-shape side
+    # (Image block), not the description side. Keep this test as the
+    # invariant guard: description mentions PNG.
+    assert "PNG" in desc

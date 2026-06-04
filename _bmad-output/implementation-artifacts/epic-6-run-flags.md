@@ -171,6 +171,96 @@ After F8 closure verified the chat-completions HTTP plumbing works end-to-end, t
 
 ---
 
+### F15 — MCP `render_spend_chart` returns TextContent JSON instead of ImageContent block — **RESOLVED 2026-06-04 (Story 6-9 CP-2 walk attempt #5)**
+
+**Discovered during:** Epic 6 Phase 3.5 CP-2 walk attempt #4, 2026-06-04 ~13:48 UTC, post-F13 closure. Hermes invoked the `render_spend_chart` MCP tool successfully (`mcp.tool.ok / latency_ms=162`) and Haiku produced the documented follow-up "I'll render the per-task cost chart for the month." But no PNG attachment landed in Discord. Hermes log surfaced `WARNING gateway.platforms.base: Skipping unsafe MEDIA directive path: /tmp/tmpqvvvvvvv.png`.
+
+**Root cause:** `mailbot_api/mcp_server.py`'s `render_spend_chart` MCP-tool wrapper returned the `RenderSpendChartOut` Pydantic shape directly. FastMCP's `_convert_to_content` serialized it to JSON inside a single `TextContent` block (with `image_bytes` base64-encoded inside the JSON via the `field_serializer`). Hermes's `_cache_mcp_image_block` helper at `tools/mcp_tool.py:463-504` only fires for MCP `ImageContent` blocks — TextContent JSON, even containing base64 image bytes, is invisible to it. A path Haiku hallucinated in its text response (or surfaced from the tool_result JSON) tripped Hermes's gateway path-extraction pipeline (per `deliverable-mode.md` contract) but the path didn't exist on disk → unsafe-path warning → no attachment.
+
+**Resolution shape:** MCP wrapper returns a 2-tuple `(Image, metadata_dict)`. FastMCP's `_convert_to_content` flattens tuples into multiple content blocks: the `Image` instance (imported from `mcp.server.fastmcp.utilities.types`) becomes an `ImageContent` block carrying the base64-encoded PNG + `mime_type=image/png`; the metadata dict becomes a `TextContent` block carrying the human/agent-readable fields (period, total_usd, task_count, top_task, top_task_usd) so the assistant can compose the documented "$X.XX spent {period}. Top task: ..." summary line.
+
+Hermes's `_cache_mcp_image_block` then auto-caches the PNG bytes under its allowed-roots cache dir (via `gateway.platforms.base.cache_image_from_bytes`) and synthesizes a `MEDIA:<cached-path>` tag — the Discord adapter uploads as a native image attachment with inline preview.
+
+Tests added in `tests/integration/test_spend_chart_command.py` (+4 net):
+
+- `test_mcp_render_spend_chart_returns_image_plus_metadata_tuple` — happy path: tuple shape, Image with PNG magic bytes, metadata fields populated
+- `test_mcp_render_spend_chart_image_round_trips_to_image_content` — Image.to_image_content() → base64-decoded bytes match raw PNG
+- `test_mcp_render_spend_chart_error_path_returns_pydantic_shape` — empty-data path still produces valid Image + metadata (no crash on zero-spend window)
+- `test_mcp_render_spend_chart_description_documents_attachment_behavior` — invariant guard on tool description
+
+Non-MCP callers of the verb (direct invocation, the Story 6-8 verb tests, the CP-2 supplementary evidence path) continue to receive `RenderSpendChartOut` unchanged.
+
+**F15 closure pattern lesson (logged for future Hermes-integration work):** Don't infer the contract from source-code spelunking when the docs explicitly cover it. The fix shape was visible from two sources I should have read first:
+
+1. `hermes-docs/pages/user-guide/features/deliverable-mode.md` — documents Hermes's gateway-level auto-path-extraction (the "implicit" contract for tools that write files to disk and mention the path in text)
+2. `mcp.server.fastmcp.utilities.types.Image` + `_convert_to_content` in the MCP SDK — documents the canonical MCP wire-shape for image-returning tools
+
+After Adam invoked "stop and read the docs," 3 doc reads were enough to converge on Option B-2 (return Image alongside metadata dict). The earlier F12/F13 path-finding was a slow lurch through source-code reading because I didn't ground in `hermes-docs/` first.
+
+**F15 live verification (2026-06-04 ~14:00 UTC):** Direct MCP `tools/call` from inside the Hermes container returned 2 content blocks: Block 0 type=image, mimeType=image/png, 44,468 bytes base64 PNG data; Block 1 type=text, JSON metadata. Confirms the FastMCP-side wire shape is correct.
+
+---
+
+### F14 — `cache_control: ephemeral` on empty system text rejected by Anthropic — **RESOLVED 2026-06-04 (Story 6-9 CP-2 walk attempt #4 / 5)**
+
+**Discovered during:** Curl reproduction inside the Hermes container during CP-2 walk attempt #4 investigation, 2026-06-04 ~13:33 UTC. A test request omitted the system message; `AnthropicAdapter.call_with_tools` wrapped an empty string in a `TextBlockParam(text="", cache_control={"type": "ephemeral"})` and Anthropic returned `400 Bad Request: "system.0: cache_control cannot be set for empty text blocks"`.
+
+**Resolution shape:** In `AnthropicAdapter.call_with_tools` (`mailbot_api/router/models.py`), guard the system block construction: only append a `TextBlockParam` when `system.strip()` is non-empty. When no system text is provided, omit the `system` field from the Anthropic Messages API request entirely (Anthropic accepts a `messages.create()` call with no system field at all).
+
+3 regression tests added in `tests/integration/test_chat_completions_tool_calling.py`:
+
+- `test_anthropic_adapter_skips_system_block_when_empty` — empty string → no `system` key in Anthropic kwargs
+- `test_anthropic_adapter_skips_system_block_when_whitespace_only` — `"   \n\t  "` treated identically
+- `test_anthropic_adapter_includes_system_block_when_non_empty` — non-empty preserved (negative case)
+
+**Live status:** Latent in production — Hermes's main-inference path always sends a non-empty system message (SOUL.md + AGENTS.md + SKILL.md, ~8079 tokens). F14 only fires when a caller omits system entirely. Verified at the test layer; not exercised by the live CP-2 walk because Hermes always supplies system.
+
+---
+
+### F13 — `/v1/chat/completions` returns JSON body when Hermes requests `stream=True` — **RESOLVED 2026-06-04 (Story 6-9 CP-2 walk attempt #4 / 5)**
+
+**Discovered during:** Epic 6 Phase 3.5 CP-2 walk attempt #4, 2026-06-04 ~13:35 UTC. After F12 closure, Hermes received successful HTTP 200 responses but reported `"Empty response (no content or reasoning) — retry 1/3, 2/3, 3/3"` for every retry. Curl reproduction from inside the Hermes container confirmed: `client.chat.completions.create(..., stream=True)` returned ZERO SSE chunks to the OpenAI SDK iterator. mailbot-api's tools-path was returning a `application/json` response body; the OpenAI SDK in streaming mode expects `text/event-stream` chunks (`data: {...}\n\n` frames + `data: [DONE]\n\n` terminator).
+
+**Root cause:** Story 2-10's `/v1/chat/completions` endpoint and Story 6-9's tools-path branch both returned a single non-streaming JSON dict. Hermes's main-inference path always sends `stream=True` + `stream_options={"include_usage": True}` (the OpenAI default in `openai` Python SDK for chat completion). The endpoint silently ignored the `stream` field (per F12's `extra="ignore"` fix) and returned JSON regardless. OpenAI SDK in streaming mode never sees any chunks → caller's iterator yields nothing → "empty response" → retry → user-facing failure.
+
+**Resolution shape (MVP single-chunk-pair streaming emulation):**
+
+1. **Schema:** `_ChatCompletionsRequest` extended with explicit `stream: bool = False` + `stream_options: dict[str, Any] | None = None` fields (no longer silently ignored).
+2. **Endpoint branching:** When `request.stream is True`, the tools-path returns a `fastapi.responses.StreamingResponse` with `media_type="text/event-stream"` wrapping a generator that emits SSE-framed chunks.
+3. **MVP shape:** since the underlying Anthropic dispatch is non-streaming, the generator emits a fixed sequence after the dispatch completes:
+   - Chunk 1 (role delta): `data: {"id":...,"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n`
+   - Chunk 2 (content/tool_calls delta): full text content + all tool_calls in one chunk, each tool_call with its `index`, `id`, `type:"function"`, `function.name`, `function.arguments` (JSON string per OpenAI wire shape)
+   - Chunk 3 (finish chunk): `finish_reason` (`"tool_calls"`/`"stop"`/`"length"`); when `stream_options.include_usage` is True, `usage` block included on this chunk per OpenAI spec
+   - Terminator: `data: [DONE]\n\n`
+4. **Backwards compat:** `stream=False` or `stream` omitted continues to return the existing JSON response. The endpoint decorator gained `response_model=None` because FastAPI can't derive a Pydantic model from the union `dict | StreamingResponse` return type.
+
+4 regression tests added in `tests/integration/test_chat_completions_tool_calling.py`:
+
+- `test_stream_true_returns_sse_chunks_with_tool_calls` — 3+ chunks, `[DONE]` terminator, role delta first, tool_calls delta carries OpenAI shape
+- `test_stream_true_with_include_usage_emits_usage_on_final_chunk` — `stream_options.include_usage=True` adds `usage` to final chunk
+- `test_stream_false_still_returns_json_response` — explicit `False` preserves the non-streaming path
+- `test_stream_omitted_defaults_to_non_streaming` — omitted field defaults to False, JSON response
+
+**Live verification (2026-06-04 ~13:45 UTC):** Direct `openai.OpenAI(...).chat.completions.create(..., stream=True)` from inside the Hermes container returned 3 chunks: role delta → tool_calls delta with full `id` + `name` + `arguments` → finish chunk with `finish_reason="tool_calls"` + usage block. OpenAI SDK iterator extracted the tool_call cleanly.
+
+**Out of scope (future story candidate):** True streaming (where the SSE chunks fire incrementally as the Anthropic SDK streams its response back, vs. the MVP which buffers internally and emits all chunks at once). Would require `AnthropicAdapter.call_with_tools_stream` returning an async iterator that re-translates Anthropic's `message_start / content_block_start / content_block_delta / ...` event sequence to OpenAI's `delta` chunks. Not blocking CP-2 PASS; the MVP unblocks Hermes today.
+
+---
+
+### F12 — `_ChatCompletionsRequest` `extra="forbid"` rejects Hermes's legitimate `stream` + `stream_options` fields — **RESOLVED 2026-06-04 (Story 6-9 CP-2 walk attempt #4)**
+
+**Discovered during:** Epic 6 Phase 3.5 CP-2 walk attempt #4, 2026-06-04 ~13:32 UTC, immediately after Story 6-9's F11 closure deployed. Adam DMed `spend month` to the bot; Hermes received the bearer-authed request → POST `/v1/chat/completions` → 422 Unprocessable Entity with `extra_forbidden` errors on `stream` (True) + `stream_options` ({include_usage: True}). Discord-visible error: `Non-retryable error (HTTP 422): {'type': 'extra_forbidden', 'loc': ['body', 'stream'], ...}`.
+
+**Root cause:** Story 6-9's design doc §3 (extras forbidden so future field-name typos surface) was wrong about scope. OpenAI's wire shape has dozens of legitimate top-level fields (`stream`, `stream_options`, `response_format`, `seed`, `top_p`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `logprobs`, `n`, `stop`, `user`, etc.). The Edge Case Hunter CR (MED finding #5) predicted this exact failure mode but the fix was applied only to `_ChatMessage`, not the envelope `_ChatCompletionsRequest`.
+
+**Resolution shape:** Switch `_ChatCompletionsRequest.model_config` from `extra="forbid"` to `extra="ignore"`. Field-name regression coverage now lives in integration tests (e.g., `test_chat_completions_tools_forwarded_to_adapter`) rather than the schema. Story 6-9's original concern ("forbid catches typos that hid F11 for an entire epic") is still valid — but the right enforcement layer is **explicit tests for the fields we do support**, not a deny-all envelope that breaks real OpenAI clients.
+
+Existing test `test_chat_completions_rejects_unknown_fields_in_request` was renamed to `test_chat_completions_ignores_unknown_openai_fields` and extended to assert that `stream`, `stream_options`, `response_format`, `seed`, `top_p` are all accepted without 422 (per OpenAI spec).
+
+**Live verification:** Walk attempt #5 confirmed Hermes's request shape (`stream=True` + `stream_options={include_usage: True}` + tools list) passes Pydantic validation and routes into `dispatch_tool_call`.
+
+---
+
 ### F10 — Cosmetic chart title/subtitle overlap in `render_spend_chart` PNG — **CARRY-FORWARD** (non-blocking polish)
 
 **Discovered during:** CP-2 walk supplementary evidence capture (direct-invocation of `render_spend_chart(period='month')`), 2026-06-03 ~20:53 UTC.
@@ -342,6 +432,87 @@ The carry-forward stack of mailbot-api-side dev work for Epic 6 is now **largely
 **Filed as F11 carry-forward** (see F11 block above for full implementation strategy notes). F9 disposition remains carry-forward but is now sharply scoped to F11 dependency.
 
 **Sibling-quartet pattern complete:** F6 (routing) + F7 (transport-security) + F8 (application-translation) + SKILL.md frontmatter (skill-loader contract) — 4 Hermes-integration contract bugs closed via inline-fix-and-walk loop this session. F11 (tool-calling) is the 5th boundary layer and largest remaining gap. Pattern strongly suggests: future Phase 3.5 walks for Hermes-touching stories should explicitly enumerate ALL contract boundaries and verify each one live.
+
+### CP-2 walk attempt #4 — post-Story-6-9 F11 closure (2026-06-04 ~13:32 UTC)
+
+**Verdict:** PROGRESS — F11 verified, 4 new findings (F12/F13/F14/F15) closed inline-and-walk style.
+
+**Sequence:**
+
+- **13:32 UTC — F12 surfaced (1st DM):** `_ChatCompletionsRequest extra="forbid"` rejected Hermes's `stream=True` + `stream_options` with HTTP 422. Edge Case Hunter CR (MED #5) had predicted this; the fix was applied only to `_ChatMessage`, not the envelope. Inline fix: `extra="ignore"` + test renamed + 4 gates green.
+- **13:35 UTC — F13 surfaced (2nd DM):** `"Empty response from model — retrying (1/3 → 3/3)"`. mailbot-api audit table showed 4 `chat_completions_tool_call` rows with `tool_calls_count=1` and the correct `mcp_mailbot_api_render_spend_chart` tool_calls_summary — F11 was working end-to-end server-side. Curl reproduction from inside the Hermes container confirmed: `stream=True` requests returned ZERO SSE chunks to the OpenAI SDK iterator because we returned `application/json` instead of `text/event-stream`. Inline MVP fix: single-chunk-pair streaming emulation via `fastapi.responses.StreamingResponse` + 4 regression tests + 4 gates green.
+- **13:33 UTC parallel — F14 surfaced via curl repro:** A test request omitted system message; `AnthropicAdapter.call_with_tools` wrapped `""` with `cache_control: ephemeral` and Anthropic 400ed. Inline fix: skip system block when text is empty/whitespace + 3 regression tests + 4 gates green. (Latent in production — Hermes always sends a non-empty system.)
+- **13:48 UTC — F15 surfaced (3rd DM):** Hermes's MCP tool dispatch fired (`mcp.tool.ok / latency_ms=162`), Haiku composed "I'll render the per-task cost chart for the month." — but NO chart attached in Discord. Hermes log showed `WARNING gateway.platforms.base: Skipping unsafe MEDIA directive path: /tmp/tmpqvvvvvvv.png`. Adam stopped the walk to ground in `hermes-docs/` before more guessing.
+
+**Doc grounding (2026-06-04 ~13:55 UTC):** Adam directed me to scan `hermes-docs/` (131 mirrored Tier S/A/B pages from the official Hermes docs site). Three reads converged:
+
+- `hermes-docs/pages/user-guide/features/mcp.md` — confirms Hermes consumes MCP via FastMCP's standard content-block protocol
+- `hermes-docs/pages/user-guide/messaging/discord.md` §"Sending Media" — documents the `MEDIA:<path>` tag contract
+- `hermes-docs/pages/user-guide/features/deliverable-mode.md` — documents Hermes's gateway-level auto-path-extraction (the "implicit" contract)
+
+The fix shape (Option B-2): MCP tool returns `(Image(data=png_bytes, format="png"), metadata_dict)`. FastMCP's `_convert_to_content` flattens tuples into multiple content blocks. Hermes's `_cache_mcp_image_block` at `tools/mcp_tool.py:463` auto-caches the PNG + emits the MEDIA tag without the agent needing to mention any path. Inline fix: 1 wrapper change in `mcp_server.py` + 4 regression tests + 4 gates green.
+
+**Doc-grounding lesson logged:** I'd been path-finding via source-code spelunking for F12/F13. After the docs read, F15 took ~30 min from "fix design" to "live PASS." For future Hermes-integration work, read `hermes-docs/` FIRST when stuck.
+
+### CP-2 walk attempt #5 — full F11+F12+F13+F14+F15 closure (2026-06-04 ~14:04 UTC) — **PASS**
+
+**Verdict:** ✅ **PASS** — Discord-visible chart attachment delivered end-to-end.
+
+**Discord-visible result (from Adam's screenshot, 14:04 UTC):**
+
+```text
+Adam — 4:04 PM
+spend month
+
+Mailbot APP — 4:04 PM
+⚙ mcp_mailbot_api_render_spend_chart…
+
+Mailbot APP — 4:04 PM
+Month spend: $0.15 across 7 tasks. `hermes_aux` dominates at $0.12.
+[inline PNG attachment: 1200×800 horizontal bar chart, "Spend by Task — This Month ($0.15 total)",
+ 7 task types sorted by cost descending: hermes_aux $0.12 → chat_completions_tool_call $0.03 →
+ summary_short → coarse_class → embedding → fine_class → sensitivity_class]
+```
+
+**Server-side evidence — router_calls audit (two-turn tool-call round-trip):**
+
+| ts | task_type | model_chosen | outcome | tokens_in | tokens_out | tool_calls_count |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-06-04T14:04:26.606Z | chat_completions_tool_call | claude-haiku-4-5-20251001 | ok | 395 | 64 | 1 |
+| 2026-06-04T14:04:29.207Z | chat_completions_tool_call | claude-haiku-4-5-20251001 | ok | 313 | 57 | 0 |
+
+Turn 1: Haiku produced 1 tool_call → Hermes dispatched `render_spend_chart` MCP tool → mailbot-api executed the verb + returned `(Image, metadata)` → Hermes auto-cached the PNG + emitted MEDIA tag.
+Turn 2: Tool result echoed back to Haiku → Haiku composed the summary line "Month spend: $0.15 across 7 tasks. `hermes_aux` dominates at $0.12." per the documented Story 6-8 format using `metadata.total_usd / metadata.task_count / metadata.top_task / metadata.top_task_usd`.
+
+Total walk cost: ~$0.016 (two Haiku calls).
+
+### Net CP-2 walk verdict (post-attempt-#5) — **PASS**
+
+| Layer | Status |
+| --- | --- |
+| F6 closure (MCP routing) | ✅ VERIFIED LIVE (Story 6-6.6 + walk attempt #1) |
+| F7 closure (MCP transport-security allow-list) | ✅ VERIFIED LIVE (Story 6-6.7) |
+| F8 closure (chat_completions alias resolution) | ✅ VERIFIED LIVE (Story 6-6.8) |
+| F11 closure (tools=[] forwarded + tool_calls translated) | ✅ VERIFIED LIVE (Story 6-9 + walk attempt #5 audit row `tool_calls_count=1`) |
+| F12 closure (extra="ignore" tolerates stream + stream_options) | ✅ VERIFIED LIVE (inline-fix #4) |
+| F13 closure (SSE streaming response) | ✅ VERIFIED LIVE (inline-fix #4 — OpenAI SDK iterator extracts tool_call cleanly) |
+| F14 closure (empty system cache_control skip) | ✅ VERIFIED unit-test layer (latent in production) |
+| F15 closure (MCP Image + TextContent multi-block) | ✅ VERIFIED LIVE (44KB PNG cached + posted) |
+| Hermes-orchestrated `/spend month` → render_spend_chart MCP dispatch | ✅ VERIFIED LIVE |
+| Haiku composes summary line from metadata | ✅ VERIFIED LIVE (matches Story 6-8 documented format) |
+| Discord native PNG attachment with inline preview | ✅ VERIFIED LIVE |
+
+**Sibling-quintet+ pattern observation:** F6 (routing) + F7 (transport-security) + F8 (application-translation) + SKILL.md frontmatter + F11 (tool-calling) — 5 Hermes-integration boundaries closed. CP-2 walk attempts #1 through #4 each uncovered a new contract boundary that none of the prior tests had touched. F15 was the 6th and final. The pattern for future Hermes-touching stories: enumerate ALL contract boundaries before declaring the integration "done" — request/response shape, transport layer, content-block shape, attachment contract.
+
+**Closure-gate impact:** CP-2 walk closes. Epic 6 done-flip gate now requires:
+
+1. ~~F11 closure~~ ✅ closed by Story 6-9
+2. ~~CP-2 walk completion~~ ✅ closed 2026-06-04 14:04 UTC (this record)
+3. CP-3 (Story 6-6.5 capstone walk) — F11-unblocked for CP-A/B/C draft-reply round-trips; still credential-gated on OUTLOOK_CLIENT_SECRET (per Story 4-0 amendment 2026-06-04)
+4. CP-1 (Story 6-7 deploy walk) — Hostinger VPS provisioning (operator-deferred)
+5. Story 6-10 Job 2 (08:00 digest agent step) — F11-unblocked; can be re-walked live (was F11-gated in Story 6-10 Phase 3.5)
+
+The Story 6-9 sequence shipped 5 net mailbot-api-side fixes (F11 + F12 + F13 + F14 + F15) and verified the full Hermes-orchestrated round-trip live. This is the largest single-day surface delivery in the project's Phase 3.5 history.
 
 ---
 
