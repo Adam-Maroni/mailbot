@@ -1033,3 +1033,86 @@ When F23 closes via Story 6-15 (re-auth captures fresh refresh token), CP-A/B re
 **Do NOT re-invoke `/autonomous-story-run 6-6-5`** — the `ready-for-walk` status falls through the skill Phase 2.1 entry-point table.
 
 ---
+
+## Story 6-6.5 walk record — Fourth pass (2026-06-05, F23-unblock attempt + new findings)
+
+**Walk type:** Operator-driven F23 re-auth (Story 6-15 runbook) + agent-driven verification, stopped before live CP-A/B/C re-walk after three new blocking-or-load-bearing findings surfaced. Same option-1 disposition as third pass: file follow-ups, stop the walk, leave Story 6-6.5 at `ready-for-walk`.
+
+**Walked by:** Adam (browser-side OAuth consent) + Agent (Opus 4.7, host-side script invocation + container exec). The walk did NOT reach CP-A/B/C/D — it stopped during F23 re-auth prereq verification when F25 surfaced, then again on schema-validation failures (F24), with F26 caught mid-stream as a state-machine edge case.
+
+### Section B prereq sub-walk — partial PASS-WITH-FINDINGS
+
+| Stage | Verdict | Evidence |
+| --- | --- | --- |
+| Docker stack up + healthy | PASS | `mailbot-api healthy`, `ollama healthy`, `mailbot-hermes` up; `/health` returns `sync_health_alarm=false` |
+| `/admin/status` OAuth section reads | PASS | `oauth_refresh_failing=false` (Story 6-15 schema present), `rotation_count=12`, `consecutive_refresh_failures=2` at first read |
+| F23 runbook Step 1 (`scripts/mint_refresh_token.py`) | PASS-WITH-FINDINGS | Worked after sourcing `.env` into PowerShell + setting `PYTHONPATH=$PWD` + passing `--client-secret ""` to override stale env value. Initial run failed with AADSTS90023 — surfaced **F25** |
+| **CHAT-CHANNEL TOKEN LEAK** | RECOVERED | Adam pasted the first-mint stdout (including raw refresh token) into chat; revoked via account.live.com/consent/Manage immediately, re-minted with stdout redirected to file. New memory file `feedback_oauth_token_handling.md` written to guide future re-walks |
+| F23 runbook Step 2 (`scripts/refresh_outlook_oauth.py` over stdin) | FAIL on first attempt | Microsoft rejected freshly-minted token with `invalid_request` because container env also had stale `OUTLOOK_CLIENT_SECRET=<40-char-value>` for a public-client Entra app. Surfaced **F25** as a code-side bug, not just an env-hygiene issue |
+| `.env` patched (commented out `OUTLOOK_CLIENT_SECRET`) + `docker compose up -d --force-recreate mailbot-api` | PASS | `docker compose restart` was insufficient (env baked at container creation, not on restart); `--force-recreate` reloaded env. Post-recreate: `OUTLOOK_CLIENT_SECRET length=0` in container env |
+| F23 runbook Step 2 retry | PASS | `HTTP 200 OK`, `oauth.token.rotated`, rotation_count 12 to 13, fresh access token expires 17:10 UTC. `oauth_state.consecutive_refresh_failures` reset to 0 |
+| Auto-resume after successful re-auth | FAIL | Router stayed `paused=true reason=oauth_refresh_failing` after the successful exchange. No `oauth.refresh.auto_resumed` log line fired. Surfaced **F26** as a Story 6-15 contract gap |
+| Manual `/admin/resume` | PASS | `previously_paused=true`, router cleared. `oauth_refresh_failing=false`, `paused=false`, sync ok 1.9 min ago — clean baseline reached. F23 itself fully closed at this point |
+| Ingest backlog inspection | FAIL | `unprocessed_count=712` (then 719), `backpressure_active=true`. Every `sensitivity_class` ingest tick failing with `error_code=schema_validation_failed`, "response failed schema validation; retry also failed schema validation". Surfaced **F24** |
+| F24 root-cause probe (direct OllamaAdapter call to qwen2.5:3b) | PASS | Reproduced live: qwen returns `{"sensitivity": "normal", "reason": "..."}` — **drops the required `confidence: float` field** from `SensitivityClassOutput`. Same prompt-design defect class as F21 (Haiku `summary_short`). Pydantic rejects, retry also fails (same model + prompt + temperature=0), no escalation (policy `escalate: false` per Rule Q FR-2.5 local-only constraint), ingest blocked permanently for every email |
+
+**Section B CP-A/B/C/D verdict: NOT WALKED.** F24 blocks all three live CPs (no fresh `sensitivity` classification means no fixtures in any of the three classes). F25 is silent-failure-mode-of-record for the previous F23 misclassification (was always code, never just operational). F26 means even a successful re-auth requires a manual `/admin/resume` to unblock the drainer — operator-recoverable but contract violation.
+
+**Stack left UP** post-walk so Adam can continue immediately after the three follow-ups close.
+
+### Carry-forward dispositions (fourth pass)
+
+- **Story 6-6.5** stays `ready-for-walk` pending F24 closure (Story 6-18) + F25 hardening (Story 6-16, optional but recommended) + F26 fix (Story 6-17) + final CP-A/B live re-walk with recipient-inbox verification. F23 itself is now fully closed (refresh token rotated; `oauth_refresh_failing=false`).
+- **Story 4-0 deferred CPs** (drainer e2e, real Graph write-back, 20-send/day cap live): unchanged from third pass — wiring proven, only "real send completes" leg remains, now F24-gated rather than F23-gated (F24 blocks fixture availability).
+- **Epic 5 capstone carry-forward** (`epic-5-run-flags.md` F-deferred items): STAYS OPEN; pending recipient-inbox proof.
+- **Epic 6.5 done-flip**: STAYS BLOCKED on Story 6-6.5 closure.
+
+### F24 — Qwen `sensitivity_class` drops required `confidence` field (OPEN, BLOCKING -> Story 6-18)
+
+**Discovered:** 2026-06-05 fourth-pass walk, ingest backlog inspection. Confirmed via direct `OllamaAdapter.call` against qwen2.5:3b-instruct-q4_K_M with a real fixture email.
+
+**Symptom:** every `sensitivity_class` Router call returns `outcome=failed`, `error_code=schema_validation_failed`. Pipeline log shape: `event="ingest.step.failed" task_type="sensitivity_class" error_code="schema_validation_failed" error_message="response failed schema validation; retry also failed schema validation"`. Backlog at sample time: 712+ rows (growing).
+
+**Root cause (live-probed):** Qwen returns a 2-field JSON object (`sensitivity` + `reason`); schema requires 3 fields including `confidence: float between 0.0 and 1.0`. The `sensitivity_class/v1.py` SYSTEM prompt instructs the model to "Reply with valid JSON matching the schema; no preamble" but does NOT include the schema field names in the prompt. The model has no signal that `confidence` is required. Retry produces the same output (deterministic at temperature=0). Policy has `escalate: false` per FR-2.5 / Rule Q (sensitivity classification MUST stay local-only).
+
+**Same defect class as F21** (Haiku `summary_short` outcome=failed despite billing — Story 6-14 fixed via prompt update making JSON schema explicit). F24 needs the equivalent fix on the qwen prompt.
+
+**Classification:** code defect. PROMPT-DESIGN defect specifically — schema not surfaced to model.
+
+**Filed as:** Story 6-18 (backlog) — prompt update + regression test + ingest backlog drain. Scope: (1) revise [mailbot_api/prompts/sensitivity_class/v1.py](mailbot_api/prompts/sensitivity_class/v1.py) SYSTEM prompt to explicitly list the three required fields including `confidence: float between 0.0 and 1.0`; (2) regression test using mocked qwen-style response without confidence field, assert SCHEMA_VALIDATION_FAILED; (3) full-roundtrip test against real Ollama proving fix holds; (4) backlog drain after deploy — 712+ stranded rows need re-classification. **BLOCKS Story 6-6.5 Section B** (no fresh fixtures classify without this).
+
+### F25 — `mailbot_api/sync/oauth.py` unconditionally sends `OUTLOOK_CLIENT_SECRET` to public-client Entra apps (OPEN, HIGH -> Story 6-16)
+
+**Discovered:** 2026-06-05 fourth-pass walk, during F23 re-auth runbook execution.
+
+**Symptom:** every refresh exchange against Microsoft `https://login.microsoftonline.com/consumers/oauth2/v2.0/token` returns `HTTP 400 invalid_request` with `error_description: AADSTS90023: Public clients can't send a client secret`. The system has been doing this silently since whenever `OUTLOOK_CLIENT_SECRET` was added to `.env` — meaning the original F23 ("Microsoft refresh token rejected, operational not code") was **misdiagnosed**; it was code all along.
+
+**Root cause:** [mailbot_api/sync/oauth.py:276-287](mailbot_api/sync/oauth.py#L276-L287) reads `OUTLOOK_CLIENT_SECRET` via `get_secret_optional` and unconditionally appends it to the token-exchange form when set. The condition only checks "is the env var set to a truthy value", not "should this client send a secret." `docs/entra-app-registration.md:235` documents the failure mode and prescribes operator-side mitigation ("remove the line from `.env`"), but there is no startup-time validation, no AADSTS90023 detector, and no `OUTLOOK_PUBLIC_CLIENT=true` env flag to gate the secret-append unconditionally.
+
+**Classification:** code defect. The "9-hour silence" symptom in the original F23 report is exactly this bug — the only reason the original Story 4-0 bootstrap worked was because at the time `.env` had no secret (or the Entra app was confidential then re-registered later as public).
+
+**Filed as:** Story 6-16 (backlog) — startup-time validation OR `OUTLOOK_PUBLIC_CLIENT` env flag OR both. Scope options:
+
+- **Option A (cheap):** add a one-shot probe at worker boot — call `exchange_and_persist` once and if Microsoft returns AADSTS90023, log a loud `ERROR` pointing at `docs/entra-app-registration.md:235`. Single regression test.
+- **Option B (more invasive):** add `OUTLOOK_PUBLIC_CLIENT: bool` from `.env`, gate the `if client_secret is not None` on `not OUTLOOK_PUBLIC_CLIENT`. Doc update + regression test.
+- **Option C (both):** A for production safety, B for explicit operator control.
+
+**Severity:** HIGH (this is the F23 root cause, latent on every deployment with stale `.env`). **NOT blocking** Story 6-6.5 Section B in itself (Adam's `.env` is now patched + container recreated), but Story 6-6.5 closure should not happen without filing this finding.
+
+### F26 — Auto-resume from `_record_refresh_success` did NOT fire after script-driven OAuth success (OPEN, MEDIUM -> Story 6-17)
+
+**Discovered:** 2026-06-05 fourth-pass walk, immediately after F25-blocked then F25-unblocked re-auth.
+
+**Symptom:** `scripts/refresh_outlook_oauth.py` succeeded (`HTTP 200 OK`, `oauth.token.rotated`, rotation_count 12 to 13, `oauth_state.consecutive_refresh_failures` reset to 0), but the router stayed `paused=true reason=oauth_refresh_failing` after the success. No `oauth.refresh.auto_resumed` log line, no `oauth.refresh.auto_resume_failed` log line. Operator had to run `mailbot resume` (or `POST /admin/resume`) manually to unblock the drainer.
+
+**Investigation:** [mailbot_api/sync/oauth.py:209-246](mailbot_api/sync/oauth.py#L209-L246) `_record_refresh_success` early-returns when `prior_failures < OAUTH_REFRESH_FAIL_THRESHOLD`. `prior_failures` is captured at [mailbot_api/sync/oauth.py:272](mailbot_api/sync/oauth.py#L272) as `state.consecutive_refresh_failures` BEFORE the success-path UPDATE resets it. The reauth script's `_persist` carefully threads `existing.consecutive_refresh_failures` into the new `OAuthState`, so this path should work IF `existing` was loaded after the worker had already bumped the counter past threshold.
+
+**Hypothesis (not yet verified):** the script's `load_oauth_state` raced the worker's failure-bump cycle. Pre-recreate the worker had bumped to 6 (visible in `/admin/status`); post-recreate the worker restarted and would have re-bumped, but the script's `load_oauth_state` may have hit a window where `consecutive_refresh_failures=0` (post-success-reset by a parallel worker tick) or 1 (single post-recreate failure), both below threshold=3.
+
+**Story 6-15 CR-10 fix introduced `try_resume_if_reason`** as an atomic check-and-resume helper, but the early-return at line 220-221 of `_record_refresh_success` short-circuits BEFORE that helper is called. So the CR-10 fix correctly addresses the operator-pause-clobber race, but does not address the "auto-resume contract assumes the SAME process that bumped the counter is the one that records the success."
+
+**Classification:** state-machine edge case. Operator-recoverable via `mailbot resume`. Severity MEDIUM (not silent — `/admin/status` correctly shows `paused=true reason=oauth_refresh_failing` so the operator has signal). Contract gap because Story 6-15 AC-3 implies auto-resume always fires on success.
+
+**Filed as:** Story 6-17 (backlog) — investigation + fix. Scope: (1) reproduce in a test using `httpx.MockTransport` for the reauth script path + threshold-just-crossed setup; (2) decide between (a) always-attempt-resume (read DB pause state, check reason matches, resume — drops the threshold gate entirely), (b) re-read counter from DB inside `_record_refresh_success` (more atomic), (c) move auto-resume to a separate worker tick that polls pause state + oauth_state.consecutive_refresh_failures; (3) regression test locking in chosen behavior.
+
+**Severity:** MEDIUM. NOT blocking — `mailbot resume` is the operator escape hatch.
