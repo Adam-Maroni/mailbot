@@ -84,6 +84,11 @@ services:
       - OUTLOOK_CLIENT_SECRET=${OUTLOOK_CLIENT_SECRET:-}
       - OUTLOOK_TENANT_ID=${OUTLOOK_TENANT_ID:-}
       - OUTLOOK_REFRESH_TOKEN=${OUTLOOK_REFRESH_TOKEN:-}
+      # Story 6-16 (F25 closure): public-client gate — when true, oauth.py +
+      # graph_client.py suppress client_secret at token-exchange regardless of
+      # OUTLOOK_CLIENT_SECRET. Without this passthrough the AC-2 gate would be
+      # dead-on-arrival in production (CR-1).
+      - OUTLOOK_PUBLIC_CLIENT=${OUTLOOK_PUBLIC_CLIENT:-}
       - MAILBOT_DB_PATH=/data/mailbot.db
       - OLLAMA_URL=http://ollama:11434
       - MAILBOT_ROUTER_KEY=${MAILBOT_ROUTER_KEY:-}

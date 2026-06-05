@@ -90,6 +90,14 @@ class GraphClient:
         # platform — the recommended Entra setup for personal MS accounts) MUST
         # NOT send a secret on token exchange (AADSTS90023). Only confidential
         # clients (Web platform) require it. See docs/entra-app-registration.md.
+        #
+        # Story 6-16 CR-5: capture the resolved secret value at __init__ time
+        # (matches Story 1-5's constructor-resolution pattern), BUT the
+        # is_public_client_mode() gate is re-checked per-call in
+        # `_exchange_refresh_token` for symmetry with oauth.py (runtime
+        # reactive to env hot-flip). Without that per-call check, an operator
+        # who set OUTLOOK_PUBLIC_CLIENT=true post-startup would see the gate
+        # silently inactive until container restart.
         self._client_secret: str | None = client_secret or (
             get_secret_optional("OUTLOOK_CLIENT_SECRET") or None
         )
@@ -115,7 +123,15 @@ class GraphClient:
         IMPORTANT: the response also contains a (possibly rotated) refresh_token.
         Story 1-6 will persist that to oauth_state; in 1-5 we hold it in memory
         only — surviving until the process restarts.
+
+        Story 6-16 (CR-4 + CR-5): public-client gate re-checked per-call
+        (symmetric with oauth.py) so an operator hot-flip of
+        OUTLOOK_PUBLIC_CLIENT is reactive without container restart. AADSTS90023
+        detection mirrors oauth.py's dedicated event so the legacy Story 1-5
+        sync path also emits the operator-routable misconfig signal.
         """
+        from mailbot_api.config import is_public_client_mode  # local to avoid cycles
+
         token_url = _TOKEN_URL_TEMPLATE.format(tenant=self._tenant_id)
         form: dict[str, str] = {
             "grant_type": "refresh_token",
@@ -123,7 +139,18 @@ class GraphClient:
             "refresh_token": self._refresh_token,
             "scope": self._scope,
         }
-        if self._client_secret is not None:
+        # CR-5: per-call public-client gate (runtime reactive); CR-3: emit
+        # the AC-2-mandated confirmation event when gate is active.
+        public_client_mode = is_public_client_mode()
+        if public_client_mode:
+            logger.info(
+                "oauth public-client mode active — client_secret suppressed",
+                extra={
+                    "event": "oauth.config.public_client_mode",
+                    "secret_present_in_env": self._client_secret is not None,
+                },
+            )
+        if self._client_secret is not None and not public_client_mode:
             form["client_secret"] = self._client_secret
 
         with self._build_http() as http:
@@ -144,6 +171,23 @@ class GraphClient:
         if response.status_code >= 400:
             payload = self._safe_json(response)
             error_code = payload.get("error", "unknown_error") if isinstance(payload, dict) else "unknown_error"
+            # CR-4 + CR-6: AADSTS90023 detection mirrored from oauth.py (with
+            # substring + error_codes numeric-array fallback). The legacy
+            # Story 1-5 sync path is also operator-routable now.
+            error_description = (
+                payload.get("error_description", "") if isinstance(payload, dict) else ""
+            )
+            error_codes = payload.get("error_codes", []) if isinstance(payload, dict) else []
+            if "AADSTS90023" in error_description or 90023 in error_codes:
+                logger.error(
+                    "oauth refresh failed: public client cannot send client_secret",
+                    extra={
+                        "event": "oauth.refresh.public_client_secret_misconfig",
+                        "aadsts_code": "AADSTS90023",
+                        "remediation_doc": "docs/entra-app-registration.md#common-failure-modes",
+                        "remediation_env_gate": "set OUTLOOK_PUBLIC_CLIENT=true",
+                    },
+                )
             logger.error(
                 "oauth refresh failed",
                 extra={

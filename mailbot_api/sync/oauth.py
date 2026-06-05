@@ -22,7 +22,7 @@ from typing import Any
 
 import httpx
 
-from mailbot_api.config import get_secret, get_secret_optional
+from mailbot_api.config import get_secret, get_secret_optional, is_public_client_mode
 from mailbot_api.db.connection import execute_write, execute_write_returning, fetchone
 from mailbot_api.db.queries import (
     OAUTH_STATE_BUMP_REFRESH_FAILURE,
@@ -57,6 +57,17 @@ _OAUTH_PAUSE_REASON = "oauth_refresh_failing"
 # Story 6-15: stable worker_health component name; surfaced by the status
 # board's OAuthStatus section.
 _OAUTH_WORKER_HEALTH_COMPONENT = "oauth_refresh"
+
+# Story 6-16 (F25 closure): Microsoft's error code for "Public clients can't
+# send a client secret." This is raised when an Entra app is registered under
+# "Mobile and desktop apps" (public-client) platform but the token-exchange
+# call includes `client_secret`. The bug was silent for the lifetime of any
+# `.env` that carried OUTLOOK_CLIENT_SECRET against a public-client app — every
+# refresh failed but the existing `oauth.refresh.failed` log only carried
+# `error_code="invalid_request"`, which the operator-facing /admin/status
+# alarm couldn't distinguish from any other 4xx. F25 surfaced as F23's
+# misdiagnosed root cause during Story 6-6.5 fourth-pass walk.
+_AADSTS_PUBLIC_CLIENT_SECRET_CODE = "AADSTS90023"  # noqa: S105 — Microsoft error-code identifier, not a credential
 
 
 def _utc_iso8601() -> str:
@@ -210,15 +221,31 @@ async def _record_refresh_success(db_path: str, *, prior_failures: int) -> None:
     """Story 6-15: success bookkeeping. The success-path UPDATE already reset
     `consecutive_refresh_failures` to 0; here we write the worker_health row
     and auto-resume if we still own the pause.
+
+    Story 6-17 (F26 closure): the previous early-return gate on
+    `prior_failures < OAUTH_REFRESH_FAIL_THRESHOLD` short-circuited the
+    auto-resume path whenever success came via a code path that captured
+    `prior_failures` BEFORE the worker bumped the counter past threshold —
+    e.g., a `scripts/refresh_outlook_oauth.py` invocation handing a fresh
+    refresh token while the worker's earlier failure-tick had ALREADY
+    auto-paused the router. The atomic `try_resume_if_reason` helper at
+    `pause.py` is already safe under all pause-state shapes: if the router
+    isn't paused, it returns False; if the router is paused for a different
+    reason (e.g., manual operator hold), it returns False; ONLY when paused
+    with our reason does it resume. Removing the threshold gate is therefore
+    safe AND closes F26. The `prior_failures` parameter is preserved for
+    observability — it still rides through to the auto-resumed log event so
+    operators can correlate against the failure history.
     """
-    await upsert_worker_health(
-        db_path,
-        component=_OAUTH_WORKER_HEALTH_COMPONENT,
-        outcome="ok",
-        error=None,
-    )
-    if prior_failures < OAUTH_REFRESH_FAIL_THRESHOLD:
-        return
+    # Story 6-17 CR-2: try_resume BEFORE writing worker_health to eliminate
+    # the transient inconsistency window. Between two awaits, the asyncio
+    # event loop can yield to other tasks — a parallel observer reading both
+    # `worker_health[oauth_refresh].outcome` AND `pause_state` would briefly
+    # see `outcome=ok` AND `paused=true reason=oauth_refresh_failing` — a
+    # false signal that "OAuth is healthy but the router won't drain." The
+    # canonical post-recovery observable order is: (1) router resumed, then
+    # (2) health row updated. Resume-then-write matches that order.
+    #
     # Story 6-15 CR-10: use the atomic check-and-resume helper. The three
     # prior sync reads (is_paused/reason/resume) had a narrow window where an
     # operator could re-pause between `reason()` and `resume()`, and our
@@ -244,6 +271,13 @@ async def _record_refresh_success(db_path: str, *, prior_failures: int) -> None:
             "oauth refresh auto-resume failed",
             extra={"event": "oauth.refresh.auto_resume_failed"},
         )
+
+    await upsert_worker_health(
+        db_path,
+        component=_OAUTH_WORKER_HEALTH_COMPONENT,
+        outcome="ok",
+        error=None,
+    )
 
 
 async def exchange_and_persist(
@@ -276,6 +310,25 @@ async def exchange_and_persist(
     client_secret = get_secret_optional("OUTLOOK_CLIENT_SECRET") or None
     tenant_id = get_secret("OUTLOOK_TENANT_ID")
 
+    # Story 6-16 AC-2: explicit operator gate. When OUTLOOK_PUBLIC_CLIENT=true,
+    # NEVER append client_secret to the form, even if OUTLOOK_CLIENT_SECRET is
+    # set. Lets operators flip the gate via .env without scrubbing the legacy
+    # secret value (which they may want to keep around for a confidential-client
+    # rollback). Belt-and-suspenders alongside AC-1's loud-log on AADSTS90023.
+    public_client_mode = is_public_client_mode()
+    if public_client_mode:
+        # CR-3: AC-2-mandated confirmation event — gives operators a positive
+        # signal that the gate is active. Fires per refresh attempt (rather than
+        # once at startup) because oauth.py doesn't own a lifespan hook, and
+        # operators correlate this against /admin/status periodic checks.
+        logger.info(
+            "oauth public-client mode active — client_secret suppressed",
+            extra={
+                "event": "oauth.config.public_client_mode",
+                "secret_present_in_env": client_secret is not None,
+            },
+        )
+
     token_url = _TOKEN_URL_TEMPLATE.format(tenant=tenant_id)
     form: dict[str, str] = {
         "grant_type": "refresh_token",
@@ -283,7 +336,7 @@ async def exchange_and_persist(
         "refresh_token": state.refresh_token,
         "scope": _DEFAULT_SCOPE,
     }
-    if client_secret is not None:
+    if client_secret is not None and not public_client_mode:
         form["client_secret"] = client_secret
 
     def _build_http() -> httpx.Client:
@@ -314,6 +367,39 @@ async def exchange_and_persist(
         error_code = (
             payload.get("error", "unknown_error") if isinstance(payload, dict) else "unknown_error"
         )
+        # Story 6-16 AC-1: detect AADSTS90023 (public-client-with-secret) and
+        # fire a DEDICATED event so operator-facing observability can route it
+        # to the public-client-misconfig runbook instead of generic 4xx. The
+        # error_description field carries the AADSTS code; the outer
+        # error_code (Microsoft's high-level "invalid_request") does NOT
+        # distinguish this case. We log this BEFORE the generic
+        # `oauth.refresh.failed` so the order in the log is detection-first.
+        error_description = (
+            payload.get("error_description", "") if isinstance(payload, dict) else ""
+        )
+        # CR-6: also check the numeric `error_codes` array as a fallback for
+        # description-text drift (localization, format change). Microsoft's
+        # token-error responses include `"error_codes": [90023]` alongside
+        # the description string. Robust detection: substring match OR
+        # numeric-array membership.
+        error_codes = payload.get("error_codes", []) if isinstance(payload, dict) else []
+        is_aadsts_90023 = (
+            _AADSTS_PUBLIC_CLIENT_SECRET_CODE in error_description
+            or 90023 in error_codes
+        )
+        if is_aadsts_90023:
+            logger.error(
+                "oauth refresh failed: public client cannot send client_secret",
+                extra={
+                    "event": "oauth.refresh.public_client_secret_misconfig",
+                    "aadsts_code": _AADSTS_PUBLIC_CLIENT_SECRET_CODE,
+                    # CR-2: anchor-based pointer survives line-number drift.
+                    # `docs/entra-app-registration.md#common-failure-modes`
+                    # is the stable section heading for AADSTS90023 triage.
+                    "remediation_doc": "docs/entra-app-registration.md#common-failure-modes",
+                    "remediation_env_gate": "set OUTLOOK_PUBLIC_CLIENT=true",
+                },
+            )
         logger.error(
             "oauth refresh failed",
             extra={

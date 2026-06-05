@@ -91,6 +91,17 @@ send a client secret in the OAuth token exchange — doing so returns
 omits `client_secret` when it's not in `.env`, which is the right behavior for
 the recommended public-client setup.
 
+**Story 6-16 recommendation (belt-and-suspenders for public-client setups):**
+set `OUTLOOK_PUBLIC_CLIENT=true` in `.env` AND omit `OUTLOOK_CLIENT_SECRET`.
+The env gate is the new explicit signal — when set, `mailbot_api/sync/oauth.py`
+and `mailbot_api/sync/graph_client.py` BOTH suppress `client_secret` at the
+token-exchange form regardless of whether `OUTLOOK_CLIENT_SECRET` is populated.
+This lets operators keep a legacy secret value in `.env` for a
+confidential-client rollback path without it silently leaking into refresh
+exchanges. If a stale secret is sent and Entra returns AADSTS90023, the worker
+now fires a dedicated `oauth.refresh.public_client_secret_misconfig` log event
+pointing back at this section.
+
 **Do this step only if you registered a "Web" platform** in Step 3 (rare;
 typically only needed when the app is hosted as a confidential server-side
 web app).
@@ -232,7 +243,7 @@ path re-engages, restart the container.
 | --- | --- | --- |
 | Browser shows `AADSTS50011: redirect URI mismatch` | The script's redirect URI does not exactly match the one registered in Step 3 | Re-check Step 3; URL must be byte-identical including trailing slash |
 | Script prints `FATAL: state mismatch` | Someone else's callback arrived first, OR the browser session is from an old run | Re-run the script; close any stale browser tabs from previous runs |
-| Script prints `FATAL: token exchange failed status=400 body={'error': 'invalid_request', ... 'AADSTS90023: Public clients can't send a client secret' ...}` | Entra app is registered as a public client (Mobile and desktop applications platform) but `OUTLOOK_CLIENT_SECRET` is set in `.env` | Remove (or comment out) the `OUTLOOK_CLIENT_SECRET` line in `.env`; re-run |
+| Script prints `FATAL: token exchange failed status=400 body={'error': 'invalid_request', ... 'AADSTS90023: Public clients can't send a client secret' ...}` | Entra app is registered as a public client (Mobile and desktop applications platform) but `OUTLOOK_CLIENT_SECRET` is set in `.env` | **Recommended (Story 6-16):** set `OUTLOOK_PUBLIC_CLIENT=true` in `.env`; this suppresses `client_secret` at the token-exchange form regardless of `OUTLOOK_CLIENT_SECRET` value (keeps legacy value around for confidential-client rollback). **Alternative:** remove (or comment out) the `OUTLOOK_CLIENT_SECRET` line in `.env`. At runtime, the worker fires a dedicated `oauth.refresh.public_client_secret_misconfig` log event with this remediation pointer, distinguishable from generic 4xx failures. |
 | Script prints `FATAL: token exchange failed status=400 body={'error': 'invalid_client'}` | Client secret value wrong or expired (confidential / Web platform only) | Re-do Step 5; paste the new secret into `.env`; re-run |
 | Script prints `FATAL: token exchange failed status=400 body={'error': 'invalid_grant'}` | Auth code was reused or expired (codes are single-use, valid ~10 min) | Re-run the script — the code is regenerated each run |
 | Token response has no `refresh_token` field | `offline_access` not requested or not granted | Re-do Step 6 (ensure `offline_access` is ticked); re-do Step 8 |

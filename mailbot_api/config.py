@@ -43,3 +43,24 @@ def get_secret_optional(name: str, default: str = "") -> str:
     that defaults to 8000). For actual secrets, always use `get_secret`.
     """
     return os.environ.get(name, default) or default
+
+
+def is_public_client_mode() -> bool:
+    """Story 6-16 (F25 closure): True when OUTLOOK_PUBLIC_CLIENT is set to a
+    truthy value (`'true'`, `'1'`, `'yes'`, `'on'`; case-insensitive). When True,
+    the token-exchange path (both `sync/oauth.py` and `sync/graph_client.py`)
+    MUST NOT include `client_secret` regardless of whether OUTLOOK_CLIENT_SECRET
+    is set.
+
+    Why this exists: public-client Entra app registrations ("Mobile and desktop
+    apps" platform — the recommended setup for personal MS accounts) reject
+    any token-exchange request that carries a client_secret with AADSTS90023.
+    Pre-Story-6-16, the code unconditionally sent the secret if env defined it,
+    which silently failed every refresh for the lifetime of any .env that
+    carried a stale OUTLOOK_CLIENT_SECRET against a public-client app. This
+    helper gives operators an explicit gate to suppress the secret without
+    scrubbing the env value (rollback-friendly for confidential-client
+    deployments).
+    """
+    raw = get_secret_optional("OUTLOOK_PUBLIC_CLIENT", default="").strip().lower()
+    return raw in {"true", "1", "yes", "on"}
