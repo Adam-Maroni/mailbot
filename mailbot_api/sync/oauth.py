@@ -23,13 +23,17 @@ from typing import Any
 import httpx
 
 from mailbot_api.config import get_secret, get_secret_optional
-from mailbot_api.db.connection import execute_write, fetchone
+from mailbot_api.db.connection import execute_write, execute_write_returning, fetchone
 from mailbot_api.db.queries import (
+    OAUTH_STATE_BUMP_REFRESH_FAILURE,
     OAUTH_STATE_INSERT_SEED,
     OAUTH_STATE_SELECT,
     OAUTH_STATE_UPDATE_AFTER_EXCHANGE,
 )
+from mailbot_api.observability.logging import sanitize as _sanitize_for_persistence
+from mailbot_api.observability.scheduler import upsert_worker_health
 from mailbot_api.observability.timestamps import utc_z_now
+from mailbot_api.router.pause import get_pause_state
 from mailbot_api.sync.graph_client import (
     _DEFAULT_SCOPE,
     _REFRESH_LEEWAY_SECONDS,
@@ -40,6 +44,19 @@ from mailbot_api.sync.graph_client import (
 logger = logging.getLogger(__name__)
 
 _PROVIDER = "microsoft_graph"
+
+# Story 6-15: when consecutive_refresh_failures crosses this threshold, the
+# `mailbot status` `oauth_refresh_failing` alarm fires AND the router is
+# auto-paused with reason="oauth_refresh_failing" (AC-3, AC-4 Path B).
+OAUTH_REFRESH_FAIL_THRESHOLD = 3
+
+# Story 6-15: stable pause-reason string so the auto-resume path can match
+# against `pause_state.reason` and only resume if we were the ones who paused.
+_OAUTH_PAUSE_REASON = "oauth_refresh_failing"
+
+# Story 6-15: stable worker_health component name; surfaced by the status
+# board's OAuthStatus section.
+_OAUTH_WORKER_HEALTH_COMPONENT = "oauth_refresh"
 
 
 def _utc_iso8601() -> str:
@@ -60,6 +77,10 @@ class OAuthState:
     access_expires_at: str | None
     last_rotated_at: str | None
     rotation_count: int
+    # Story 6-15: tally of consecutive failed `exchange_and_persist` calls
+    # since the last success. Source of truth for the
+    # `oauth_refresh_failing` alarm field on `mailbot status`.
+    consecutive_refresh_failures: int = 0
 
     def access_token_is_valid(self) -> bool:
         """Return True if access_token is present AND not within the refresh leeway."""
@@ -87,6 +108,7 @@ async def load_oauth_state(db_path: str) -> OAuthState | None:
         access_expires_at=row[3],
         last_rotated_at=row[4],
         rotation_count=row[5],
+        consecutive_refresh_failures=row[6],
     )
 
 
@@ -112,6 +134,118 @@ async def seed_oauth_state_from_env(db_path: str) -> OAuthState:
     return state
 
 
+async def _record_refresh_failure(db_path: str, *, error_code: str) -> None:
+    """Story 6-15: bump the failure counter, write the worker_health row,
+    and auto-pause the router on the threshold crossing.
+
+    Threshold-crossing is computed from the post-bump value returned by the
+    UPDATE...RETURNING (Story 6-15 CR-2): two concurrent failure callers can
+    no longer both decide "we're the threshold-crosser" by snapshotting the
+    same stale `prior_failures` — the DB serializes the bumps, and each
+    caller sees its own post-bump value.
+    """
+    row = await execute_write_returning(
+        db_path, OAUTH_STATE_BUMP_REFRESH_FAILURE, (_PROVIDER,)
+    )
+    new_failures = int(row[0]) if row is not None else 0
+
+    # Sanitize the error string before persisting to worker_health: the HTTP
+    # error path passes the response body's `error` field, which is operator-
+    # controlled but Microsoft-rendered — defense-in-depth against a future
+    # `error_description` containing a Bearer/sk- fragment (Story 6-15 CR-12).
+    sanitized_error = _sanitize_for_persistence(error_code)
+    if isinstance(sanitized_error, str):
+        sanitized_error = sanitized_error[:200]
+    await upsert_worker_health(
+        db_path,
+        component=_OAUTH_WORKER_HEALTH_COMPONENT,
+        outcome="failed",
+        error=sanitized_error,
+    )
+    # Edge-once: fire only when this caller's post-bump value crosses the
+    # threshold from below. Subsequent failures with `new_failures > K` no-op
+    # the pause action (already paused).
+    if new_failures < OAUTH_REFRESH_FAIL_THRESHOLD:
+        return
+    # AC-4 Path B: reuse Story 2-9's pause/resume plumbing — the drainer
+    # gains a pause-state short-circuit at its loop boundary (Story 6-15
+    # drainer touch) so this single call gates Tier-2/3 dispatch.
+    # Story 6-15 CR-1: never clobber a foreign pause reason. If the operator
+    # paused for "manual_hold" before our threshold crossed, `try_pause_if_unpaused`
+    # returns False and we log a warning instead of overwriting their reason.
+    try:
+        paused_by_us = await get_pause_state().try_pause_if_unpaused(
+            db_path, reason=_OAUTH_PAUSE_REASON
+        )
+        if paused_by_us:
+            logger.error(
+                "oauth refresh failing — router auto-paused",
+                extra={
+                    "event": "oauth.refresh.auto_paused",
+                    "consecutive_failures": new_failures,
+                    "threshold": OAUTH_REFRESH_FAIL_THRESHOLD,
+                    "reason": _OAUTH_PAUSE_REASON,
+                },
+            )
+        else:
+            existing_reason = get_pause_state().reason()
+            logger.warning(
+                "oauth refresh failing — router already paused, not overriding",
+                extra={
+                    "event": "oauth.refresh.auto_pause_skipped",
+                    "consecutive_failures": new_failures,
+                    "threshold": OAUTH_REFRESH_FAIL_THRESHOLD,
+                    "existing_reason": existing_reason,
+                },
+            )
+    except Exception:  # noqa: BLE001 — pause is best-effort; never let it
+        # mask the original GraphAuthError that called us.
+        logger.exception(
+            "oauth refresh auto-pause failed",
+            extra={"event": "oauth.refresh.auto_pause_failed"},
+        )
+
+
+async def _record_refresh_success(db_path: str, *, prior_failures: int) -> None:
+    """Story 6-15: success bookkeeping. The success-path UPDATE already reset
+    `consecutive_refresh_failures` to 0; here we write the worker_health row
+    and auto-resume if we still own the pause.
+    """
+    await upsert_worker_health(
+        db_path,
+        component=_OAUTH_WORKER_HEALTH_COMPONENT,
+        outcome="ok",
+        error=None,
+    )
+    if prior_failures < OAUTH_REFRESH_FAIL_THRESHOLD:
+        return
+    # Story 6-15 CR-10: use the atomic check-and-resume helper. The three
+    # prior sync reads (is_paused/reason/resume) had a narrow window where an
+    # operator could re-pause between `reason()` and `resume()`, and our
+    # resume would clobber it. The helper performs the snapshot reads
+    # synchronously (no await between them); the only remaining window is
+    # the resume's await itself, which is unavoidable without holding a
+    # cross-await lock.
+    try:
+        resumed = await get_pause_state().try_resume_if_reason(
+            db_path, expected_reason=_OAUTH_PAUSE_REASON
+        )
+        if resumed:
+            logger.info(
+                "oauth refresh recovered — router auto-resumed",
+                extra={
+                    "event": "oauth.refresh.auto_resumed",
+                    "prior_failures": prior_failures,
+                },
+            )
+    except Exception:  # noqa: BLE001 — resume is best-effort; success has
+        # already been persisted via the UPDATE above.
+        logger.exception(
+            "oauth refresh auto-resume failed",
+            extra={"event": "oauth.refresh.auto_resume_failed"},
+        )
+
+
 async def exchange_and_persist(
     db_path: str,
     *,
@@ -127,7 +261,16 @@ async def exchange_and_persist(
 
     `transport` is for test injection (httpx.MockTransport); production callers
     leave it None.
+
+    Story 6-15: every failure path bumps `oauth_state.consecutive_refresh_failures`
+    AND writes a `worker_health[oauth_refresh]` heartbeat. On the K-th consecutive
+    failure (K = OAUTH_REFRESH_FAIL_THRESHOLD), the router auto-pauses with
+    reason="oauth_refresh_failing" so the drainer's Tier-2/3 dispatch stops
+    burning `budget_consumed=1` per Graph 401. The success path resets the
+    counter (via the UPDATE) and auto-resumes if we own the pause.
     """
+    prior_failures = state.consecutive_refresh_failures
+
     client_id = get_secret("OUTLOOK_CLIENT_ID")
     # OPTIONAL — see graph_client.py docstring re: AADSTS90023.
     client_secret = get_secret_optional("OUTLOOK_CLIENT_SECRET") or None
@@ -160,6 +303,10 @@ async def exchange_and_persist(
                     "error_type": type(exc).__name__,
                 },
             )
+            await _record_refresh_failure(
+                db_path,
+                error_code=f"transport_error:{type(exc).__name__}",
+            )
             raise GraphAuthError("transport_error", type(exc).__name__) from exc
 
     if response.status_code >= 400:
@@ -176,6 +323,10 @@ async def exchange_and_persist(
                 "rotation_count": state.rotation_count,
             },
         )
+        await _record_refresh_failure(
+            db_path,
+            error_code=str(error_code),
+        )
         raise GraphAuthError(
             str(error_code),
             f"Graph identity endpoint returned status={response.status_code}",
@@ -190,6 +341,10 @@ async def exchange_and_persist(
         logger.error(
             "oauth refresh missing access_token",
             extra={"event": "oauth.refresh.failed", "error_kind": "missing_access_token"},
+        )
+        await _record_refresh_failure(
+            db_path,
+            error_code="missing_access_token",
         )
         raise GraphAuthError("missing_access_token", "Token endpoint returned no access_token")
 
@@ -221,6 +376,8 @@ async def exchange_and_persist(
             "expires_in_s": expires_in,
         },
     )
+
+    await _record_refresh_success(db_path, prior_failures=prior_failures)
 
     refreshed = await load_oauth_state(db_path)
     if refreshed is None:  # pragma: no cover — UPDATE just succeeded

@@ -60,6 +60,31 @@ class PauseState:
             extra={"event": "router.resumed"},
         )
 
+    async def try_pause_if_unpaused(self, db_path: str, *, reason: str) -> bool:
+        # Story 6-15 CR-1: only pause when not already paused; never clobber a
+        # foreign reason (operator's manual_hold, future automation, etc.).
+        # The check + write are decided synchronously before any await — the
+        # asyncio event loop is single-threaded so no other task can mutate
+        # _paused between this read and the await. Returns True if we paused.
+        if self._paused:
+            return False
+        await self.pause(db_path, reason=reason)
+        return True
+
+    async def try_resume_if_reason(self, db_path: str, *, expected_reason: str) -> bool:
+        # Story 6-15 CR-10: collapse the previous three-call check-and-resume
+        # (is_paused → reason → resume) into a single atomic helper. The
+        # snapshot reads are sync (no await between them) so the only window
+        # for a foreign re-pause is during the resume's await; that's
+        # unavoidable without a full lock — but bounding the window to the
+        # write itself is meaningfully tighter than the prior pattern.
+        if not self._paused:
+            return False
+        if self._reason != expected_reason:
+            return False
+        await self.resume(db_path)
+        return True
+
     def reset_for_test(self) -> None:
         self._paused = False
         self._reason = None

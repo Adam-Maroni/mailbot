@@ -17,11 +17,12 @@ SQL is part of the migration mechanism itself, not the steady-state query layer.
 
 from __future__ import annotations
 
-# --- oauth_state (Story 1-6) ---
+# --- oauth_state (Story 1-6, extended Story 6-15) ---
 
 OAUTH_STATE_SELECT = (
     "SELECT provider, refresh_token, access_token, access_expires_at, "
-    "last_rotated_at, rotation_count FROM oauth_state WHERE provider = ?"
+    "last_rotated_at, rotation_count, consecutive_refresh_failures "
+    "FROM oauth_state WHERE provider = ?"
 )
 
 OAUTH_STATE_INSERT_SEED = "INSERT INTO oauth_state (provider, refresh_token, rotation_count) VALUES (?, ?, 0)"
@@ -30,11 +31,38 @@ OAUTH_STATE_INSERT_SEED = "INSERT INTO oauth_state (provider, refresh_token, rot
 # the access_token column on every refresh (cheaper than the full SELECT).
 OAUTH_STATE_ACCESS_TOKEN_SELECT = "SELECT access_token FROM oauth_state WHERE provider = ?"  # noqa: S105
 
+# Story 6-15: success path resets the consecutive-failures tally to 0 so the
+# `oauth_refresh_failing` alarm clears the next time the status board is read.
 OAUTH_STATE_UPDATE_AFTER_EXCHANGE = (
     "UPDATE oauth_state SET refresh_token = ?, access_token = ?, "
-    "access_expires_at = ?, last_rotated_at = ?, rotation_count = ? "
+    "access_expires_at = ?, last_rotated_at = ?, rotation_count = ?, "
+    "consecutive_refresh_failures = 0 "
     "WHERE provider = ?"
 )
+
+# Story 6-15: failure path bumps the counter atomically (no read-modify-write
+# race against a concurrent successful exchange — the success path's reset
+# wins under the WAL executor's serialization). RETURNING gives callers the
+# post-bump value so the threshold-crossing decision (Story 6-15 CR-2) is
+# based on the actual DB value, not a stale in-memory snapshot.
+OAUTH_STATE_BUMP_REFRESH_FAILURE = (
+    "UPDATE oauth_state SET consecutive_refresh_failures = consecutive_refresh_failures + 1 "
+    "WHERE provider = ? "
+    "RETURNING consecutive_refresh_failures"
+)
+
+# Story 6-15: status assembler read. Single-row table, no perf concern.
+OAUTH_STATE_STATUS_SELECT = (
+    "SELECT access_expires_at, last_rotated_at, rotation_count, "
+    "consecutive_refresh_failures FROM oauth_state WHERE provider = ?"
+)
+
+# Story 6-15 CR-7: rollback helper used by scripts/refresh_outlook_oauth.py
+# when a fresh-deploy re-auth INSERTs a row with a candidate refresh token
+# AND the subsequent token-endpoint exchange rejects it (invalid_grant).
+# Without this, the bad token would persist and the next worker tick would
+# read it, fail, and bump the failure counter — all without operator visibility.
+OAUTH_STATE_DELETE = "DELETE FROM oauth_state WHERE provider = ?"
 
 
 # --- sync_state (Story 1-7) ---
@@ -735,6 +763,14 @@ PENDING_ACTIONS_SELECT_DRAINABLE = (
 PENDING_ACTION_CLAIM_DRAINING = (
     "UPDATE pending_actions SET status = 'draining' "
     "WHERE id = ? AND status = 'pending'"
+)
+
+# Story 6-15 CR-3: flip a row we just claimed back to pending when a mid-tick
+# auto-pause arrives between claim and dispatch. Conditional on `draining` so a
+# row that already raced to applied/failed by some other path stays put.
+PENDING_ACTION_RELEASE_CLAIM = (
+    "UPDATE pending_actions SET status = 'pending' "
+    "WHERE id = ? AND status = 'draining'"
 )
 
 PENDING_ACTION_MARK_APPLIED = (

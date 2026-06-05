@@ -14,6 +14,8 @@ Sections:
   * cache — 7-day cache-hit ratio
   * errors — last 5 failed/retry_recovered router_calls
   * hermes_aux — last-24h hermes-aux call count + simple drift heuristic
+  * router — Story 6-2 pause-state visibility
+  * oauth — Story 6-15: refresh-token lifecycle + oauth_refresh_failing alarm
   * container_health — mailbot-api (self) + ollama (HTTP probe) + mailbot-hermes (log-tail)
 
 Hermes-aux drift fire-once semantics (Epic 2 retro C17) are DEFERRED to
@@ -41,6 +43,7 @@ from pydantic import BaseModel, ConfigDict
 from mailbot_api.db import connection, queries
 from mailbot_api.ingest.backpressure import BACKPRESSURE_THRESHOLD, count_unprocessed
 from mailbot_api.router.budget import DAILY_SOFT_WARN_USD, MONTHLY_HARD_CAP_USD
+from mailbot_api.sync.oauth import OAUTH_REFRESH_FAIL_THRESHOLD
 from mailbot_api.worker import STALE_THRESHOLD_MINUTES, minutes_since, read_sync_health
 
 logger = logging.getLogger(__name__)
@@ -145,6 +148,21 @@ class RouterStatus(BaseModel):
     paused_at: str | None
 
 
+class OAuthStatus(BaseModel):
+    """Story 6-15: Outlook OAuth refresh-token health surface."""
+
+    model_config = ConfigDict(frozen=True)
+
+    last_rotated_at: str | None
+    rotation_count: int
+    consecutive_refresh_failures: int
+    oauth_refresh_failing: bool
+    access_token_expires_at: str | None
+    # Minutes since the cached access token expired. None when the token is
+    # still inside its validity window or when no token has been seeded yet.
+    access_token_stale_minutes: float | None
+
+
 class StatusReport(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -157,6 +175,7 @@ class StatusReport(BaseModel):
     errors: ErrorsStatus
     hermes_aux: HermesAuxStatus
     router: RouterStatus
+    oauth: OAuthStatus
 
 
 def _utc_now() -> datetime:
@@ -323,6 +342,82 @@ async def _read_router(db_path: str) -> RouterStatus:
     )
 
 
+async def _read_oauth(db_path: str) -> OAuthStatus:
+    """Story 6-15: Outlook OAuth refresh-token surface.
+
+    Reads the single-row `oauth_state` table for the microsoft_graph provider.
+    The `oauth_refresh_failing` flag is computed from
+    `consecutive_refresh_failures` (bumped by `mailbot_api/sync/oauth.py`'s
+    `exchange_and_persist` failure paths, reset to 0 on success). Threshold:
+    `OAUTH_REFRESH_FAIL_THRESHOLD` (default 3).
+
+    No row yet → all-zero status with no alarm. The bootstrap seed flow
+    (Story 1-6) inserts the row on the first sync iteration, so this branch
+    is only reachable on a fresh deploy that has never run sync.
+
+    Story 6-15 CR-8: if migration 023 (the one that introduces
+    `consecutive_refresh_failures`) has not yet applied — e.g., a healthcheck
+    races `apply_pending_migrations` during boot, or a test imports the
+    reader without running migrations — the read raises a sqlite3
+    `OperationalError: no such column`. Returning the all-zero status keeps
+    the status board responsive instead of taking down `/admin/status`. We
+    do not import sqlite3 directly (boundary rule reserves that to
+    db/connection.py + db/migrations_runner.py); detection by error-message
+    substring is sufficient since the message text is stable across the
+    library versions we ship.
+    """
+    try:
+        row = await connection.fetchone(
+            db_path, queries.OAUTH_STATE_STATUS_SELECT, ("microsoft_graph",)
+        )
+    except Exception as exc:  # noqa: BLE001 — narrowed below
+        if "no such column" not in str(exc).lower():
+            raise
+        logger.warning(
+            "oauth status read failed pre-migration — treating as all-zero",
+            extra={"event": "status.oauth.pre_migration", "error": str(exc)[:200]},
+        )
+        return OAuthStatus(
+            last_rotated_at=None,
+            rotation_count=0,
+            consecutive_refresh_failures=0,
+            oauth_refresh_failing=False,
+            access_token_expires_at=None,
+            access_token_stale_minutes=None,
+        )
+    if row is None:
+        return OAuthStatus(
+            last_rotated_at=None,
+            rotation_count=0,
+            consecutive_refresh_failures=0,
+            oauth_refresh_failing=False,
+            access_token_expires_at=None,
+            access_token_stale_minutes=None,
+        )
+    access_expires_at = row[0]
+    last_rotated_at = row[1]
+    rotation_count = int(row[2])
+    consecutive_failures = int(row[3])
+    stale_minutes: float | None = None
+    if access_expires_at:
+        try:
+            expiry = datetime.fromisoformat(access_expires_at.replace("Z", "+00:00"))
+        except ValueError:
+            expiry = None
+        if expiry is not None:
+            elapsed = _utc_now() - expiry
+            if elapsed > timedelta(0):
+                stale_minutes = elapsed.total_seconds() / 60.0
+    return OAuthStatus(
+        last_rotated_at=last_rotated_at,
+        rotation_count=rotation_count,
+        consecutive_refresh_failures=consecutive_failures,
+        oauth_refresh_failing=consecutive_failures >= OAUTH_REFRESH_FAIL_THRESHOLD,
+        access_token_expires_at=access_expires_at,
+        access_token_stale_minutes=stale_minutes,
+    )
+
+
 async def _read_hermes_aux(db_path: str) -> HermesAuxStatus:
     """Path 1 (Story 6-1 Dev Notes): stateless threshold-based drift flag.
 
@@ -419,6 +514,7 @@ async def assemble_status(db_path: str) -> StatusReport:
     errors_t = asyncio.create_task(_read_errors(db_path))
     hermes_aux_t = asyncio.create_task(_read_hermes_aux(db_path))
     router_t = asyncio.create_task(_read_router(db_path))
+    oauth_t = asyncio.create_task(_read_oauth(db_path))
 
     return StatusReport(
         container_health=await container_t,
@@ -430,6 +526,7 @@ async def assemble_status(db_path: str) -> StatusReport:
         errors=await errors_t,
         hermes_aux=await hermes_aux_t,
         router=await router_t,
+        oauth=await oauth_t,
     )
 
 
@@ -443,6 +540,8 @@ __all__ = [
     "HERMES_AUX_DRIFT_THRESHOLD_24H",
     "HermesAuxStatus",
     "IngestStatus",
+    "OAUTH_REFRESH_FAIL_THRESHOLD",
+    "OAuthStatus",
     "RouterErrorSummary",
     "RouterStatus",
     "StatusReport",

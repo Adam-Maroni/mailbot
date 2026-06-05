@@ -53,11 +53,13 @@ from mailbot_api.db.queries import (
     PENDING_ACTION_MARK_APPLIED,
     PENDING_ACTION_MARK_APPLIED_WITH_GRANT,
     PENDING_ACTION_MARK_FAILED,
+    PENDING_ACTION_RELEASE_CLAIM,
     PENDING_ACTION_REVERT_TO_PENDING_GRANT,
     PENDING_ACTIONS_SELECT_DRAINABLE,
     SEND_FAMILY_BUDGET_CONSUMED_TODAY_COUNT,
 )
 from mailbot_api.notifications import tiers as notification_tiers
+from mailbot_api.router.pause import get_pause_state
 
 _logger = logging.getLogger(__name__)
 
@@ -132,6 +134,14 @@ async def _claim_row(db_path: str, row_id: int) -> bool:
     """Atomic CLAIM: returns True iff we successfully flipped pending→draining."""
     rowcount = await execute_write(db_path, PENDING_ACTION_CLAIM_DRAINING, (row_id,))
     return rowcount == 1
+
+
+async def _release_claim(db_path: str, row: PendingActionRow) -> None:
+    """Story 6-15 CR-3: flip a claimed row back to pending when a mid-tick
+    pause arrives before dispatch. Conditional on `draining` so a row that
+    somehow raced to terminal state is left alone.
+    """
+    await execute_write(db_path, PENDING_ACTION_RELEASE_CLAIM, (row.id,))
 
 
 async def _mark_applied(
@@ -414,6 +424,26 @@ async def run_tick(
     """
     if adapter is None:
         adapter = FakeGraphWriteAdapter()
+    # Story 6-15: gate the entire tick on the router pause-state. Story 2-9's
+    # pause/resume plumbing only short-circuits the router's `ask_router`
+    # dispatch path; the drainer talks to Graph directly via the adapter and
+    # would otherwise keep burning `budget_consumed=1` per Tier-2/3 row when
+    # `mailbot_api/sync/oauth.py` auto-paused on `oauth_refresh_failing`.
+    # The check sits before `_claim_row` so paused rows stay pending — the
+    # post-resume tick picks them up cleanly with no stuck-in-draining state.
+    # Story 6-15 CR-13: snapshot pause state once so the log `reason` matches
+    # the `is_paused` we acted on (a concurrent resume between the two calls
+    # would otherwise log reason=None while still returning 0).
+    pause_state = get_pause_state()
+    if pause_state.is_paused():
+        _logger.info(
+            "drainer tick skipped — router paused",
+            extra={
+                "event": "action.drainer.tick.skipped",
+                "reason": pause_state.reason(),
+            },
+        )
+        return 0
     rows_data = await fetchall(db_path, PENDING_ACTIONS_SELECT_DRAINABLE, (batch_size,))
     # CR-4-4-3: emit prefetch_count at tick.start so the metric name is honest;
     # processed count fires at tick.done after the loop.
@@ -428,6 +458,23 @@ async def run_tick(
         if not await _claim_row(db_path, row.id):
             continue
         processed += 1
+        # Story 6-15 CR-3: re-check pause state between claim and dispatch so a
+        # mid-tick auto-pause (e.g., OAuth threshold crossed during this tick)
+        # stops further Graph dispatches in the same batch. Already-claimed
+        # rows are flipped back to `pending` so the post-resume tick picks
+        # them up cleanly.
+        if pause_state.is_paused():
+            _logger.info(
+                "drainer mid-tick pause — releasing claimed row back to pending",
+                extra={
+                    "event": "action.drainer.tick.mid_tick_paused",
+                    "action_id": row.id,
+                    "reason": pause_state.reason(),
+                },
+            )
+            await _release_claim(db_path, row)
+            processed -= 1
+            break
         # CR-4-4-1: defensive catch-all so an unexpected exception in any of
         # the per-tier checks / history write / send-cap query does not leave
         # the row stuck in `draining` forever. The adapter-level try/except

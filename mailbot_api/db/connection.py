@@ -87,6 +87,30 @@ def _execute_write_sync(db_path: str, query: str, params: tuple[Any, ...]) -> in
             raise
 
 
+def _execute_write_returning_sync(
+    db_path: str, query: str, params: tuple[Any, ...]
+) -> tuple[Any, ...] | None:
+    """Run an UPDATE/DELETE/INSERT with a RETURNING clause inside the standard
+    BEGIN IMMEDIATE / COMMIT envelope and return the (first) returned row.
+
+    Story 6-15 CR-2: introduced for `OAUTH_STATE_BUMP_REFRESH_FAILURE` which
+    needs the post-bump value of `consecutive_refresh_failures` to make a
+    race-safe threshold-crossing decision. The previous read-modify-decide
+    pattern (snapshot in memory, BUMP, decide from snapshot+1) could
+    double-fire or miss-fire when two callers raced.
+    """
+    with get_connection(db_path) as conn:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(query, params)
+            row: tuple[Any, ...] | None = cur.fetchone()
+            conn.commit()
+            return row
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def _execute_insert_returning_id_sync(db_path: str, query: str, params: tuple[Any, ...]) -> int:
     """Run an INSERT inside BEGIN IMMEDIATE / COMMIT, returning lastrowid.
 
@@ -152,3 +176,17 @@ async def execute_insert_returning_id(
     """
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _execute_insert_returning_id_sync, db_path, query, params)
+
+
+async def execute_write_returning(
+    db_path: str, query: str, params: tuple[Any, ...] = ()
+) -> tuple[Any, ...] | None:
+    """Async wrapper for UPDATE/INSERT/DELETE ... RETURNING ... statements.
+
+    Story 6-15 CR-2: introduced for atomic bump-and-read of
+    `oauth_state.consecutive_refresh_failures` so threshold-crossing
+    decisions read the post-bump DB value, not a stale in-memory snapshot.
+    Same transaction semantics as `execute_write` (BEGIN IMMEDIATE / COMMIT).
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _execute_write_returning_sync, db_path, query, params)

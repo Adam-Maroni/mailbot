@@ -432,6 +432,8 @@ def _render_status_report(report: dict[str, object]) -> list[str]:
       cache         — cache_hit_rate_7d < 0.3 AND not the empty-DB case (skip if 0.0 and no calls happened)
       errors        — last_5_router_errors non-empty
       hermes_aux    — drift_alarm True
+      router        — paused True (Story 6-2)
+      oauth         — oauth_refresh_failing True (Story 6-15)
       containers    — any value != "ok"
     """
     warnings: list[str] = []
@@ -591,6 +593,22 @@ def _render_status_report(report: dict[str, object]) -> list[str]:
         print(f"  reason:            {router.get('reason')}")  # noqa: T201
     else:
         print("  paused:            no")  # noqa: T201
+
+    # Story 6-15: OAUTH section — refresh-token lifecycle + oauth_refresh_failing alarm.
+    oauth = _as_dict(report.get("oauth"))
+    oauth_failing = bool(oauth.get("oauth_refresh_failing"))
+    section_header("oauth", warn=oauth_failing)
+    print(f"  refresh failing:   {'yes (re-auth required)' if oauth_failing else 'no'}")  # noqa: T201
+    print(  # noqa: T201
+        f"  consecutive fails: {_as_int(oauth.get('consecutive_refresh_failures'))}",
+    )
+    print(f"  rotation count:    {_as_int(oauth.get('rotation_count'))}")  # noqa: T201
+    # Story 6-15 CR-14: render None as "never" instead of the literal string "None".
+    last_rotated = oauth.get("last_rotated_at") or "never"
+    print(f"  last rotated at:   {last_rotated}")  # noqa: T201
+    stale = oauth.get("access_token_stale_minutes")
+    stale_str = f"{stale:.1f}m past expiry" if isinstance(stale, (int, float)) else "fresh"
+    print(f"  access token:      {stale_str}")  # noqa: T201
 
     container = _as_dict(report.get("container_health"))
     container_warn = any(
