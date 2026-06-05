@@ -111,6 +111,42 @@ def _execute_write_returning_sync(
             raise
 
 
+def _execute_insert_and_write_sync(
+    db_path: str,
+    insert_query: str,
+    insert_params: tuple[Any, ...],
+    write_query: str,
+    write_params: tuple[Any, ...],
+) -> tuple[int, int]:
+    """Run an INSERT followed by a write in a SINGLE BEGIN IMMEDIATE / COMMIT.
+
+    Story 6-13 CR-1: `mint_grant` needs to (a) INSERT the action_grants row
+    and (b) UPDATE all matching `pending_grant` rows to `pending` in a single
+    atomic write. Without batching, a crash or async cancellation between
+    the two commits leaves `action_grants` with the new grant but
+    `pending_actions.status='pending_grant'` rows unmodified — stuck until
+    the next `mint_grant` fires (PENDING_ACTIONS_SELECT_DRAINABLE filters
+    on status='pending' only, so the drainer can't recover them).
+
+    Returns (insert_lastrowid, write_rowcount). Both writes share the same
+    transaction envelope: either both commit or both rollback.
+    """
+    with get_connection(db_path) as conn:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            insert_cur = conn.execute(insert_query, insert_params)
+            new_id = insert_cur.lastrowid
+            if new_id is None:
+                raise RuntimeError("INSERT did not produce a lastrowid")
+            write_cur = conn.execute(write_query, write_params)
+            rowcount = write_cur.rowcount
+            conn.commit()
+            return (new_id, rowcount)
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def _execute_insert_returning_id_sync(db_path: str, query: str, params: tuple[Any, ...]) -> int:
     """Run an INSERT inside BEGIN IMMEDIATE / COMMIT, returning lastrowid.
 
@@ -176,6 +212,33 @@ async def execute_insert_returning_id(
     """
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _execute_insert_returning_id_sync, db_path, query, params)
+
+
+async def execute_insert_and_write(
+    db_path: str,
+    insert_query: str,
+    insert_params: tuple[Any, ...],
+    write_query: str,
+    write_params: tuple[Any, ...],
+) -> tuple[int, int]:
+    """Async wrapper for atomic INSERT + UPDATE/INSERT/DELETE batch.
+
+    Story 6-13 CR-1: introduced for `mint_grant`'s ACTION_GRANT_INSERT +
+    PENDING_GRANT_PROMOTE_FOR_ACTION_TYPE pair which must commit atomically
+    or both roll back. Same transaction semantics as `execute_write`
+    (BEGIN IMMEDIATE / COMMIT) but batches two statements in one envelope.
+    Returns (insert_lastrowid, write_rowcount).
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        _execute_insert_and_write_sync,
+        db_path,
+        insert_query,
+        insert_params,
+        write_query,
+        write_params,
+    )
 
 
 async def execute_write_returning(

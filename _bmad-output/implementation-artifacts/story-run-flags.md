@@ -157,3 +157,46 @@ Neither warrants a follow-up story. Corrected commands are recorded in `epic-6-r
 
 **Permission-prompt summary:** No permission log configured on the target. Zero prompts observed during the partial walk.
 
+## Story 6-13 — 2026-06-05
+
+**Headline:** F22 closure shipped — `mint_grant` `pending_grant`→`pending` promotion now atomic via new `execute_insert_and_write` helper; 7 new unit tests (6 promotion + 1 atomicity rollback regression) + 2 integration tests + AC-4 symmetric-demotion audit (hypothesis CONFIRMED).
+
+**Dev model:** claude-opus-4-7 (inline execution, no sub-skill delegation)
+**Review model:** claude-sonnet-4-6 (Agent tool subagent)
+
+**Review rounds run:** 1. Issues found: 6 (1 MED, 3 LOW, 2 INFO). Issues applied: 6. Apply rate: 100% (≥70% threshold ✓).
+
+**Aggregated [deferred:*] items:** none.
+
+**Gate verdicts:**
+
+- 2.3.5 (Pre-Review Self-Audit) — PASS (all 5 sections; §3 surfaced 5 self-caught issues — 1 escalated to reviewer for second opinion; §5 posture audit 11/11 with one §5.9 minor-drift breakdown correction applied — Task 5 +6+2 not +5+2+1)
+- 2.4 (Code Review) — PASS (6 issues, 6 applied; biggest find: CR-1 MED non-atomic INSERT+UPDATE seam between ACTION_GRANT_INSERT and PENDING_GRANT_PROMOTE_FOR_ACTION_TYPE — closed via new `execute_insert_and_write` async helper batching both writes in a single BEGIN IMMEDIATE / COMMIT envelope + regression test asserting rollback symmetry)
+- 2.4.4 (Dev Agent Record completeness) — PASS (model named: Dev claude-opus-4-7 + Reviewer claude-sonnet-4-6; completion notes 1+ bullet per task; File List 7 entries; story-file Status=done after gate 2.4.8 flip)
+- 2.4.5 (UI-scope pre-flight) — N/A — project has no graphical frontend per PORTING.md; UI ACs N/A per Story 6-13 (backend-only seam, no user-visible surface).
+- 2.4.6 (File-List-vs-git cross-check) — PASS (4 modified + 2 new files in story scope, all in File List; `git ls-files --error-unmatch` exits 0 for all File List entries post-staging)
+- 2.4.7 (Middleware-Real-Bootstrap) — PASS (Router-real reframing for MailBot: `mint_grant` is a state-changing write on `action_grants` + `pending_actions`; integration test exercises real SQLite + real schema + real drainer + FakeGraphWriteAdapter at the Graph boundary — no `is_grant_valid` / `execute_write` mocking; satisfies MailBot's Router-as-integration-boundary contract)
+- 2.4.8 (Verbose-row truncation) — PASS (sprint-status.yaml row replaced with 1-2-sentence headline + pointer; full Completion Notes live in story file)
+
+**Step 2.5 dev-env verification:** PASS — all 4 quality gates green (ruff / mypy --strict 122 files / boundary / pytest 1079+2 skipped). No separate dev-env skill invocation needed — gates are the dev-env health check on this codebase.
+
+**Permission-prompt summary:** No permission log configured. Zero prompts observed during the full run.
+
+### Story 6-13 Manual Verification
+
+**Verdict:** PASS (autonomous self-verification per user instruction "run the manual verification yourself").
+
+**Checkpoints walked:** 7/7. All PASS.
+
+- AC-1 (`mint_grant` invokes promotion + structured-log `pending_grant_promoted=N`): verified at `authorization.py:170-176` (call site) + `:184-194` (log site) + `:192` (log field).
+- AC-2 (query filters by `action_type` only, not `email_id`): verified at `queries.py:804-807` — SQL `UPDATE pending_actions SET status = 'pending' WHERE status = 'pending_grant' AND action_type = ?` (single `?` placeholder, no email_id predicate).
+- AC-3a (matching-type promotion unit test): `test_mint_grant_promotes_matching_pending_grant_row` PASSED.
+- AC-3b (counter-test: different action_type does NOT promote): `test_mint_grant_does_not_promote_different_action_type` PASSED.
+- AC-3c (full propose→drainer→mint→drain→applied lifecycle): both `test_full_lifecycle_pending_grant_promotion_on_mint_grant` + `test_full_lifecycle_mint_grant_does_not_disturb_unrelated_action_type` PASSED.
+- AC-4 (symmetric-demotion audit paragraph): verified at story file lines 86-98 — hypothesis CONFIRMED, 3 drainer-code citations support the conclusion.
+- AC-5 (MANDATORY-CR per §5.12): verified — `### Code Review Action Items (sonnet-4-6, 2026-06-05)` section has 6/6 CR findings marked `[x]` APPLIED (100% apply rate); `## Senior Developer Review (AI)` section populated.
+
+**Findings:** none.
+
+**Verification limitation noted:** automated self-verification confirms code-and-test correctness. It does NOT substitute for live exercise of `mint_grant` against a real running MailBot instance (which would require Outlook OAuth + a real Tier-2/3 propose event arriving via the Graph delta sync). The cross-store contract (`action_grants` INSERT triggers `pending_actions` UPDATE atomically) is proven end-to-end via the integration test against real SQLite + the real drainer + FakeGraphWriteAdapter at the Graph boundary, satisfying Step 2.4.7's MailBot reframing.
+

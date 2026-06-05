@@ -28,7 +28,7 @@ from pydantic import BaseModel, ConfigDict
 
 from mailbot_api.actions.types import ActionType, tier_for
 from mailbot_api.db.connection import (
-    execute_insert_returning_id,
+    execute_insert_and_write,
     execute_write,
     fetchall,
 )
@@ -105,6 +105,17 @@ async def mint_grant(
     Validates expires_at, window size, batch size, and tier eligibility BEFORE
     any DB write. Returns the new grant's id + minted/expires timestamps on
     success.
+
+    Atomicity (Story 6-13 CR-1): the ACTION_GRANT_INSERT and the F22
+    pending_grant→pending promotion (PENDING_GRANT_PROMOTE_FOR_ACTION_TYPE)
+    run inside a single BEGIN IMMEDIATE / COMMIT transaction via
+    `execute_insert_and_write`. If either statement fails, both roll back —
+    no orphan grant row, no half-promoted pending_actions. Callers therefore
+    get an exception only on real DB-level failures (e.g. WAL contention
+    past busy_timeout), in which case the loud-fail semantics correctly
+    surface the contention bug rather than silently leave the system in a
+    partially-applied state (per CR-4 disposition — atomicity makes the
+    swallow-vs-loud-fail debate moot).
     """
     # Tier check first — fastest refusal, no DB read needed.
     tier = tier_for(action_type)
@@ -148,19 +159,28 @@ async def mint_grant(
     minted_at_iso = _iso(now)
     expires_at_iso = _iso(expires_at)
 
-    grant_id = await execute_insert_returning_id(
+    # F22 (Story 6-6.5 walk, 2026-06-04 + Story 6-13 CR-1, 2026-06-05): the
+    # grant INSERT and the pending_grant→pending promotion MUST commit in a
+    # single transaction. Without batching, a crash between the two writes
+    # leaves the grant minted but pending_grant rows stuck (the drainer's
+    # PENDING_ACTIONS_SELECT_DRAINABLE filters on status='pending' only, so
+    # those rows are invisible until the next mint_grant fires). The
+    # promotion filters by action_type only — is_grant_valid() at drain time
+    # re-checks email_id membership against the JSON list.
+    grant_id, promoted = await execute_insert_and_write(
         db_path,
         ACTION_GRANT_INSERT,
         (action_type.value, email_ids_json, expires_at_iso, minted_at_iso),
+        PENDING_GRANT_PROMOTE_FOR_ACTION_TYPE,
+        (action_type.value,),
     )
 
-    # F22 (Story 6-6.5 walk, 2026-06-04): wake pending_grant rows waiting on
-    # this action_type. Filters by action_type only — is_grant_valid() at
-    # drain time re-checks email_id membership against the JSON list.
-    promoted = await execute_write(
-        db_path, PENDING_GRANT_PROMOTE_FOR_ACTION_TYPE, (action_type.value,),
-    )
-
+    # CR-5 (Story 6-13): pending_grant_promoted is observable only via the
+    # structured log — NOT exposed on MintGrantOut. Rationale: the verb
+    # shim's external contract is "grant minted ok"; the promotion is an
+    # internal side-effect for the drainer's benefit. If a future external
+    # API surfaces mint_grant directly to operators, add pending_grant_promoted
+    # to MintGrantOut as a non-breaking additive field at that time.
     _logger.info(
         "action grant minted",
         extra={

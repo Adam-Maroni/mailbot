@@ -310,3 +310,247 @@ async def test_action_grant_revoked_log_line_emitted(
         await revoke_grant(mint_out.grant_id, db_path=db_path)
     rec = next(r for r in caplog.records if getattr(r, "event", None) == "action.grant.revoked")
     assert rec.grant_id == mint_out.grant_id
+
+
+# ---- Story 6-13: pending_grant -> pending promotion on mint_grant (F22) ------
+
+
+async def _seed_pending_grant_row(
+    db_path: str,
+    *,
+    action_type: str,
+    email_id: str | None = "e-1",
+    tier: int = 2,
+) -> int:
+    """Direct INSERT of a pending_actions row in status='pending_grant'.
+
+    Mirrors what `_revert_to_pending_grant` (drainer) writes when a Tier-2/3
+    row finds no valid grant at drain time. Returns the row id.
+
+    CR-2 (Story 6-13 reviewer): we deliberately seed `proposed_by_grant_id=NULL`
+    even though production rows reach `pending_grant` via the drainer's
+    `PENDING_ACTION_REVERT_TO_PENDING_GRANT` query which always writes a
+    non-NULL grant_id. This is safe for the promotion-path tests because the
+    `PENDING_GRANT_PROMOTE_FOR_ACTION_TYPE` UPDATE filters by `status` +
+    `action_type` only and never reads `proposed_by_grant_id`. If a future
+    consumer (e.g. revoke_grant cascade) reads that column from a promoted
+    row, this helper should be extended to accept an optional grant_id.
+    """
+    from mailbot_api.db.connection import execute_insert_returning_id
+
+    proposed_at = _hours_from_now(0).isoformat().replace("+00:00", "Z")
+    return await execute_insert_returning_id(
+        db_path,
+        "INSERT INTO pending_actions (email_id, action_type, tier, payload, "
+        "proposed_at, status) VALUES (?, ?, ?, ?, ?, ?)",
+        (email_id, action_type, tier, "{}", proposed_at, "pending_grant"),
+    )
+
+
+def _read_pending_status(db_path: str, action_id: int) -> str:
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT status FROM pending_actions WHERE id = ?", (action_id,),
+        ).fetchone()
+    return row[0]
+
+
+async def test_mint_grant_promotes_matching_pending_grant_row(tmp_path: Path) -> None:
+    """AC-3 first bullet: mint_grant flips a seeded pending_grant row with
+    matching action_type to pending."""
+    db_path = _setup(tmp_path)
+    action_id = await _seed_pending_grant_row(db_path, action_type="delete")
+    assert _read_pending_status(db_path, action_id) == "pending_grant"
+
+    out = await mint_grant(
+        ActionType.DELETE, ["e-1"], _hours_from_now(1), db_path=db_path,
+    )
+    assert out.ok is True
+
+    assert _read_pending_status(db_path, action_id) == "pending"
+
+
+async def test_mint_grant_does_not_promote_different_action_type(
+    tmp_path: Path,
+) -> None:
+    """AC-3 second bullet (counter-test): mint_grant of SEND_REPLY does NOT
+    promote a seeded pending_grant row whose action_type is DELETE.
+
+    This test is the load-bearing one — without the `AND action_type = ?`
+    filter in PENDING_GRANT_PROMOTE_FOR_ACTION_TYPE, a broad sweep would
+    flip every pending_grant row regardless of type. is_grant_valid() at
+    drain time re-checks email_id membership, but action_type mismatch
+    must be filtered at the SQL boundary."""
+    db_path = _setup(tmp_path)
+    delete_action_id = await _seed_pending_grant_row(
+        db_path, action_type="delete",
+    )
+    assert _read_pending_status(db_path, delete_action_id) == "pending_grant"
+
+    out = await mint_grant(
+        ActionType.SEND_REPLY, ["e-1"], _hours_from_now(1), db_path=db_path,
+    )
+    assert out.ok is True
+
+    # Different action_type must NOT promote.
+    assert _read_pending_status(db_path, delete_action_id) == "pending_grant"
+
+
+async def test_mint_grant_promotes_multiple_matching_rows(tmp_path: Path) -> None:
+    """Broad sweep: a single mint_grant promotes ALL pending_grant rows of
+    that action_type, regardless of email_id (is_grant_valid does the
+    email_id membership re-check at drain time)."""
+    db_path = _setup(tmp_path)
+    a1 = await _seed_pending_grant_row(db_path, action_type="delete", email_id="e-1")
+    a2 = await _seed_pending_grant_row(db_path, action_type="delete", email_id="e-2")
+    a3 = await _seed_pending_grant_row(db_path, action_type="delete", email_id="e-99")
+
+    out = await mint_grant(
+        ActionType.DELETE, ["e-1"], _hours_from_now(1), db_path=db_path,
+    )
+    assert out.ok is True
+
+    # All three promoted, even e-99 which is NOT in the grant's email_ids list.
+    # The is_grant_valid re-check at drain time will revert e-99 back to
+    # pending_grant on the drainer's next tick (the broad-sweep contract) —
+    # PROVIDED the grant-wait window has not elapsed. For Tier-3 rows past
+    # TIER_3_GRANT_WAIT_WINDOW the drainer marks them `failed` instead of
+    # reverting (drainer.py:330-332). This test is instantaneous so the
+    # window concern does not apply here; the Tier-3 grant-expiry path is
+    # covered by Story 4-4's existing `test_tier_3_delete_grant_expired_*`.
+    assert _read_pending_status(db_path, a1) == "pending"
+    assert _read_pending_status(db_path, a2) == "pending"
+    assert _read_pending_status(db_path, a3) == "pending"
+
+
+async def test_mint_grant_promotion_log_includes_count(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """AC-1: the side-effect MUST log `pending_grant_promoted=N` in the
+    structured `action.grant.minted` log line."""
+    db_path = _setup(tmp_path)
+    await _seed_pending_grant_row(db_path, action_type="delete", email_id="e-1")
+    await _seed_pending_grant_row(db_path, action_type="delete", email_id="e-2")
+
+    with caplog.at_level(logging.INFO, logger="mailbot_api.actions.authorization"):
+        out = await mint_grant(
+            ActionType.DELETE, ["e-1", "e-2"], _hours_from_now(1), db_path=db_path,
+        )
+    assert out.ok is True
+    rec = next(
+        r for r in caplog.records if getattr(r, "event", None) == "action.grant.minted"
+    )
+    assert rec.pending_grant_promoted == 2
+
+
+async def test_mint_grant_promotion_zero_when_no_pending_grant_rows(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The side-effect is safe when no pending_grant rows exist — the
+    structured log records pending_grant_promoted=0."""
+    db_path = _setup(tmp_path)
+
+    with caplog.at_level(logging.INFO, logger="mailbot_api.actions.authorization"):
+        out = await mint_grant(
+            ActionType.DELETE, ["e-1"], _hours_from_now(1), db_path=db_path,
+        )
+    assert out.ok is True
+    rec = next(
+        r for r in caplog.records if getattr(r, "event", None) == "action.grant.minted"
+    )
+    assert rec.pending_grant_promoted == 0
+
+
+async def test_mint_grant_promotion_skips_pending_and_applied_rows(
+    tmp_path: Path,
+) -> None:
+    """The promotion query filters on `status = 'pending_grant'` — rows
+    already in pending / applied / failed / cancelled MUST NOT be touched."""
+    db_path = _setup(tmp_path)
+    pending_id = await execute_insert_returning_id_helper(
+        db_path, "delete", "pending",
+    )
+    applied_id = await execute_insert_returning_id_helper(
+        db_path, "delete", "applied",
+    )
+    pending_grant_id = await _seed_pending_grant_row(db_path, action_type="delete")
+
+    out = await mint_grant(
+        ActionType.DELETE, ["e-1"], _hours_from_now(1), db_path=db_path,
+    )
+    assert out.ok is True
+
+    assert _read_pending_status(db_path, pending_id) == "pending"
+    assert _read_pending_status(db_path, applied_id) == "applied"
+    assert _read_pending_status(db_path, pending_grant_id) == "pending"
+
+
+async def execute_insert_returning_id_helper(
+    db_path: str, action_type: str, status: str,
+) -> int:
+    """Helper: insert a pending_actions row with arbitrary status."""
+    from mailbot_api.db.connection import execute_insert_returning_id
+
+    proposed_at = _hours_from_now(0).isoformat().replace("+00:00", "Z")
+    return await execute_insert_returning_id(
+        db_path,
+        "INSERT INTO pending_actions (email_id, action_type, tier, payload, "
+        "proposed_at, status) VALUES (?, ?, ?, ?, ?, ?)",
+        ("e-1", action_type, 2, "{}", proposed_at, status),
+    )
+
+
+async def test_mint_grant_atomicity_rollback_on_promotion_failure(
+    tmp_path: Path,
+) -> None:
+    """CR-1 (Story 6-13 reviewer): the grant INSERT and the pending_grant→
+    pending promotion MUST commit atomically. If the promotion query fails
+    after the INSERT succeeds, the entire transaction MUST roll back —
+    no orphan grant row in action_grants, no half-applied state.
+
+    Trigger: pass a deliberately-invalid promotion query (referencing a
+    non-existent column) to the batch helper. SQLite raises OperationalError
+    after the INSERT half has executed but before commit, exercising the
+    rollback path."""
+    from mailbot_api.db.connection import execute_insert_and_write
+    from mailbot_api.db.queries import ACTION_GRANT_INSERT
+
+    db_path = _setup(tmp_path)
+    # Seed a pending_grant row so the promotion would otherwise UPDATE 1 row.
+    await _seed_pending_grant_row(db_path, action_type="delete")
+
+    now = datetime.now(timezone.utc)
+    expires_iso = (now + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    minted_iso = now.isoformat().replace("+00:00", "Z")
+
+    invalid_update = (
+        "UPDATE pending_actions SET status = 'pending' "
+        "WHERE nonexistent_column = ?"
+    )
+
+    import sqlite3 as _sqlite3
+
+    with pytest.raises(_sqlite3.OperationalError):
+        await execute_insert_and_write(
+            db_path,
+            ACTION_GRANT_INSERT,
+            ("delete", json.dumps(["e-1"]), expires_iso, minted_iso),
+            invalid_update,
+            ("delete",),
+        )
+
+    # Atomicity assertion: no grant row should exist (rolled back).
+    with get_connection(db_path) as conn:
+        grants = conn.execute("SELECT COUNT(*) FROM action_grants").fetchone()
+        assert grants[0] == 0, (
+            f"action_grants row leaked despite promotion failure — "
+            f"transaction not atomic. Got {grants[0]} rows."
+        )
+    # And the pending_grant row stays in pending_grant (not promoted).
+    with get_connection(db_path) as conn:
+        statuses = conn.execute(
+            "SELECT status FROM pending_actions WHERE status = 'pending_grant'",
+        ).fetchall()
+        assert len(statuses) == 1, (
+            f"pending_grant row was promoted despite rollback — expected 1, got {len(statuses)}"
+        )
