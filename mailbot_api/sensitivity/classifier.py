@@ -22,7 +22,7 @@ Reference: epics.md lines 1157–1191 (Story 3.3 spec).
 from __future__ import annotations
 
 import logging
-from typing import Final
+from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict
 
@@ -32,8 +32,19 @@ from mailbot_api.db.queries import (
     EMAIL_SENSITIVITY_UPDATE,
 )
 from mailbot_api.observability.timestamps import utc_z_now
-from mailbot_api.prompts.sensitivity_class.v1 import VERSION as SENSITIVITY_PROMPT_V
 from mailbot_api.prompts.sensitivity_class.v1 import SensitivityClassOutput
+
+# Story 6-18 (F24 closure): `SensitivityClassOutput` is imported from v1 as
+# the canonical shape — v2 re-exports it. The Pydantic schema is byte-stable
+# across versions; only the SYSTEM prompt text differs. Keeping a single
+# canonical class lets isinstance() checks remain version-agnostic — Router
+# resolves whichever prompt version `policy.yaml` names, and the returned
+# `result.output` is the SAME class regardless.
+#
+# `sensitivity_prompt_v` (the companion column written to `emails`) is
+# resolved at call time from the active policy entry — NOT from a module
+# constant — so the audit row reflects the version that was ACTUALLY
+# dispatched, not whatever version this module happened to import.
 from mailbot_api.router.errors import ErrorCode, RouterError
 from mailbot_api.router.policy import snapshot_for_dispatch
 from mailbot_api.router.router import ask_router
@@ -85,21 +96,35 @@ def _utc_iso8601_now() -> str:
     return utc_z_now()
 
 
-def _assert_qwen_only_per_call() -> RouterError | None:
-    """AC-2 per-call safeguard. Returns RouterError on violation, None on pass.
+def _read_snapshot_or_error() -> tuple[Any, RouterError | None]:
+    """Read the dispatch-time policy snapshot once. Returns (snapshot, None) on
+    success or (None, error) on failure.
 
-    Reads the dispatch-time policy snapshot (NOT a cached value) so a runtime
-    policy.yaml drift via watchfiles is caught BEFORE the dispatch happens.
+    Story 6-18 CR-3: factored out of `_assert_qwen_only_per_call` so the caller
+    can read the snapshot ONCE and pass it to both the FR-2.5 safeguard AND
+    the `sensitivity_prompt_v` audit-row source. Prior code did three
+    independent reads (safeguard + prompt-version + router internal) which a
+    watchfiles hot-reload between any two could split — the
+    `emails.sensitivity_prompt_v` write and the `router_calls.prompt_version`
+    write could disagree for the same dispatch.
     """
     try:
-        policy = snapshot_for_dispatch()
+        return snapshot_for_dispatch(), None
     except RuntimeError as exc:
-        return RouterError(
+        return None, RouterError(
             code=ErrorCode.PROVIDER_ERROR,
             message=f"sensitivity classifier could not read policy snapshot: {exc}",
             retryable=False,
         )
-    entry = policy.tasks.get("sensitivity_class")
+
+
+def _assert_qwen_only(snapshot: Any) -> RouterError | None:
+    """AC-2 per-call safeguard against a pre-loaded snapshot. Returns
+    RouterError on violation, None on pass. Story 6-18 CR-3: refactored from
+    `_assert_qwen_only_per_call` to accept a snapshot so the caller can read
+    once and pass through — see `_read_snapshot_or_error` for context.
+    """
+    entry = snapshot.tasks.get("sensitivity_class")
     if entry is None:
         return RouterError(
             code=ErrorCode.PROVIDER_ERROR,
@@ -145,10 +170,25 @@ async def classify_sensitivity(
     Returns a SensitivityResult; on failure, `ok=False` and `error` populated.
     The function NEVER raises — errors-as-data per AR-PAT-4.
     """
-    # AC-2 per-call FR-2.5 safeguard.
-    qwen_error = _assert_qwen_only_per_call()
+    # Story 6-18 CR-3: read the policy snapshot ONCE for this dispatch. Both
+    # the FR-2.5 safeguard AND the `sensitivity_prompt_v` audit-row write
+    # source from this same snapshot, so a watchfiles hot-reload mid-dispatch
+    # cannot split the audit trail between `emails.sensitivity_prompt_v` and
+    # `router_calls.prompt_version`. (The router itself reads the snapshot a
+    # second time; that's a separate cross-module dispatch and acceptable —
+    # what we protect against here is the WRITE-side disagreement within this
+    # function's atomic write of the four sensitivity companion columns.)
+    snapshot, snapshot_error = _read_snapshot_or_error()
+    if snapshot is None:
+        assert snapshot_error is not None  # narrow for mypy
+        return SensitivityResult(ok=False, email_id=email_id, error=snapshot_error)
+
+    # AC-2 per-call FR-2.5 safeguard against the captured snapshot.
+    qwen_error = _assert_qwen_only(snapshot)
     if qwen_error is not None:
         return SensitivityResult(ok=False, email_id=email_id, error=qwen_error)
+
+    sensitivity_prompt_v = snapshot.tasks["sensitivity_class"].prompt_version
 
     # Read the email body for the prompt's USER_TEMPLATE placeholders.
     row = await fetchone(db_path, EMAIL_BODY_FOR_SENSITIVITY_SELECT, (email_id,))
@@ -212,7 +252,7 @@ async def classify_sensitivity(
         EMAIL_SENSITIVITY_UPDATE,
         (
             sensitivity,
-            SENSITIVITY_PROMPT_V,
+            sensitivity_prompt_v,
             confidence,
             result.model_used or _QWEN_MODEL_ID,
             _utc_iso8601_now(),
