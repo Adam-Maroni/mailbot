@@ -15,14 +15,15 @@ VERSION: str = "v1"
 
 SYSTEM = (
     "You write a one-line summary of an email in 280 characters or fewer. "
+    "Reply with valid JSON matching the schema; no preamble, no commentary. "
     "Defender tone: factual, no fluff, no opinions, no recommendations. "
     "The summary will be cached and shown to the recipient in a daily digest, "
     "so it must capture the gist (sender intent + key data point if any) in "
     "one scannable sentence.\n"
-    "Examples of good summaries:\n"
-    "  'Sarah confirms Friday 3pm meeting moved to Tuesday 2pm.'\n"
-    "  'Bank statement attached — Sept balance $3,418, due Oct 15.'\n"
-    "  'GitHub: 3 failing tests on PR #482; review requested.'\n"
+    'Examples of good outputs (note: JSON, not plain text):\n'
+    '  {"summary": "Sarah confirms Friday 3pm meeting moved to Tuesday 2pm."}\n'
+    '  {"summary": "Bank statement attached — Sept balance $3,418, due Oct 15."}\n'
+    '  {"summary": "GitHub: 3 failing tests on PR #482; review requested."}\n'
     "Do NOT add commentary, urgency framing, or suggested replies. Just the gist."
 )
 

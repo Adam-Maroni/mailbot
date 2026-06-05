@@ -2,6 +2,48 @@
 
 This file collects flags raised by `autonomous-story-run` runs. One block per invocation.
 
+## Story 6-14 — 2026-06-05
+
+**Headline:** F21 closure shipped — `summary_short` SYSTEM patched with JSON-output instruction (prompt-side drift fix; the lone ingest-prompt missing the canonical "Reply with valid JSON" instruction every sibling carried). 4 regression tests added (3 `_FakeAdapter` router-level + 1 `httpx.MockTransport` → real `AnthropicAdapter` end-to-end for AC-3 literal). MANDATORY-CR pass with 3/5 patches applied + 2 defers. All 4 gates green at 1086+2+2-deselected (+4 net vs Story 6-13 baseline 1082).
+
+**Dev model:** claude-opus-4-7[1m]
+**Review model:** claude-sonnet-4-6
+
+**Review rounds run:** 1. Issues found: 5. Issues applied: 3. Apply rate: 60% (under 70% threshold but the 2 defers are reviewer-tagged `[Defer]` as pre-existing-pattern, not context-pressure skips — defensible).
+
+**Aggregated [deferred:*] items:**
+
+- CR-4 (`_clean_state` fixture asymmetry: policy/registry resets in teardown only, not setup) — pre-existing pattern across all integration tests in the project; not caused by this story. Defensible to fix epic-wide in a separate sweep.
+- CR-5 (SYSTEM "no commentary" twice) — pre-existing in original SYSTEM tail before this story's edit; not contradictory, just slightly redundant.
+- AC-4 (backlog drain via `/admin/status`) — operationally verifiable only on next VPS deploy walk; no local mechanism to reproduce the backlog state.
+
+**Gate verdicts:**
+
+- 2.3.5 (Pre-Review Self-Audit) — PASS (all 5 sections + 12 posture sub-sections complete; §3 surfaced 3 LOW + 3 INFO with dispositions; §5.12 verdict = MANDATORY-CR via criteria 1+5+6)
+- 2.4 (Code Review) — PASS (5 findings, 3 applied inline = CR-1 MockTransport+AnthropicAdapter test for AC-3 literal, CR-2 billing assertion `cost_usd_estimated > 0`, CR-3 happy-path content equality)
+- 2.4.4 (Dev Agent Record completeness) — PASS (model named, completion notes 1+ bullet per AC, File List 4 paths, Status=done in story file)
+- 2.4.5 (UI scope-cut) — N/A — no graphical frontend
+- 2.4.6 (File-List-vs-git untracked-file gate) — PASS (test file staged inline at gate time to clear `git ls-files --error-unmatch`)
+- 2.4.7 (Middleware-real-bootstrap) — PASS — both Router-real (`_FakeAdapter` schema-validation contract) + HTTP-real (`httpx.MockTransport` → real `AnthropicAdapter`) integration coverage present
+- 2.4.8 (Verbose-row truncation) — PASS — sprint-status row truncated to 1-sentence headline + pointer to Completion Notes
+- 2.5 (Dev-env verification) — N/A — project has no configured dev-env-skill
+
+**Files staged (count):** 5
+
+- `mailbot_api/prompts/summary_short/v1.py` (modified, +5/-4)
+- `tests/integration/test_summary_short_f21.py` (new, +384)
+- `_bmad-output/implementation-artifacts/6-14-haiku-summary-short-outcome-failed-despite-billing-f21-investigation.md` (modified)
+- `_bmad-output/implementation-artifacts/6-14.pre-review.md` (new)
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` (modified)
+
+**Flags raised:** 0 CRITICAL / 0 WARNING / 1 INFO
+
+- INFO: applied-rate 60% under nominal 70% threshold — both deferred findings explicitly reviewer-tagged as `[Defer]` with pre-existing-pattern rationale (CR-4 fixture pattern is epic-wide; CR-5 redundancy was already in pre-edit SYSTEM). Not a context-pressure skip; not load-bearing for the F21 fix's correctness.
+
+**Permission-prompt summary:** no permission log configured — prompt count unknown. Subjectively, zero prompts fired during the run; all commands flowed through the existing envelope.
+
+---
+
 ## Story 1-10 — 2026-06-01
 
 **Headline:** 4 sync-correctness patches shipped (ImmutableId Prefer header, changeKey-first extraction with @odata.etag fallback, @removed.reason capture, 410+syncStateNotFound full-resync recovery with debounced urgent notification). 7 code-review issues found and applied including 1 HIGH-severity production correctness bug.
