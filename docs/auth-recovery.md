@@ -147,7 +147,11 @@ The **OAUTH** section should now show:
 
 The **ROUTER** section should show `paused: no` (Story 6-15's auto-resume
 clears the `oauth_refresh_failing` pause once the script succeeds AND the
-pause reason still matches our marker).
+pause reason still matches our marker). Story 6-17 (F26 closure) ensures
+this auto-resume fires reliably even when the script-driven success path
+captured `consecutive_refresh_failures` BELOW the alarm threshold — the
+atomic helper `try_resume_if_reason` is the only safety check needed; no
+threshold-based short-circuit blocks recovery anymore.
 
 The structured log line `event="oauth.token.rotated"` (followed by
 `event="oauth.refresh.auto_resumed"` if we had been auto-paused) confirms
