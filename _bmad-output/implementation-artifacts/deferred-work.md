@@ -1,5 +1,11 @@
 # Deferred Work
 
+## Deferred from: code review of 6-12-anthropic-temperature-deprecated-on-opus-4-7-f19-closure (2026-06-05)
+
+- Model gate string literal vs prefix match [mailbot_api/router/models.py:559,660] — `self.model_id != "claude-opus-4-7"` is exact-literal; a future Anthropic date-suffixed variant (e.g., `claude-opus-4-7-20261001`) with the same no-temperature contract would miss the gate. Kept as exact literal for precision (over-broad prefix risks gating future variants that may re-accept temperature). Revisit if Anthropic ships a date-suffixed Opus 4.7 variant.
+- `call_with_tools` F19 regression test does not assert `tools` inclusion [tests/unit/router/test_anthropic_adapter.py:275-296] — test verifies temperature absence but not that the `tools` key was correctly populated in the request body. A refactor stripping tools would not be caught by this test. Tools-translation coverage is Story 6-9's responsibility; tracking here for completeness.
+- `call` method lacks F14 empty-system guard [mailbot_api/router/models.py:539-545] — `call_with_tools` has `if system and system.strip():` (F14 fix from Story 6-9 CP-2 walk) but `call` unconditionally wraps system in `TextBlockParam` with `cache_control: ephemeral`. Empty-system Opus 4.7 call via `call()` would likely return 400. Pre-existing asymmetry; apply F14's guard to the `call` path in a future story.
+
 ## Deferred from: code review of story-1-9 (2026-06-01)
 
 - Consent-flow `?error=...` callback maps to exit code 2 [scripts/mint_refresh_token.py:373-385] — the spec's exit-code table doesn't enumerate this path; exit 2 is a defensible bucket. Could be tightened to a dedicated exit code in a future polish pass.

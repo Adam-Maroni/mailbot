@@ -200,3 +200,51 @@ Neither warrants a follow-up story. Corrected commands are recorded in `epic-6-r
 
 **Verification limitation noted:** automated self-verification confirms code-and-test correctness. It does NOT substitute for live exercise of `mint_grant` against a real running MailBot instance (which would require Outlook OAuth + a real Tier-2/3 propose event arriving via the Graph delta sync). The cross-store contract (`action_grants` INSERT triggers `pending_actions` UPDATE atomically) is proven end-to-end via the integration test against real SQLite + the real drainer + FakeGraphWriteAdapter at the Graph boundary, satisfying Step 2.4.7's MailBot reframing.
 
+
+## Story 6-12 — 2026-06-05
+
+**Headline:** F19 closure shipped — Anthropic `temperature` deprecation gated on `claude-opus-4-7` in both `AnthropicAdapter.call` and `.call_with_tools`; 4 regression tests + 1 live smoke + AC-4 audit + MANDATORY-CR pass.
+
+**Models:** dev = `claude-opus-4-7` (1M context); review = `claude-sonnet-4-6` (different-model contract honored).
+
+**Review rounds:** 1 round. 5 findings (2 patches, 3 defers). Applied 2/2 patches (100%); accepted 3/3 defers (pre-existing or design-choice). Round-2 not run — fixes were mechanical and self-evident; pass within 2-round allowance.
+
+**Deferred items (from CR):**
+- Model gate uses exact-literal `!= "claude-opus-4-7"` instead of `startswith("claude-opus-4-")` — design choice; revisit if Anthropic ships a date-suffixed Opus 4.7 variant.
+- `call_with_tools` F19 regression test doesn't assert `tools` are correctly included in the request body — out of scope for F19; covered by Story 6-9.
+- `call` method lacks F14 empty-system guard present in `call_with_tools` — pre-existing asymmetry; should be tracked as follow-up.
+
+**Gate verdicts:**
+- 2.3.5 (pre-review self-audit): PASS — all 5 sections + 11 Posture Audit sub-sections present; §5.12 cadence verdict MANDATORY-CR (criteria 3 + 6 fire).
+- 2.4.4 (Dev Agent Record completeness): PASS — Agent Model Used / Completion Notes / File List / Status header all present. Note: story file Status header was stale at `in-progress` after prior dev-pass; corrected and flipped to `done` in this run.
+- 2.4.5 (UI scope-cut): N/A — MailBot has no graphical frontend per PORTING.md.
+- 2.4.6 (File-List-vs-git): PASS — all 5 File List paths tracked in git (`git ls-files --error-unmatch` exit 0 for each).
+- 2.4.7 (Middleware-real-bootstrap): EXEMPT — pure-function-style F19 gate (single conditional) backed by 4 unit regression tests + 1 live smoke; integration coverage pre-exists from Story 6-9 (live CP-2 walk verified Opus + tools end-to-end).
+- 2.4.8 (Verbose-row truncation): PASS — sprint-status row replaced with 1-sentence headline; verbose narrative appended to story's `## Completion Notes` section.
+
+**Step 2.5 dev-env verification:** N/A — no `<dev-env-skill>` defined for MailBot (no `/debug-vista-manager` equivalent).
+
+**Files staged (count):** 6 (story file, pre-review artifact, deferred-work.md, sprint-status, pyproject.toml, test file). `mailbot_api/router/models.py` in File List but unmodified (verify-only AC-1) so not staged.
+
+**Files NOT staged (intentional):** `.claude/settings.json`, `_bmad-output/planning-artifacts/epics.md`, `.claude/hooks/`, `.claude/skills/...` — all pre-existing infrastructure work unrelated to story 6-12.
+
+**Flags raised:** 0 CRITICAL, 0 WARNING, 1 INFO (story file Status header was stale after prior dev-pass; auto-corrected at Step 2.4.4 gate).
+
+**Permission-prompt summary:** No permission log configured — prompt count unknown. Subjectively zero prompts observed during this run; permission envelope was confirmed clean at Step 0.0.
+
+**Run mode:** autonomous-story-run v3 (inline-walk architecture; no `Skill bmad-create-story` / `Skill bmad-dev-story` dispatches; only `Agent` subagent for code-review at Step 2.4 succeeded with `OK` return). The v3 architecture eliminated the Skill-boundary stall pattern that v1+v2 hit twice in earlier sessions.
+
+## Story 6-12 Manual Verification — 2026-06-05
+
+**Verdict:** PASS (self-verified by orchestrator at user request).
+
+**Evidence walked:**
+- AC-1: gates confirmed at `models.py:559` + `:660` via grep.
+- AC-2: 4 F19 regression tests run via `pytest -k temperature` → 4 passed.
+- AC-3: default `pytest` → 1 deselected; `pytest -m live` (no API key) → 1 skipped cleanly. Live HTTP-200 not exercised (requires ANTHROPIC_API_KEY); test mechanism verified.
+- AC-4: grep of `models.py` for `request_kwargs[]` writes confirms only `temperature`/`system`/`tools`/`tool_choice`; case-insensitive grep for `top_p|top_k|frequency_penalty|presence_penalty|response_format|stop_sequences` returned zero matches.
+- AC-5: 5 review findings in story file; CR-1 + CR-2 verified `[x]` and their fixes verified live at `test_anthropic_adapter.py:19` (module-level `import os`) and `pyproject.toml:137` (`addopts = "-m 'not live and not slow'"`).
+
+**Findings (none — clean PASS):** N/A.
+
+**Caveat:** the live Anthropic round-trip (AC-3) was not exercised because no API key was provided. The test gating mechanism is verified; the actual 200-response check is a downstream verification user can run with `ANTHROPIC_API_KEY=<key> pytest -m live tests/unit/router/test_anthropic_adapter.py::test_anthropic_adapter_live_opus_4_7_smoke -v`.

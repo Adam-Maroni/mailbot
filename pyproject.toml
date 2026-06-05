@@ -125,6 +125,17 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]
+# Default-exclude `live` so plain `pytest` never burns Anthropic cost. To run
+# the live suite explicitly: `pytest -m live` (overrides this exclusion).
+#
+# `not slow` is co-enforced here defensively: a CI invocation like
+# `pytest -m 'not slow'` would OVERRIDE addopts (pytest treats `-m` as
+# replacement, not composition) and re-include all `live` tests. By embedding
+# both exclusions in addopts, the default behavior stays safe; CI scripts that
+# want to override must use the full expression `-m 'not live and not slow'`
+# OR `-m live` to opt-in explicitly.
+addopts = "-m 'not live and not slow'"
 markers = [
     "slow: tests with bulk fixture seeds (>10k rows); opt-out via `-m 'not slow'` in CI if needed",
+    "live: tests that hit real external APIs (cost money); opt-in via `-m live`, opted out by default",
 ]
