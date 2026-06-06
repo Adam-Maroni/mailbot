@@ -41,3 +41,23 @@ force_sensitive:
   - {regex: "(?i)NDA|non[-\\s]?disclosure"}
   # Personal health / medical — defaults to at-least sensitive.
   - {regex: "(?i)medical\\s+record|lab\\s+result|diagnos(is|es|ed)"}
+  # Story 6-21 (F27 closure): borderline-trigger patterns surfaced from
+  # qwen2.5:3b's confidence-0.95 normal classification of multi-signal emails
+  # during Story 6-6.5 fifth-pass walk. These are NOT comprehensive — the
+  # prompt-v3 anti-anchoring (Story 6-21 AC-1) is the primary fix; these
+  # patterns are defense-in-depth for the specific signal types CP-B fixture
+  # exposed (family-medical + interpersonal-debt). Pattern false-positives
+  # are acceptable here (false-positive → over-classify as sensitive →
+  # routes through handshake gate → no privacy violation); pattern
+  # false-negatives are the failure mode this story is closing.
+  # Family-medical signal — "treatment clinic" + "diagnosis with/of"
+  - {regex: "(?i)treatment\\s+clinic|diagnos(is|ed|es)\\s+(with|of)"}
+  # Interpersonal-debt signal — covers both "owe(s) (you/him/her/them) money/$"
+  # AND "outstanding debt" phrasing. CR-2 (Story 6-21, sonnet-4-6 review):
+  # the original `owe\s+...` regex missed conjugated `owes` AND the literal
+  # CP-B fixture language `outstanding debt between friends`. Splitting into
+  # two entries: (a) verb form with optional-s `owes?` for "owe/owes" + the
+  # 4 addressing pronouns; (b) noun-phrase keyword for the most common
+  # outstanding-debt formulation seen in the CP-B walk evidence.
+  - {regex: "(?i)owes?\\s+(you|him|her|them)\\s+(money|\\$)"}
+  - {keyword: "outstanding debt"}

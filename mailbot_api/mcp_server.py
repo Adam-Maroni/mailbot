@@ -58,15 +58,24 @@ are now registered as of Story 5-6.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Final
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp.resources import TextResource
 from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import AnyUrl
 
+from mailbot_api.actions.types import (
+    ACTION_PROPERTIES,
+    EMAIL_LESS_ACTIONS,
+    ActionType,
+    is_send_family,
+)
 from mailbot_api.verbs import (
     count_emails as _count_emails,
 )
@@ -881,6 +890,82 @@ _EXPECTED_TOOL_COUNT = 22
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Story 6-19 (F29 closure) — `mailbot://action-types` MCP resource.
+#
+# Discoverability surface for the canonical 23 ActionType enum + per-action
+# tier/sensitivity/send-family/email-less metadata. Hermes-side `list_resources`
+# probes (which Hermes already does on session bootstrap) return this resource
+# so an agent that hallucinated an action_type can recover via `read_resource`.
+# Paired with the verb-shim error-time recovery hint (Story 6-19 AC-1) +
+# SKILL.md constraint (Story 6-19 AC-3).
+# ---------------------------------------------------------------------------
+
+# Hand-curated anti-anchor list of synonyms Hermes's Haiku-4.5 has been
+# observed to hallucinate or that the model's parameter-generation prior
+# tends to pull toward. Listing them inline with the canonical enum creates
+# a "things-that-look-right-but-aren't" signal at the same prompt-context
+# location as the canonical list — same anti-anchoring discipline as
+# Story 6-18 (qwen v1→v2 prompt). Additive; not load-bearing for correctness.
+#
+# CR-1 (2026-06-06, sonnet-4-6 review): tuple defense-in-depth — `Final`
+# annotates name-binding only; using `tuple[str, ...]` instead of
+# `list[str]` prevents any code that imports this constant from
+# `.append('hacked')`-ing the underlying object and contaminating the
+# resource body for all subsequent server builds. JSON serialization
+# converts the tuple to a JSON array naturally.
+_ACTION_TYPE_SYNONYMS_REJECTED: Final[tuple[str, ...]] = (
+    "send_email", "sendReply", "send", "SEND_EMAIL", "reply",
+    "send-reply", "delete_email", "trash", "remove",
+)
+
+
+def _build_action_types_resource_body() -> str:
+    """Serialize the canonical ActionType enumeration as JSON for the
+    `mailbot://action-types` MCP resource.
+
+    Shape:
+      - `action_types`: list of 23 dicts (sorted by `value`), each carrying
+        `value` (snake_case), `tier`, `requires_sensitivity_token`,
+        `is_send_family`, `is_email_less`.
+      - `synonyms_rejected`: anti-anchor list of common hallucinations.
+      - `constraint`: human-readable constraint string for prompt-context use.
+
+    Built once at server-construction time. Deterministic across runs.
+    """
+    entries: list[dict[str, Any]] = []
+    # Sorted by `.value` for determinism. Iterating ActionType yields enum
+    # members; we sort the materialized list.
+    for at in sorted(ActionType, key=lambda a: a.value):
+        props = ACTION_PROPERTIES[at]
+        entries.append(
+            {
+                "value": at.value,
+                "tier": props.tier,
+                "requires_sensitivity_token": props.requires_sensitivity_token,
+                "is_send_family": is_send_family(at),
+                "is_email_less": at in EMAIL_LESS_ACTIONS,
+            }
+        )
+    body = {
+        "action_types": entries,
+        "synonyms_rejected": list(_ACTION_TYPE_SYNONYMS_REJECTED),
+        "constraint": (
+            "Pass the canonical snake_case `value` field as `action_type` "
+            "(e.g., \"send_reply\"). Synonyms / variants / UPPER_SNAKE names "
+            "are rejected with INVALID_ACTION_TYPE."
+        ),
+    }
+    return json.dumps(body, separators=(",", ":"))
+
+
+# CR-4 (2026-06-06, sonnet-4-6 review): cache the resource body at module
+# level. The body is pure + deterministic; rebuilding it on every
+# `build_mcp_server()` call (production once, tests many times) is wasted
+# work. Pattern mirrors the existing `_TOOL_DESCRIPTIONS` module-level dict.
+_ACTION_TYPES_RESOURCE_BODY: Final[str] = _build_action_types_resource_body()
+
+
 def build_mcp_server(*, db_path: str | None = None) -> FastMCP:
     """Build and configure a FastMCP server with all 22 MailBot tools registered.
     (11 Story-5-2 baseline read+write verbs + 5 Story-5-6 slash-command surface
@@ -965,6 +1050,24 @@ def build_mcp_server(*, db_path: str | None = None) -> FastMCP:
     for tool_name, wrapper in wrappers.items():
         description = _TOOL_DESCRIPTIONS[tool_name]
         server.add_tool(wrapper, name=tool_name, description=description)
+
+    # Story 6-19 (F29 closure) — register the canonical ActionType
+    # enumeration as an MCP resource so Hermes-side `list_resources` probes
+    # surface the recovery path when the agent has hallucinated an
+    # action_type value (e.g., `SEND_EMAIL` instead of `send_reply`).
+    server.add_resource(
+        TextResource(
+            uri=AnyUrl("mailbot://action-types"),
+            name="action-types",
+            description=(
+                "Canonical mailbot ActionType enumeration with tier + "
+                "sensitivity-token requirement per action. Pass the `value` "
+                "field as `propose_action(action_type=...)`."
+            ),
+            mime_type="application/json",
+            text=_ACTION_TYPES_RESOURCE_BODY,
+        )
+    )
 
     return server
 

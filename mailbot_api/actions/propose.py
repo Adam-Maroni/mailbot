@@ -52,12 +52,27 @@ ProposeErrorCode = Literal[
 
 
 class ProposeActionError(BaseModel):
-    """Refusal carrier returned inside ProposeActionOut.error."""
+    """Refusal carrier returned inside ProposeActionOut.error.
+
+    Story 6-19 (F29 closure): added optional ``valid_action_types`` field
+    populated by the verb shim on the INVALID_ACTION_TYPE path ONLY.
+    Carries the canonical 23 ActionType member values (sorted snake_case
+    string tuple) so an agent that hallucinated an action_type name can
+    self-correct in a single turn. None for every other error code.
+
+    CR-2 (2026-06-06, sonnet-4-6 review): the field is typed
+    ``tuple[str, ...] | None`` (not ``list[str] | None``) so the recovery
+    hint is immutable end-to-end. Even though Pydantic's ``frozen=True``
+    forbids field reassignment, it does NOT prevent in-place mutation of
+    a mutable list value. Tuple defense-in-depth signals "read-only
+    recovery hint" structurally and turns mutation attempts into TypeError.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     code: ProposeErrorCode
     message: str
+    valid_action_types: tuple[str, ...] | None = None
 
 
 class ProposeActionOut(BaseModel):

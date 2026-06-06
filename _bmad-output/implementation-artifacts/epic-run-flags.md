@@ -261,3 +261,78 @@ MailBot has no project-level schema doc. Recommended as a future docs story; not
 
 **`#yolo` mode is now OFF.** Any subsequent BMAD workflow invocation — including the eventual `epic-3-retrospective` — runs interactively by default.
 
+---
+
+# Epic 6.5 Autonomous Run — Final Flags (partial run, 2026-06-06)
+
+**Run scope:** Option (a) per Adam's Phase 0 acknowledgment — run Story 6-20 (F28 CRITICAL) + Story 6-19 (F29 HIGH) + Story 6-21 (F27 MEDIUM), then HALT before Story 6-6.5 manual capstone walk.
+
+**Stories executed:** 3 of 4 remaining (Story 6-6.5 deliberately deferred per structural manual-walk blocker).
+
+## Per-story summary table
+
+| Story | Status | Final tests | CR findings | Actionable applied |
+|---|---|---|---|---|
+| 6-20 (F28 sensitivity-gate relocation, CRITICAL) | done | 1111+2+3 | 11 | 4/4 = 100% |
+| 6-19 (F29 action_type discoverability, HIGH) | done | 1129+2+3 | 7 | 6/6 = 100% |
+| 6-21 (F27 qwen borderline tuning, MEDIUM) | done | 1140+2+3 | 5 | 4/4 = 100% |
+
+**Total CR findings: 23 (14 actionable applied + 6 defer-with-rationale + 3 dismissed-as-noise).**
+
+**Actionable apply-rate: 14/14 = 100%** (skill A5 target: ≥70%). ✓
+
+## Aggregated [deferred:*] items
+
+**Story 6-20:** CR-D1 sorted-order token-binding (multi-token v2 deferred), CR-D2 per-id WARNING in multi-id call, CR-D3 non-string email_id silent skip, CR-D4 `_walk` unbounded recursion. None CRITICAL/HIGH.
+
+**Story 6-19:** CR-7 FastMCP `ReadResourceContents.content` API coupling (pre-existing pattern; future FastMCP-upgrade story).
+
+**Story 6-21:** CR-1 `@pytest.mark.live` qwen v3 roundtrip test (option B carry-forward per AC-6; no CI lane currently consumes the marker), CR-5 English-only borderline examples (F21-bis carry-forward).
+
+**Total deferred: 7. None CRITICAL/HIGH.**
+
+## UX advisory
+
+N/A — project has no graphical frontend per PORTING.md.
+
+## Self-grading scorecard
+
+- ☑ A1 — UI scope check passed (N/A per PORTING.md project-level carve-out)
+- ☑ A2 — End-of-epic dev-env verification ran (or N/A) — N/A (no `<dev-env-skill>` configured)
+- ☑ A4 — flags file exists with all `[deferred:*]` aggregated — this file
+- ☑ A5 — issues-found-vs-applied tracked (target ≥70%) — 14/14 actionable = 100%
+- ☑ A7 — UX advisory invoked (or N/A) — N/A
+- ☑ B1 — File-List-vs-git gate passed cleanly for every story
+- ☐ B2 — Phase 3.5 manual-verification gate — **DEFERRED**: Story 6-6.5 IS the Phase 3.5 walk; structurally not autonomous-executable; epic stays `in-progress` until you complete the walk
+
+## Manual verification (Phase 3.5) — pending your walk
+
+**Epic 6.5 stays `in-progress`.** Story 6-6.5 is the manual capstone walk — every checkpoint REQUIRES ADAM (real Outlook test recipient + real Discord DMs + real Anthropic spend). The autonomous-epic-run skill correctly halted before it per the Phase 0 blocker scan + your option (a) choice.
+
+**Walk plan:**
+
+1. **CP-A (normal-email happy path)** — verify draft → send → drainer dispatches → reply lands; check `pending_actions.status='applied'` + `budget_consumed=1` + `/cost month` reflects Opus draft_reply call.
+2. **CP-B (sensitive-email handshake)** — verify `/confirm` flow + `mint_sensitivity_token` + token passed + draft generates. **Story 6-20 verification:** confirm sensitivity-token handshake fires LIVE for the inline-drafting path (F28 closure surface); `router_calls.sensitivity_grant_id` populated on the `chat_completions_tool_call` row.
+3. **CP-C (confidential refusal)** — verify defender refuses without dispatching; no new `router_calls` row.
+4. **CP-D (20-send/day cap)** — verify 21st refuses with `BUDGET_CAP_HIT`. **Story 6-19 verification:** Hermes successfully fills `action_type='send_reply'` (no `SEND_EMAIL` hallucinations).
+5. **(Implicit) Story 6-21 verification:** CP-B fixture body classifies as `sensitive` post-v3 prompt + pattern overrides, NOT confidence-0.95 normal.
+
+**On PASS:** flip `epic-6-5` to `done` + flip Story 6-6.5 from `walk-failed` to `done`.
+
+## Recommendations for the Epic 6.5 retrospective
+
+1. **MANDATORY-CR cadence pays its keep.** All 3 stories surfaced load-bearing CR findings (token-leak prevention; tuple defense-in-depth; CP-B-fixture-language gap). The structural §5.12 binding from Adam's Epic 4 retro decision was load-bearing this run.
+2. **Reviewer-caught factual errors in self-audits.** Story 6-21 CR-4 caught a factually-wrong claim in pre-review §3 ("first-person 'I owe him'" — when the regex DID match that; the real gap was conjugated `owes` + noun-phrase `outstanding debt`). Pre-review audits are valuable but can confidently document the wrong root cause; reviewer cross-check on §3 dispositions remains load-bearing.
+3. **Closure-absorption ratio update.** This run closed F27/F28/F29 entirely from carry-forward findings. Pushes Epic 6.5's closure-absorption ratio toward 75-80% at done-flip. Epic 7's planning rubric should keep (and possibly expand) the 15-20% reserve.
+4. **Story 6-6.5 manual-walk structural deferral.** The autonomous-epic-run skill correctly halted before the manual walk per Phase 0 blocker scan. The skill's "structural blocker" detection is working; worth memorializing the pattern for future Phase-3.5-as-its-own-story situations.
+5. **AC vs actual test count drift.** Story 6-19 AC-4 said "+9 net" but actual was +15 (parametrized variants count individually). Future story specs should account for parametrized expansion.
+
+## Permission-prompt summary
+
+**No permission log configured on the MailBot project** per PORTING.md (no `PreToolUse` hook installed). Mid-run prompt count is unknown but observably zero based on smooth execution — the `.claude/settings.json` envelope was sufficient for the entire 3-story cycle. To enable a permission feedback loop for future runs, install a `PreToolUse` hook per `references/permission-envelope.md § Setting up the hook`.
+
+## Files staged for commit
+
+**~28 files staged across the 3 stories + 2 cross-doc updates + sprint-status + epic-run-flags.** Pre-existing background work (skill installs, `_bmad/`, `_eval-outputs/`, `docs/external/`, etc.) explicitly NOT staged. Pre-existing modifications to `.claude/settings.json` + `_bmad-output/planning-artifacts/epics.md` (from before run start per Phase 0 git status) explicitly NOT staged. Review `git status` before committing.
+
+**`#yolo` mode is now OFF.** Any subsequent BMAD workflow invocation — including the eventual `epic-6-5-retrospective` — runs interactively by default. Do NOT pass `#yolo` to the retrospective under any circumstance — Adam-decided structural rule from Epic 4 retro action item #1.

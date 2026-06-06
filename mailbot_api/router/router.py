@@ -1050,6 +1050,90 @@ _TOOL_CALL_TASK_TYPE = "chat_completions_tool_call"
 _TOOL_CALL_PROMPT_VERSION = "v1"
 
 
+def _resolve_email_ids_from_messages(messages: list[dict[str, Any]]) -> set[str]:
+    """Story 6-20 (F28 closure) — resolve the union of email_ids referenced
+    anywhere in a chat-completions request payload, by walking:
+
+      (a) every assistant-role message's ``tool_calls[].function.arguments``
+          (a JSON string per OpenAI spec), AND
+      (b) every tool-role message's ``content`` (a JSON string when the
+          tool result is dict-shaped, as produced by MCP verbs).
+
+    Collects every value at a ``"email_id"`` key at any nesting depth.
+    Returns a deduped set; iteration of nested dicts/lists is exhaustive.
+
+    Malformed JSON in either source is silently skipped — a structured
+    DEBUG log fires so the caller-side bug is recoverable, but the
+    sensitivity gate's concern is solely whether we MISSED an email_id
+    reference. The downstream tool-dispatch will surface the malformed
+    argument as its own error.
+
+    Pure function (no DB I/O). Tested via the AC-5 unit tests in
+    ``tests/integration/test_dispatch_tool_call_sensitivity_gate_f28.py``.
+    """
+    found: set[str] = set()
+
+    def _walk(obj: Any) -> None:
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k == "email_id" and isinstance(v, str):
+                    found.add(v)
+                else:
+                    _walk(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _walk(item)
+
+    for idx, m in enumerate(messages):
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        if role == "assistant":
+            tool_calls = m.get("tool_calls") or []
+            if not isinstance(tool_calls, list):
+                continue
+            for tc_idx, tc in enumerate(tool_calls):
+                # Accept either dict shape (post-_chat_completions_tools_dispatch
+                # model_dump) OR Pydantic model shape (defensive — direct
+                # callers may pass models).
+                if isinstance(tc, dict):
+                    fn = tc.get("function")
+                    args_str = fn.get("arguments") if isinstance(fn, dict) else None
+                else:
+                    fn = getattr(tc, "function", None)
+                    args_str = getattr(fn, "arguments", None) if fn is not None else None
+                if not isinstance(args_str, str):
+                    continue
+                try:
+                    _walk(json.loads(args_str))
+                except (json.JSONDecodeError, ValueError) as exc:
+                    _logger.debug(
+                        "dispatch_tool_call arg parse failed",
+                        extra={
+                            "event": "dispatch_tool_call.arg_parse_failed",
+                            "message_index": idx,
+                            "tool_call_index": tc_idx,
+                            "exception_type": type(exc).__name__,
+                        },
+                    )
+        elif role == "tool":
+            content = m.get("content")
+            if not isinstance(content, str):
+                continue
+            try:
+                _walk(json.loads(content))
+            except (json.JSONDecodeError, ValueError) as exc:
+                _logger.debug(
+                    "dispatch_tool_call tool-result parse failed",
+                    extra={
+                        "event": "dispatch_tool_call.arg_parse_failed",
+                        "message_index": idx,
+                        "exception_type": type(exc).__name__,
+                    },
+                )
+    return found
+
+
 def _redact_tool_args_for_audit(arguments_json: str) -> str:
     """Apply the same redaction rules as `sanitize_error` to a tool-call
     arguments JSON string before persisting to the audit row.
@@ -1110,8 +1194,19 @@ async def dispatch_tool_call(
 
     Honors:
       * Pause kill-switch (Story 2-9)
-      * Sensitivity precondition (Story 3-3, Story 4-7) — request-side
-        email_id gating with confirmation-token handshake
+      * Sensitivity precondition (Story 3-3, Story 4-7, Story 6-20) —
+        gating on the UNION of (a) the legacy `email_id` parameter and
+        (b) every `email_id` resolved from `messages` (assistant
+        `tool_calls[].function.arguments` JSON + tool-role `content` JSON,
+        at any nesting depth). Iteration order is `sorted(audit_ids)` so
+        refusal messages and audit-row sequences are deterministic.
+
+        Single-token v1 contract (Story 6-20): the supplied
+        `confirmation_token` consumes against the FIRST sensitive
+        email_id in sorted order; any subsequent sensitive id falls
+        through to `SENSITIVITY_BLOCKS_API`. Multi-token shape
+        (`confirmation_tokens: list[str]`) is the deferred v2 expansion.
+        `confidential` admits NO override even with a token (NFR-PRIV-2).
       * Budget guard (Story 2-8) — per-call refusal threshold + degraded-mode
         demotion. NOTE: degraded mode demotes to qwen, which doesn't support
         tools — the call will surface as `tools_unsupported` after demotion.
@@ -1201,75 +1296,167 @@ async def dispatch_tool_call(
             model = demoted
             model_chosen_reason = "degraded"
 
-    # ---- Story 3-3 + 4-7 sensitivity precondition ----
+    # ---- Story 3-3 + 4-7 sensitivity precondition (Story 6-20 strictest-placement) ----
+    #
+    # Story 6-20 (F28 closure, Adam-decided option A + strictest-placement
+    # 2026-06-06): gate the union of (a) the legacy ``email_id`` parameter
+    # and (b) every email_id referenced anywhere in the chat-completions
+    # request payload (assistant tool_calls arguments + tool-role content).
+    # The Hermes inline-drafting path doesn't pass email_id as a parameter
+    # but DOES land sensitive bodies via tool_result content — F28's
+    # PRIVACY INVARIANT VIOLATION was the gate firing only on the parameter.
+    #
+    # Iteration order: ``sorted(audit_ids)`` so multi-id refusal messages
+    # are deterministic across test runs and audit-trail diffs.
+    #
+    # Token consume binds to the FIRST sensitive id encountered in sorted
+    # order; multi-token handshakes for N-sensitive-id refs are explicitly
+    # DEFERRED (file a follow-up if Hermes patterns demand it). Story 4-7's
+    # single-string ``confirmation_token`` shape is preserved verbatim.
+    #
+    # Defense-in-depth: ``ask_router``'s precondition layer (Story 4-7)
+    # stays UNCHANGED; this is the upstream gate for Hermes-driven chat
+    # completions, not a replacement for the agent-tool gate.
     _sensitivity_grant_id: str | None = None
     _sensitivity_grant_minted_at: str | None = None
+    _audit_ids: set[str] = set()
     if email_id is not None:
-        sensitivity_row = await fetchone(db_path, EMAIL_SENSITIVITY_SELECT, (email_id,))
-        if sensitivity_row is None or sensitivity_row[1] is None:
-            return ToolCallResult(
-                ok=False,
-                error=RouterError(
-                    code=ErrorCode.SENSITIVITY_NOT_CLASSIFIED,
-                    message="email sensitivity must be classified before any other Router task",
-                    retryable=False,
-                ),
-            )
-        sensitivity_value, _ = sensitivity_row
-        if sensitivity_value == "confidential" and _API_BOUND_MODEL_RE.match(model) is not None:
-            return ToolCallResult(
-                ok=False,
-                error=RouterError(
-                    code=ErrorCode.SENSITIVITY_BLOCKS_API,
-                    message="confidential emails admit no API override",
-                    retryable=False,
-                    model_attempted=[model],
-                ),
-                model_used=model,
-            )
-        if sensitivity_value == "sensitive" and _API_BOUND_MODEL_RE.match(model) is not None:
-            if confirmation_token is None:
+        _audit_ids.add(email_id)
+    _audit_ids |= _resolve_email_ids_from_messages(messages)
+    if _audit_ids:
+        _consumed_for_eid: str | None = None
+        for eid in sorted(_audit_ids):
+            sensitivity_row = await fetchone(db_path, EMAIL_SENSITIVITY_SELECT, (eid,))
+            if sensitivity_row is None or sensitivity_row[1] is None:
+                # Carry email_id in the error message ONLY when the call
+                # actually references multiple ids OR the id was discovered
+                # via message resolution (caller may not know which id
+                # tripped the gate). The legacy single-id-param path
+                # preserves the original message verbatim for backwards
+                # compatibility with Story 6-9's audit conventions.
+                if eid == email_id and len(_audit_ids) == 1:
+                    msg = "email sensitivity must be classified before any other Router task"
+                else:
+                    msg = (
+                        f"email {eid!r} sensitivity must be classified before "
+                        "any other Router task"
+                    )
+                return ToolCallResult(
+                    ok=False,
+                    error=RouterError(
+                        code=ErrorCode.SENSITIVITY_NOT_CLASSIFIED,
+                        message=msg,
+                        retryable=False,
+                    ),
+                )
+            sensitivity_value, _ = sensitivity_row
+            if sensitivity_value == "confidential" and _API_BOUND_MODEL_RE.match(model) is not None:
+                # NFR-PRIV-2: confidential admits no override even with a
+                # token. Refuse unconditionally regardless of whether
+                # confirmation_token was supplied — token does NOT unlock
+                # confidential. Message includes the offending id so the
+                # multi-id caller can act.
+                if eid == email_id and len(_audit_ids) == 1:
+                    msg = "confidential emails admit no API override"
+                else:
+                    msg = f"confidential email {eid!r} admits no API override"
                 return ToolCallResult(
                     ok=False,
                     error=RouterError(
                         code=ErrorCode.SENSITIVITY_BLOCKS_API,
-                        message="sensitive email requires per-session confirmation token to escalate to API",
+                        message=msg,
                         retryable=False,
                         model_attempted=[model],
                     ),
                     model_used=model,
                 )
-            from mailbot_api.actions.sensitivity_tokens import consume as _consume_token  # noqa: PLC0415
-            try:
-                consume_result = _consume_token(confirmation_token, email_id, _TOOL_CALL_TASK_TYPE)
-            except Exception as exc:  # noqa: BLE001 — guard against token-in-traceback
-                _logger.exception(
-                    "sensitivity token consume crashed; refusing dispatch",
+            if sensitivity_value == "sensitive" and _API_BOUND_MODEL_RE.match(model) is not None:
+                # Token-consume contract (Story 6-20 single-token v1):
+                # the supplied confirmation_token (if any) consumes against
+                # the FIRST sensitive id encountered in sorted order. Any
+                # subsequent sensitive id falls through to SENSITIVITY_BLOCKS_API
+                # because the agent didn't supply a second token. The deferred
+                # multi-token handshake (list[str]) is the future expansion.
+                if confirmation_token is None or _consumed_for_eid is not None:
+                    if eid == email_id and len(_audit_ids) == 1:
+                        msg = (
+                            "sensitive email requires per-session confirmation "
+                            "token to escalate to API"
+                        )
+                    else:
+                        msg = (
+                            f"sensitive email {eid!r} requires per-session "
+                            "confirmation token to escalate to API"
+                        )
+                    return ToolCallResult(
+                        ok=False,
+                        error=RouterError(
+                            code=ErrorCode.SENSITIVITY_BLOCKS_API,
+                            message=msg,
+                            retryable=False,
+                            model_attempted=[model],
+                        ),
+                        model_used=model,
+                    )
+                # Defensive wrap around consume() — see CR-4-7-3(a): any
+                # future DB-backed registry that raises mid-consume must not
+                # leak the token value into a traceback. The exception type
+                # and email_id/task_type are logged; the token value is not.
+                from mailbot_api.actions.sensitivity_tokens import (  # noqa: PLC0415
+                    consume as _consume_token,
+                )
+                try:
+                    consume_result = _consume_token(confirmation_token, eid, _TOOL_CALL_TASK_TYPE)
+                except Exception as exc:  # noqa: BLE001 — guard against token-in-traceback
+                    # CR-6-20-1 (2026-06-06, sonnet-4-6 review): use _logger.error
+                    # WITHOUT exc_info so a future DB-backed registry that embeds
+                    # the token value in its exception message does NOT leak it
+                    # via the captured traceback. The `exception_type` field in
+                    # `extra` is the load-bearing diagnostic; that survives.
+                    _logger.error(
+                        "sensitivity token consume crashed; refusing dispatch",
+                        extra={
+                            "event": "sensitivity.token.consume_crash",
+                            "email_id": eid,
+                            "task_type": _TOOL_CALL_TASK_TYPE,
+                            "exception_type": type(exc).__name__,
+                        },
+                    )
+                    consume_result = None
+                if consume_result is None:
+                    return ToolCallResult(
+                        ok=False,
+                        error=RouterError(
+                            code=ErrorCode.NEEDS_SENSITIVITY_CONFIRMATION,
+                            message=(
+                                "confirmation token invalid, expired, already "
+                                "consumed, or mismatched (email_id/task_type)"
+                            ),
+                            retryable=False,
+                            model_attempted=[model],
+                        ),
+                        model_used=model,
+                    )
+                grant_id, minted_at = consume_result
+                _sensitivity_grant_id = grant_id
+                _sensitivity_grant_minted_at = minted_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+                _consumed_for_eid = eid
+            elif sensitivity_value == "normal" and confirmation_token is not None:
+                # CR-4-7-5: a token passed for a normal email is unexpected.
+                # The call is valid (no token needed for this id), but the
+                # agent's behavior is worth observing. Do NOT log the token
+                # value itself. Note: the token may have been intended for a
+                # DIFFERENT sensitive id in the same audit_ids set; we log
+                # per-occurrence so the operator can correlate.
+                _logger.warning(
+                    "confirmation_token passed; referenced email is normal",
                     extra={
-                        "event": "sensitivity.token.consume_crash",
-                        "email_id": email_id,
+                        "event": "sensitivity.token.unexpected",
+                        "email_id": eid,
                         "task_type": _TOOL_CALL_TASK_TYPE,
-                        "exception_type": type(exc).__name__,
+                        "sensitivity": sensitivity_value,
                     },
                 )
-                consume_result = None
-            if consume_result is None:
-                return ToolCallResult(
-                    ok=False,
-                    error=RouterError(
-                        code=ErrorCode.NEEDS_SENSITIVITY_CONFIRMATION,
-                        message=(
-                            "confirmation token invalid, expired, already "
-                            "consumed, or mismatched (email_id/task_type)"
-                        ),
-                        retryable=False,
-                        model_attempted=[model],
-                    ),
-                    model_used=model,
-                )
-            grant_id, minted_at = consume_result
-            _sensitivity_grant_id = grant_id
-            _sensitivity_grant_minted_at = minted_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
     # ---- Dispatch ----
     tokens_in = 0

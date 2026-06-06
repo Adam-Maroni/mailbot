@@ -104,6 +104,26 @@ verb returns `requires_grant=True`, you mint a grant. If it returns
 returns `requires_sensitivity_token=True`, you mint a sensitivity token after
 the user types `/confirm`.
 
+#### Canonical action_type values
+
+(Story 6-19 F29 closure.) `action_type` MUST be a lowercase snake_case literal
+string. The verb rejects `SEND_REPLY`, `SEND_EMAIL`, `sendReply`, `send-reply`,
+`reply`, `send`, or any other variant with `INVALID_ACTION_TYPE`. Pass
+`action_type='send_reply'` (and similar for the other 22 members), not the
+UPPER_SNAKE enum name.
+
+| User intent (chat surface)             | Canonical `action_type`                  |
+|----------------------------------------|------------------------------------------|
+| "send" / "send it" / "reply" / "send the reply" | `send_reply`                    |
+| "delete" / "trash" / "remove"          | `delete`                                 |
+| "archive" / "file away"                | `archive`                                |
+
+If you are unsure of the canonical value, call
+`read_resource("mailbot://action-types")` to fetch the full enum + a
+`synonyms_rejected` list of common hallucinations. The verb's
+`INVALID_ACTION_TYPE` error response ALSO carries the full canonical list
+inline (as `valid_action_types`) for in-band recovery.
+
 ### `mint_grant`
 
 Purpose: mint a Tier-2 batch grant scoped to (action_type, email_ids,
@@ -305,6 +325,24 @@ email without first calling `mint_sensitivity_token` and passing the result as
 `confirmation_token`. NEVER call `ask_router(task_type="draft_reply", ...)` on
 a `confidential` email — the Router will refuse; surface the refusal with the
 defender-toned message from step 3 above.
+
+### Inline-drafting variant — F28 awareness
+
+If you draft the reply INLINE in your own `/v1/chat/completions` tool-call
+turn (instead of dispatching `draft_reply` via the Router), the same gate
+fires — `dispatch_tool_call` (Story 6-20) refuses at `SENSITIVITY_BLOCKS_API`
+whenever ANY referenced `email_id` (in messages OR in tool-call arguments)
+has sensitivity ∈ {sensitive, confidential} without a valid
+`confirmation_token`. The `mint_sensitivity_token` task_type for this path
+is `chat_completions_tool_call`.
+
+If you intend to inline-draft a sensitive reply: mint with
+`mint_sensitivity_token(email_id, "chat_completions_tool_call")` BEFORE the
+chat-completions request, and pass the token via the
+`confirmation_token` parameter (your harness should map this from your chat
+slash dispatcher). For `confidential`: refuse at the persona layer; the
+router refuses anyway, but defender refusal preserves the operator's mental
+model.
 
 ### Turn structure 3 — "delete that"
 

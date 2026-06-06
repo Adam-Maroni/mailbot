@@ -23,12 +23,12 @@ tasks:
 
   sensitivity_class:
     model: "qwen2.5:3b-instruct-q4_K_M"
-    prompt_version: "v2"
+    prompt_version: "v3"
     escalate: false
     max_tokens_out: 128
     lane: "batch"
     sensitivity: "any"
-    notes: "Sensitivity classification — the gate that determines sensitivity. Must be local-only per Rule Q. sensitivity=any here means this task itself is unconstrained because it IS the gate. v2 bumped 2026-06-05 (Story 6-18 F24 closure) — v1 SYSTEM did not enumerate required JSON fields and qwen2.5:3b deterministically dropped `confidence`, blocking 712+ ingest rows on SCHEMA_VALIDATION_FAILED."
+    notes: "Sensitivity classification — the gate that determines sensitivity. Must be local-only per Rule Q. sensitivity=any here means this task itself is unconstrained because it IS the gate. v2 bumped 2026-06-05 (Story 6-18 F24 closure) — v1 SYSTEM did not enumerate required JSON fields and qwen2.5:3b deterministically dropped `confidence`, blocking 712+ ingest rows on SCHEMA_VALIDATION_FAILED. v3 bumped 2026-06-06 (Story 6-21 F27 closure) — v2's single high-confidence-normal example anchored qwen toward confidence-0.95 normal classifications on multi-signal borderline emails; v3 adds 2 borderline-case examples in the 0.65-0.75 confidence range BEFORE the cautious-bias paragraph to anti-anchor. Pair-shipped with router/sensitivity_patterns.yaml augmentation (2 new force_sensitive regexes) as defense-in-depth."
 
   draft_reply:
     model: "claude-opus-4-7"

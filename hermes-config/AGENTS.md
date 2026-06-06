@@ -157,6 +157,69 @@ requires a sensitivity token (Story 4-1 CR-2). The handshake:
 
 ---
 
+## Rule Q — Sensitivity-Gate Enforcement Boundary
+
+The sensitivity-token handshake (Story 4-7) is enforced at TWO router-side
+choke points, and BOTH are load-bearing — they backstop each other.
+
+1. **`ask_router(...)` precondition layer** — fires whenever a Router task
+   (`draft_reply`, `summary_short`, `tone_style_mirror`, etc.) is invoked
+   directly with `email_id=<X>` for a `sensitive` or `confidential` email.
+   Defense-in-depth for non-Hermes callers (future skill modules, internal
+   helpers).
+
+2. **`dispatch_tool_call(...)` precondition layer (Story 6-20)** — fires
+   for ALL `/v1/chat/completions` tool-bearing requests whenever ANY
+   referenced email_id has sensitivity ∈ {sensitive, confidential}. The
+   email_ids in scope are the UNION of:
+   - the legacy `email_id` parameter (if supplied), AND
+   - every `email_id` value collected from assistant-message
+     `tool_calls[].function.arguments` JSON, AND
+   - every `email_id` value collected from tool-role message `content`
+     JSON (at any nesting depth).
+
+The strictest-placement rule (Adam-decided 2026-06-06) means inline
+drafting via Hermes's main-inference Haiku is gated upstream of any
+chat-completions API call. Sensitive email body cannot reach a cloud LLM
+unless the agent has minted a `confirmation_token` via
+`mint_sensitivity_token` first.
+
+`confidential` admits NO override on either gate, even with a token
+(NFR-PRIV-2).
+
+### Operational consequence for the agent
+
+If your DM-driven chat completion will reference a `sensitive` email
+(directly or via a prior `hydrate_email` tool result), you MUST:
+
+1. Mint a confirmation token first via the `mint_sensitivity_token`
+   verb (task_type = `chat_completions_tool_call`).
+2. Pass the token via the `confirmation_token` parameter on the next
+   `/v1/chat/completions` request. (Hermes-config maps this from your
+   chat slash dispatcher.)
+
+If you don't, the router refuses at `SENSITIVITY_BLOCKS_API` — you'll
+see a 502 with the offending `email_id` in the error message.
+
+For `confidential` emails: refuse to draft at the persona layer; the
+router will refuse anyway, but a defender-layer refusal preserves the
+operator's mental model.
+
+### Banned anti-patterns under Rule Q
+
+- "Inline-draft a sensitive reply without minting a token first" — the
+  router refuses, but more importantly: the entire purpose of the gate
+  is to keep sensitive bodies out of cloud APIs without an explicit
+  operator handshake.
+- "Hide the email_id from the tool-call arguments to bypass the gate" —
+  the resolver walks tool-result content too; the gate can't be hidden
+  from. Trying to do so is an audit-trail tampering attempt.
+- "Defender refuses but the chat completion already ran" — defender
+  refusal must be UPSTREAM of the chat completion, not downstream
+  framing.
+
+---
+
 ## Rule R — Notification Tiering
 
 When you decide to send the user a chat message, classify it into one of four
