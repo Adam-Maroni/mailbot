@@ -61,3 +61,9 @@ hermes-config/data/
 hermes-config/state/
 hermes-config/logs/
 hermes-config/.hermes/
+
+# Story 9-1: policy.user-overrides.yaml is operator-state (written by Story 9-4
+# set_model_persistent), NOT source-of-truth. The .example sibling IS tracked
+# as a discoverable template.
+router/policy.user-overrides.yaml
+!router/policy.user-overrides.yaml.example

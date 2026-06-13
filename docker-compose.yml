@@ -77,6 +77,27 @@ services:
     volumes:
       - mailbot_db:/data
       - mailbot_logs:/var/log/mailbot
+      # Story 9-1: bind-mount the routing policy files.
+      # - Baseline (read-only): source-of-truth, gitted, single ground truth.
+      #   This ALSO closes the latent production gap discovered at Story 9-1
+      #   create-story time — the Dockerfile does not COPY router/, so until
+      #   this bind-mount existed, policy.yaml would have been missing in
+      #   production deploys (dev mode was masked by docker-compose.override).
+      # - Overrides (read-write): operator-state, gitignored, written by Story
+      #   9-4 set_model_persistent via atomic os.replace(). Bind-mount target
+      #   may not exist on host filesystem at first boot — `touch` it via
+      #   setup_vps.sh OR let Story 9-4's first /model persistent call create
+      #   it. Compose v2 silently creates the file as a directory if missing
+      #   on Linux hosts, so the host-side path MUST exist as a file (even
+      #   empty) BEFORE first `docker compose up`. See `router/policy.user-
+      #   overrides.yaml.example` for the operator-facing template.
+      - ./router/policy.yaml:/app/router/policy.yaml:ro
+      - ./router/policy.user-overrides.yaml:/app/router/policy.user-overrides.yaml
+      # NOTE: router/sensitivity_patterns.yaml has the same latent production
+      # gap as policy.yaml (no Dockerfile COPY; lifespan default path
+      # /app/router/sensitivity_patterns.yaml; dev mode masked by
+      # docker-compose.override). Out of scope for Story 9-1; will be filed
+      # as a sibling finding in epic-9-run-flags.md for a follow-up story.
     environment:
       # mailbot-api holds the Anthropic key (Rule F.1)
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}

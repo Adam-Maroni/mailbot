@@ -104,8 +104,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     policy_stop_event: asyncio.Event | None = None
     if not skip_policy:
         policy_path = Path(get_secret_optional("MAILBOT_POLICY_PATH", "/app/router/policy.yaml"))
+        # Story 9-1: companion user-overrides file. Bind-mounted RW; absent
+        # by default; created on first /model persistent (Story 9-4). The
+        # default path is the sibling of policy_path so deployments that
+        # override MAILBOT_POLICY_PATH for tests get the override too.
+        overrides_path = Path(
+            get_secret_optional(
+                "MAILBOT_POLICY_OVERRIDES_PATH",
+                str(policy_path.parent / "policy.user-overrides.yaml"),
+            )
+        )
         try:
-            initial_policy = load_policy(policy_path)
+            initial_policy = load_policy(policy_path, overrides_path=overrides_path)
         except PolicyValidationError as exc:
             logger.error(
                 "policy startup failed",
@@ -115,7 +125,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         set_policy_snapshot(initial_policy)
         logger.info(
             "policy loaded",
-            extra={"event": "policy.startup.loaded", "version": initial_policy.version},
+            extra={
+                "event": "policy.startup.loaded",
+                "version": initial_policy.version,
+                "policy_path": str(policy_path),
+                "overrides_path": str(overrides_path),
+                "overrides_present": overrides_path.exists(),
+            },
         )
 
         # Story 3-3 AC-2: FR-2.5 startup safeguard. Fail-fast if policy.yaml
@@ -190,7 +206,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             await anomaly_detector.start()
 
         policy_stop_event = asyncio.Event()
-        policy_watcher_task = asyncio.create_task(policy_reload_loop(policy_path, stop_event=policy_stop_event))
+        # Story 9-1: pass overrides_path so awatch covers BOTH files when the
+        # override file exists at startup. If the override file is ABSENT
+        # at startup, policy_reload_loop filters it out of the awatch set
+        # (watchfiles raises FileNotFoundError on non-existent paths — see
+        # `docs/policy-overrides.md` "Hot-reload contract limitation"). Story
+        # 9-4 owns the first-create flow and the restart-requirement surfacing.
+        policy_watcher_task = asyncio.create_task(
+            policy_reload_loop(
+                policy_path,
+                overrides_path=overrides_path,
+                stop_event=policy_stop_event,
+            )
+        )
 
     # Stash db_path + watcher handles on app state so endpoint handlers + the
     # shutdown branch can reach them. `_app is None` arises in unit tests that

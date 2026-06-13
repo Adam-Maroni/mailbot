@@ -1,0 +1,43 @@
+# router/policy.user-overrides.yaml — operator-state companion to policy.yaml
+#
+# Purpose: Story 9-1 contract. Merged into policy.yaml at load time + on every
+# hot-reload via shallow-leaf semantics. Survives image-rebuild deploys because
+# this file is bind-mounted from the host (gitignored), not baked into the
+# image like policy.yaml.
+#
+# When to edit:
+#   - Operator-driven tactical routing changes (e.g., temporarily route
+#     draft_reply to claude-opus-4-7 for a week to gather a DEMOTE/PROMOTE
+#     data point). Story 9-4 /model persistent writes here atomically.
+#   - Per-task overrides that should NOT be checked into git (e.g.,
+#     experimental routing decisions during Adam-driven benchmarking).
+#
+# Schema:
+#   Every field is OPTIONAL. Only specify the fields you want to override;
+#   omitted fields inherit from policy.yaml's baseline for the same task.
+#   Unknown fields raise (extra="forbid"). Unknown tasks are dropped with a
+#   warning. Malformed YAML / schema violations are non-fatal: an error log
+#   is emitted and the baseline policy is used.
+#
+# To use:
+#   cp router/policy.user-overrides.yaml.example router/policy.user-overrides.yaml
+#   # then edit the copy. The copy is gitignored.
+#
+# See docs/policy-overrides.md for the full merge contract.
+
+# Example: override only the model for draft_reply, keep all other fields.
+# tasks:
+#   draft_reply:
+#     model: claude-opus-4-7
+
+# Example: override multiple fields on coarse_class.
+# tasks:
+#   coarse_class:
+#     model: claude-haiku-4-5-20251001
+#     lane: interactive
+#     max_tokens_out: 512
+
+# Empty file is fine — it produces a merged result identical to baseline
+# (modulo the +overrides:<hash> suffix on the version field, which signals
+# that an override file exists even when empty).
+tasks: {}

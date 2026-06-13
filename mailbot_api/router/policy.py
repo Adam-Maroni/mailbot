@@ -6,25 +6,45 @@ Architecture §"D11: policy.yaml reload semantics" is the contract:
     `PolicyTable` instance at dispatch time and the call's lifecycle uses
     that snapshot regardless of subsequent reloads.
 
+Story 9-1 extension: companion-file user-overrides pattern.
+  * Baseline `router/policy.yaml` ships in-image / bind-mounted read-only
+    (source-of-truth, gitted).
+  * Companion `router/policy.user-overrides.yaml` is bind-mounted read-write
+    (operator-state, gitignored, written by Story 9-4 set_model_persistent).
+  * Merge happens at load time via _merge_user_overrides with shallow-leaf
+    semantics — override leaves (per-field) replace baseline leaves; absent
+    fields keep baseline; unknown tasks logged + discarded.
+  * The post-merge PolicyTable.version carries a "+overrides:<sha256[:8]>"
+    suffix when overrides are applied, so Story 9-6 benchmark_runs.cohort_key
+    can distinguish baseline-only runs from override-augmented runs.
+  * Malformed overrides are non-fatal: log ERROR, continue with baseline,
+    do NOT swap (validation-or-no-swap symmetric across both files).
+
 Public API:
   * ``PolicyEntry`` — Pydantic model for a single task's routing decision
   * ``PolicyTable`` — Pydantic model with the full task table + a version string
-  * ``PolicyValidationError`` — raised by ``load_policy`` on any failure shape
-  * ``load_policy(path)`` — pure function: reads + validates, returns a table
+  * ``UserOverridesEntry`` — Pydantic model for a single task's per-field override
+    (every field Optional; mirrors PolicyEntry fields)  [Story 9-1]
+  * ``UserOverridesTable`` — Pydantic model wrapping {tasks: dict}  [Story 9-1]
+  * ``PolicyValidationError`` — raised by ``load_policy`` on baseline failures
+  * ``load_policy(path, *, overrides_path=None)`` — pure function: reads +
+    validates baseline + (if path given AND file exists) overrides; returns
+    the post-merge PolicyTable. Malformed overrides are logged + ignored.
   * ``get_policy()`` / ``set_policy_snapshot()`` — module-level snapshot accessors
   * ``snapshot_for_dispatch()`` — semantic alias for ``get_policy()`` used by
     Story 2-4's ``ask_router`` to make the dispatch-time-capture intent explicit
-  * ``policy_reload_loop(path, *, stop_event)`` — watchfiles-driven reloader
-    for the FastAPI lifespan to schedule as a task
+  * ``policy_reload_loop(path, *, overrides_path=None, stop_event)`` —
+    watchfiles-driven reloader; watches BOTH files when overrides_path given.
 
-This module is the ONLY place YAML parsing happens against ``policy.yaml``.
-``scripts/check_boundaries.py`` enforces this via a new ``yaml.safe_load`` /
-``yaml.load`` allowlist (Story 2-2 AC-12).
+This module is the ONLY place YAML parsing happens against ``policy.yaml`` AND
+``policy.user-overrides.yaml``. ``scripts/check_boundaries.py`` enforces this
+via a ``yaml.safe_load`` / ``yaml.load`` allowlist.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from pathlib import Path
 from typing import Literal
@@ -34,6 +54,20 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from watchfiles import awatch
 
 from mailbot_api.router.errors import sanitize_error
+
+# CR-F1 (Story 9-1, sonnet-4-6): override-load status enum surfaces to
+# policy_reload_loop so it can honor AC-2's "no swap on malformed override"
+# discipline. Values:
+#   "applied"      — overrides file existed and was successfully merged
+#   "absent"       — overrides file does not exist (no swap discrimination)
+#   "empty"        — overrides file existed but yielded zero applied fields
+#                    (zero-byte, tasks: {}, or all-None entries); treated
+#                    identically to "absent" for version-suffix purposes
+#                    per CR-F3 (Story 9-1 AC-6 "empty or absent → no suffix").
+#   "parse_failed" — overrides file existed but YAML/schema/IO failed; the
+#                    reload loop MUST refuse the swap to preserve the prior
+#                    merged snapshot per AC-2.
+OverrideLoadStatus = Literal["applied", "absent", "empty", "parse_failed"]
 
 _log = logging.getLogger(__name__)
 
@@ -76,10 +110,59 @@ class PolicyTable(BaseModel):
     version: str
 
 
+class UserOverridesEntry(BaseModel):
+    """Story 9-1: per-field override for a single task entry.
+
+    Every field is Optional[T] = None. The merge function applies only the
+    fields that the override caller actually set (per Pydantic's
+    ``model_dump(exclude_none=True)`` semantics). Fields left as None are
+    treated as "not specified" and the baseline value is preserved.
+
+    ``extra="forbid"`` defends against typos in operator-edited override
+    files — e.g., ``modle: claude-haiku-4-5`` would raise rather than
+    silently no-op.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str | None = None
+    prompt_version: str | None = None
+    escalate: bool | None = None
+    max_tokens_out: int | None = None
+    lane: Literal["interactive", "batch"] | None = None
+    sensitivity: Literal["normal", "sensitive", "confidential", "any"] | None = None
+    notes: str | None = None
+    demotion_hypothesis: str | None = None
+    promotion_hypothesis: str | None = None
+    response_cache_ttl_seconds: int | None = None
+    cache_warm: bool | None = None
+
+
+class UserOverridesTable(BaseModel):
+    """Story 9-1: the full user-overrides file shape.
+
+    ``tasks`` defaults to an empty dict so an empty/skeleton overrides file
+    (``tasks: {}`` or just ``{}``) parses without error and produces a
+    merged result identical to the baseline.
+
+    ``version`` is optional and ignored by the merge — the post-merge
+    effective version is derived in ``_compute_merged_version`` from the
+    baseline version + the SHA-256 of the overrides file contents.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tasks: dict[str, UserOverridesEntry] = Field(default_factory=dict)
+    version: str | None = None
+
+
 class PolicyValidationError(Exception):
-    """Raised by ``load_policy`` for any failure shape — missing file, bad YAML,
-    Pydantic validation, etc. The ``details`` attribute carries the
-    sanitized human-readable description.
+    """Raised by ``load_policy`` for baseline-policy failure shapes only.
+
+    Story 9-1: overrides-file failures are NON-fatal — they are logged and
+    the baseline policy is returned. Only baseline failures (missing file,
+    malformed YAML, schema violation) raise this exception. The
+    ``details`` attribute carries the sanitized human-readable description.
     """
 
     def __init__(self, details: str) -> None:
@@ -90,16 +173,181 @@ class PolicyValidationError(Exception):
         return f"PolicyValidationError: {self.details}"
 
 
-def load_policy(path: Path) -> PolicyTable:
-    """Read + validate ``policy.yaml``. Pure (no module-level state mutation).
+def _compute_overrides_hash(text: str) -> str:
+    """Story 9-1 AC-6: SHA-256 first-8-hex-chars of the overrides file content.
 
-    All failure shapes converge on ``PolicyValidationError`` with a sanitized
-    ``details`` string. Pydantic validation errors get their JSON-shaped
-    error list stringified and run through ``sanitize_error`` so any secret
-    accidentally pasted into ``policy.yaml`` cannot leak via the failure log.
+    Content-addressed so whitespace-only edits DO change the hash (that is a
+    feature — they may correspond to operator-intentional re-saves). 32-bit
+    truncation is operationally acceptable; collision probability is
+    negligible across the cadence at which an operator hand-edits this file.
     """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+
+
+def _compute_merged_version(baseline_version: str, overrides_text: str | None) -> str:
+    """Story 9-1 AC-6: derive the post-merge effective version string.
+
+    * ``overrides_text is None`` (overrides file absent OR empty after merge):
+      return ``baseline_version`` unchanged. No ``+overrides:`` suffix.
+    * Otherwise: return ``f"{baseline_version}+overrides:{hash[:8]}"``.
+
+    The result flows into ``router_calls`` audit rows (via the snapshot's
+    ``version`` field) and into Story 9-6's ``benchmark_runs.cohort_key``
+    so override-augmented runs are distinguishable from baseline runs.
+    """
+    if overrides_text is None:
+        return baseline_version
+    return f"{baseline_version}+overrides:{_compute_overrides_hash(overrides_text)}"
+
+
+def _merge_user_overrides(
+    baseline: PolicyTable, overrides: UserOverridesTable
+) -> tuple[dict[str, PolicyEntry], int]:
+    """Story 9-1: apply shallow-leaf user overrides to the baseline policy.
+
+    **Shallow-leaf semantics — four contract points:**
+
+    1. **Override leaves replace baseline leaves (per-field, NOT per-task-block).**
+       If overrides specify ``tasks.draft_reply.model``, only that single
+       field is replaced; other ``draft_reply`` fields keep their baseline
+       values.
+
+    2. **Unknown tasks are dropped with a warning.** An override on a task
+       key not present in the baseline is logged as
+       ``event="policy.user-overrides.unknown_task"`` and discarded. This is
+       defensive — it protects against typos that would otherwise create
+       phantom task entries the rest of the system cannot route through.
+
+    3. **None/absent fields in override = baseline preserved.** Pydantic's
+       ``model_dump(exclude_none=True)`` is the source-of-truth for "which
+       fields did the override actually set." An explicit ``model: null`` in
+       YAML is treated as "not specified," not as "set the model to None."
+
+    4. **The merge is total.** Every baseline task survives unless explicitly
+       overridden. There is no negation primitive — overrides cannot DELETE a
+       task. (This is deliberate: Adam-decision deferred to Epic-9 retro if a
+       use case emerges.)
+
+    **Examples:**
+
+    Single-field override::
+
+        baseline.tasks["draft_reply"] = PolicyEntry(
+            model="claude-haiku-4-5", prompt_version="v3", escalate=False, ...
+        )
+        overrides.tasks["draft_reply"] = UserOverridesEntry(model="claude-opus-4-7")
+        # result.tasks["draft_reply"]:
+        #   PolicyEntry(model="claude-opus-4-7", prompt_version="v3", escalate=False, ...)
+        #   ^^^ only model changed; prompt_version + escalate + all other fields preserved
+
+    Multi-field override::
+
+        baseline.tasks["coarse_class"] = PolicyEntry(
+            model="qwen2.5:3b", prompt_version="v1", lane="batch", ...
+        )
+        overrides.tasks["coarse_class"] = UserOverridesEntry(
+            model="claude-haiku-4-5", lane="interactive"
+        )
+        # result.tasks["coarse_class"]:
+        #   PolicyEntry(model="claude-haiku-4-5", prompt_version="v1", lane="interactive", ...)
+        #   ^^^ model + lane both changed; prompt_version preserved
+    """
+    merged_tasks: dict[str, PolicyEntry] = dict(baseline.tasks)
+    applied_field_count = 0
+    for task_key, override_entry in overrides.tasks.items():
+        if task_key not in baseline.tasks:
+            _log.warning(
+                "user override targets unknown task; discarding",
+                extra={
+                    "event": "policy.user-overrides.unknown_task",
+                    "task_key": task_key,
+                },
+            )
+            continue
+        # exclude_none=True is the contract: only fields the override
+        # actually set get applied. Pydantic's model_copy(update={...})
+        # produces a new PolicyEntry instance — original untouched.
+        override_fields = override_entry.model_dump(exclude_none=True)
+        if not override_fields:
+            # An override entry with all fields None — treat as no-op.
+            # Still log at DEBUG so operators see the touch.
+            _log.debug(
+                "user override targets task with no fields set; no-op",
+                extra={
+                    "event": "policy.user-overrides.empty_entry",
+                    "task_key": task_key,
+                },
+            )
+            continue
+        merged_tasks[task_key] = baseline.tasks[task_key].model_copy(update=override_fields)
+        applied_field_count += len(override_fields)
+    # CR-F6 (Story 9-1, sonnet-4-6): return the raw task dict + the
+    # applied-field count. The caller (load_policy) is responsible for
+    # composing the final PolicyTable with the correct version-suffix
+    # — this function does not know whether the overrides file existed
+    # vs was empty. applied_field_count is the count of override fields
+    # actually merged (CR-F3 uses it to suppress +overrides: suffix when
+    # the override file is operationally empty).
+    return merged_tasks, applied_field_count
+
+
+def load_policy(path: Path, *, overrides_path: Path | None = None) -> PolicyTable:
+    """Read + validate baseline ``policy.yaml`` + optional companion overrides.
+
+    Convenience wrapper: returns only the ``PolicyTable``. Callers that need
+    to discriminate "override applied" vs "override parse failed" vs
+    "override absent" (e.g., ``policy_reload_loop``) should use
+    ``load_policy_with_status`` instead and honor the AC-2 "no swap on
+    parse_failed" discipline.
+
+    **Story 9-1 contract:**
+
+    * Baseline: required. Any failure (missing file, malformed YAML, schema
+      violation) raises ``PolicyValidationError`` — same behavior as
+      pre-Story-9-1.
+    * Overrides: optional. If ``overrides_path`` is None, the loader looks
+      for ``policy.user-overrides.yaml`` next to the baseline. If neither
+      explicit-path nor default-path resolves to an existing file, the
+      baseline is returned unchanged (version has no ``+overrides:`` suffix).
+    * Malformed overrides: NON-fatal at this layer. Logged as
+      ``policy.user-overrides.parse_failed`` with sanitized details; baseline
+      is returned unchanged. The reload loop uses ``load_policy_with_status``
+      to detect this case and skip the swap per AR-D11-1.
+
+    All baseline failure shapes converge on ``PolicyValidationError``.
+    Pydantic validation errors get their JSON-shaped error list stringified
+    and run through ``sanitize_error`` so any secret accidentally pasted into
+    the YAML cannot leak via the failure log.
+    """
+    table, _status = load_policy_with_status(path, overrides_path=overrides_path)
+    return table
+
+
+def load_policy_with_status(
+    path: Path, *, overrides_path: Path | None = None
+) -> tuple[PolicyTable, OverrideLoadStatus]:
+    """Story 9-1 CR-F1: load policy + return the override-load status.
+
+    Returns ``(table, status)`` where status is one of:
+
+    * ``"applied"``    — overrides file existed and at least one field was
+                        merged; ``table.version`` carries ``+overrides:`` suffix
+    * ``"absent"``     — overrides file does not exist; ``table`` is baseline
+    * ``"empty"``      — overrides file existed but yielded zero merged
+                        fields (zero-byte, ``tasks: {}``, unknown-task-only,
+                        or all-None entries); per CR-F3 the version has NO
+                        suffix because the file is operationally indistinguishable
+                        from absent for cohort_key purposes
+    * ``"parse_failed"`` — overrides file existed but YAML/schema/IO failed;
+                        ``table`` is baseline-only; ``policy_reload_loop``
+                        MUST refuse the swap to preserve the prior merged
+                        snapshot per AC-2
+
+    Baseline failures still raise ``PolicyValidationError`` unchanged.
+    """
+    # ----- BASELINE LOAD (same as pre-Story-9-1) -----
     try:
-        text = path.read_text(encoding="utf-8")
+        baseline_text = path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise PolicyValidationError(f"policy file not found: {path}") from exc
     except OSError as exc:
@@ -108,21 +356,103 @@ def load_policy(path: Path) -> PolicyTable:
         ) from exc
 
     try:
-        raw = yaml.safe_load(text)
+        baseline_raw = yaml.safe_load(baseline_text)
     except yaml.YAMLError as exc:
         raise PolicyValidationError(
             "YAML parse failed: " + sanitize_error(exc)
         ) from exc
 
-    if not isinstance(raw, dict):
+    if not isinstance(baseline_raw, dict):
         raise PolicyValidationError(
-            f"policy.yaml top-level must be a mapping; got {type(raw).__name__}"
+            f"policy.yaml top-level must be a mapping; got {type(baseline_raw).__name__}"
         )
 
     try:
-        return PolicyTable.model_validate(raw)
+        baseline = PolicyTable.model_validate(baseline_raw)
     except ValidationError as exc:
         raise PolicyValidationError(sanitize_error(exc)) from exc
+
+    # ----- OVERRIDES LOAD (Story 9-1) -----
+    # Resolve overrides_path: explicit argument > sibling default > none.
+    resolved_overrides_path: Path | None
+    if overrides_path is not None:
+        resolved_overrides_path = overrides_path
+    else:
+        sibling = path.parent / "policy.user-overrides.yaml"
+        resolved_overrides_path = sibling if sibling.exists() else None
+
+    if resolved_overrides_path is None or not resolved_overrides_path.exists():
+        return baseline, "absent"
+
+    # Read + parse + validate. On any failure: log + return (baseline, "parse_failed").
+    try:
+        overrides_text = resolved_overrides_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        _log.error(
+            "user-overrides file read failed; falling back to baseline",
+            extra={
+                "event": "policy.user-overrides.parse_failed",
+                "path": str(resolved_overrides_path),
+                "details": sanitize_error(exc),
+            },
+        )
+        return baseline, "parse_failed"
+
+    try:
+        overrides_raw = yaml.safe_load(overrides_text)
+    except yaml.YAMLError as exc:
+        _log.error(
+            "user-overrides YAML parse failed; falling back to baseline",
+            extra={
+                "event": "policy.user-overrides.parse_failed",
+                "path": str(resolved_overrides_path),
+                "details": sanitize_error(exc),
+            },
+        )
+        return baseline, "parse_failed"
+
+    if overrides_raw is None:
+        # Empty file (zero bytes or comments-only). Per CR-F3 + AC-6:
+        # empty file is operationally indistinguishable from absent file
+        # for the version-suffix surface. Return baseline + "empty".
+        return baseline, "empty"
+
+    if not isinstance(overrides_raw, dict):
+        _log.error(
+            "user-overrides top-level must be a mapping; falling back to baseline",
+            extra={
+                "event": "policy.user-overrides.parse_failed",
+                "path": str(resolved_overrides_path),
+                "details": f"top-level must be mapping; got {type(overrides_raw).__name__}",
+            },
+        )
+        return baseline, "parse_failed"
+
+    try:
+        overrides = UserOverridesTable.model_validate(overrides_raw)
+    except ValidationError as exc:
+        _log.error(
+            "user-overrides schema validation failed; falling back to baseline",
+            extra={
+                "event": "policy.user-overrides.parse_failed",
+                "path": str(resolved_overrides_path),
+                "details": sanitize_error(exc),
+            },
+        )
+        return baseline, "parse_failed"
+
+    # Merge. CR-F6: receive (merged_tasks, applied_field_count) directly.
+    merged_tasks, applied_field_count = _merge_user_overrides(baseline, overrides)
+
+    if applied_field_count == 0:
+        # CR-F3 (Story 9-1 AC-6): `tasks: {}`, unknown-task-only, or
+        # all-None entries yield zero applied fields → version has NO
+        # +overrides: suffix (operationally indistinguishable from absent
+        # for the cohort_key surface).
+        return baseline, "empty"
+
+    merged_version = _compute_merged_version(baseline.version, overrides_text)
+    return PolicyTable(tasks=merged_tasks, version=merged_version), "applied"
 
 
 _policy: PolicyTable | None = None
@@ -167,26 +497,63 @@ def snapshot_for_dispatch() -> PolicyTable:
     return get_policy()
 
 
+def _version_has_overrides_suffix(version: str) -> bool:
+    """Story 9-1: detect whether a version string carries the override suffix."""
+    return "+overrides:" in version
+
+
 async def policy_reload_loop(
     path: Path,
     *,
+    overrides_path: Path | None = None,
     stop_event: asyncio.Event | None = None,
 ) -> None:
-    """Watch ``policy.yaml`` and atomically swap the snapshot on each valid edit.
+    """Watch baseline + (optional) overrides files; reload on either changing.
 
-    On every change event yielded by ``watchfiles.awatch``:
-      * Successful ``load_policy`` → ``set_policy_snapshot`` + log
-        ``event="policy.reloaded"`` with the new version.
-      * ``PolicyValidationError`` → log ``event="policy.reload.failed"``
-        with the sanitized ``details``; DO NOT swap. The previous snapshot
-        stays in place.
+    Story 9-1 extension: ``awatch`` is called with BOTH paths when
+    ``overrides_path`` is provided. The watcher fires on ANY change to
+    EITHER file; the reloader re-reads the merged view from scratch each
+    time (no per-file delta tracking — simpler + more robust to
+    multi-file edits).
 
-    The watcher exits cleanly when ``stop_event`` is set by the lifespan
-    shutdown branch.
+    Log event taxonomy:
+      * ``policy.reloaded`` — baseline-only change OR override change that
+        produced no semantic-version change vs prior snapshot
+        (preserves pre-Story-9-1 log emit for Story 2-2 callers).
+      * ``policy.user-overrides.swap`` — overrides-file content changed and
+        the merged effective version's ``+overrides:`` suffix changed
+        (i.e., the operator-visible override surface materially shifted).
+      * ``policy.reload.failed`` — baseline ``PolicyValidationError``;
+        DO NOT swap. Previous snapshot stays.
+      * ``policy.user-overrides.parse_failed`` — emitted INSIDE ``load_policy``
+        for override-file errors. The watcher does not re-emit; it just
+        sees the returned baseline-only table and swaps it in (if the
+        baseline itself was valid).
+      * ``policy.reload.loop.error`` — defensive catch-all for non-
+        ``PolicyValidationError`` exceptions during load.
     """
-    async for _changes in awatch(str(path), stop_event=stop_event):
+    # watchfiles.awatch raises FileNotFoundError on any non-existent path,
+    # so we filter to files that actually exist at watcher-start time. If
+    # the overrides file appears later (e.g., Story 9-4 set_model_persistent
+    # creating it for the first time), the operator restarts mailbot-api to
+    # pick up the new watch set. This is acceptable because:
+    #   * Story 9-4 owns the create-flow and can warn operators of the
+    #     restart requirement in the verb's response.
+    #   * The lifespan-restart cadence is acceptable for an operator-driven
+    #     one-time configuration step.
+    #   * Story 9-1 still picks up MUTATIONS to a pre-existing overrides
+    #     file (the common case once Adam has at least one override).
+    watch_paths: tuple[str, ...]
+    paths_to_watch: list[str] = [str(path)]
+    if overrides_path is not None and overrides_path.exists():
+        paths_to_watch.append(str(overrides_path))
+    watch_paths = tuple(paths_to_watch)
+
+    async for _changes in awatch(*watch_paths, stop_event=stop_event):
         try:
-            new_table = load_policy(path)
+            new_table, override_status = load_policy_with_status(
+                path, overrides_path=overrides_path
+            )
         except PolicyValidationError as exc:
             _log.error(
                 "policy reload failed",
@@ -206,10 +573,56 @@ async def policy_reload_loop(
                 },
             )
             continue
+
+        # CR-F1 (Story 9-1, sonnet-4-6): AC-2 "no swap on malformed override"
+        # — when the override side parse-failed, the baseline-only table is
+        # returned, but the watcher MUST refuse the swap so the prior merged
+        # snapshot stays in place. The parse_failed event was already logged
+        # inside load_policy_with_status; no additional log here.
+        if override_status == "parse_failed":
+            continue
+
+        # Compare to previous snapshot to choose the right event.
+        prev_version = _policy.version if _policy is not None else ""
+        new_version = new_table.version
+        prev_had_overrides = _version_has_overrides_suffix(prev_version)
+        new_has_overrides = _version_has_overrides_suffix(new_version)
+
+        if new_has_overrides or prev_had_overrides:
+            # Either we just gained overrides, lost overrides, or the
+            # overrides hash changed — all three are "operator-visible
+            # override surface shifted." Emit the dedicated event.
+            if prev_version != new_version:
+                set_policy_snapshot(new_table)
+                _log.info(
+                    "policy user-overrides swap",
+                    extra={
+                        "event": "policy.user-overrides.swap",
+                        "baseline_path": str(path),
+                        "overrides_path": (
+                            str(overrides_path) if overrides_path is not None else None
+                        ),
+                        "version_before": prev_version,
+                        "version_after": new_version,
+                    },
+                )
+                continue
+            # Versions identical despite override-suffix presence — could
+            # happen if the watcher fired spuriously (e.g., file touched
+            # but content unchanged). Emit the standard reload event and
+            # still swap (the comparison is cheap; the swap is idempotent).
+            set_policy_snapshot(new_table)
+            _log.info(
+                "policy reloaded",
+                extra={"event": "policy.reloaded", "version": new_version},
+            )
+            continue
+
+        # Neither pre nor post has overrides → baseline-only reload path.
         set_policy_snapshot(new_table)
         _log.info(
             "policy reloaded",
-            extra={"event": "policy.reloaded", "version": new_table.version},
+            extra={"event": "policy.reloaded", "version": new_version},
         )
 
 
@@ -227,12 +640,16 @@ def _reset_policy_snapshot_for_test() -> None:
 
 
 __all__ = [
+    "OverrideLoadStatus",
     "PolicyEntry",
     "PolicyTable",
     "PolicyValidationError",
+    "UserOverridesEntry",
+    "UserOverridesTable",
     "_reset_policy_snapshot_for_test",
     "get_policy",
     "load_policy",
+    "load_policy_with_status",
     "policy_reload_loop",
     "set_policy_snapshot",
     "snapshot_for_dispatch",
