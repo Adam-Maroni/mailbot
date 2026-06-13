@@ -100,9 +100,15 @@ Rule P) → confirm the grant with the user → then loop `propose_action(email_
 
 Tier-handling responsibility: NEVER claim a tier; the verb decides. If the
 verb returns `requires_grant=True`, you mint a grant. If it returns
-`requires_per_action_confirmation=True`, you ask the user to confirm. If it
-returns `requires_sensitivity_token=True`, you mint a sensitivity token after
-the user types `/confirm`.
+`requires_per_action_confirmation=True`, you ask the user to confirm. To
+discover whether an action requires a sensitivity-token handshake
+(belt-and-suspenders defender posture on destructive or content-exposing
+touches of sensitive emails), call `read_resource("mailbot://action-types")`
+and check the entry's `requires_sensitivity_token` field — that contract
+lives on the registry, not on `ProposeActionOut`. The sensitivity-token
+handshake is enforced at the Router precondition layer (`ask_router` refuses
+`SENSITIVITY_BLOCKS_API` without a valid `confirmation_token`), not at
+`propose_action` time.
 
 #### Canonical action_type values
 
@@ -123,6 +129,42 @@ If you are unsure of the canonical value, call
 `synonyms_rejected` list of common hallucinations. The verb's
 `INVALID_ACTION_TYPE` error response ALSO carries the full canonical list
 inline (as `valid_action_types`) for in-band recovery.
+
+#### Tier-3 SEND flow
+
+(Story 7-0-f30-f31 F30 HIGH + F31 LOW closures.) Tier-3 SEND-family actions
+(`send_reply`, `send_new_email`, `send_forward`, `reply_to_inactive_thread`)
+require BOTH a per-action grant AND user confirmation. The flow is:
+
+1. Call `propose_action(send_reply, email_id, payload)`. The verb returns
+   `ProposeActionOut(ok=True, status="cooling_off", requires_grant=True,
+   requires_per_action_confirmation=True)`.
+2. **Before the cooling-off window closes**, call
+   `mint_grant(action_type="send_reply", email_ids=[email_id], expires_at=<60s from now>)`.
+   The cooling-off window is the cancel-affordance; the grant is the
+   "yes really send this specific email" signal. If you skip `mint_grant`,
+   the drainer reverts the row to `status="pending_grant"`, no
+   operator-visible error fires, and there is no automatic recovery —
+   manual `mint_grant` via `docker exec` is the only unstick path
+   (this is F30's failure mode).
+3. When the user replies with "send" / "send it" / "go ahead", recognize
+   this as confirming the EXISTING `pending_actions` row (the one that
+   `propose_action` returned with `requires_per_action_confirmation=True`)
+   — do NOT issue a fresh `propose_action` call (that creates a duplicate
+   row; this is F31's failure mode). The canonical discovery path for the
+   existing row is your conversation memory of the prior turn's
+   `ProposeActionOut(ok=True, action_id=<N>, status="cooling_off",
+   requires_per_action_confirmation=True)`. If conversation memory is
+   unavailable (e.g., the user's confirmation crosses a session boundary),
+   fall back to `find_emails(filter={sender_address: <addr>}, limit=5)` to
+   spot the cooling-off row's email, then use SQL via `read_sql` to
+   inspect `pending_actions` for `status IN ('cooling_off', 'pending')` on
+   the same `(email_id, action_type)` pair before deciding to re-propose.
+
+Tier-3 SEND grants are per-action by design: one `(action_type, email_id)`
+pair per grant. Tier-2 BATCH grants (e.g., `archive`) cover N actions of
+the same type and do NOT require per-action confirmation — they return
+`requires_grant=True, requires_per_action_confirmation=False`.
 
 ### `mint_grant`
 
@@ -260,6 +302,105 @@ provider chain, NOT by calling `ask_router` as a tool.
 `reset_hydration_count` is a server-internal lifecycle helper called by the MCP
 server between turns. Not an agent-facing tool.
 
+## Recovery Actions — the universal next-step contract
+
+(Story 7-0-c24.) Every mailbot-api response that carries a refusal,
+blocked-state, or terminal-state may include a structured `recovery_action`
+field with the universal shape:
+
+```python
+class RecoveryAction(BaseModel):
+    tool_name: str | None             # the verb/tool to call next
+    args_hint: dict[str, Any]          # keyword args to interpolate
+    user_facing_guidance: str | None  # canonical chat wording if user input required
+```
+
+**Rule R (also in AGENTS.md):** when calling a mailbot-api verb that may
+refuse/block/terminate, ALWAYS check `response.recovery_action` first. If
+it's populated and `tool_name` is non-None, your next call should match
+`recovery_action.tool_name` with `recovery_action.args_hint` interpolated.
+If `user_facing_guidance` is non-None, relay it verbatim to the user
+(or paraphrase per your defender persona) — that wording is the canonical
+chat-surface explanation for the refusal/block.
+
+### MVP surfaces shipped this story
+
+**INVALID_ACTION_TYPE recovery** — when `propose_action` rejects an
+unknown action_type string:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "INVALID_ACTION_TYPE",
+    "message": "unknown action_type 'SEND_EMAIL'; must be one of [...]",
+    "valid_action_types": ["add_local_category", "archive", ..., "send_reply", ...],
+    "recovery_action": {
+      "tool_name": "propose_action",
+      "args_hint": {
+        "action_type": "<choose one from valid_choices>",
+        "valid_choices": ["add_local_category", "archive", ..., "send_reply", ...]
+      },
+      "user_facing_guidance": "If unsure which canonical action_type matches the user intent, consult the mailbot://action-types MCP resource for synonyms-rejected mappings."
+    }
+  }
+}
+```
+
+Self-correction: call `propose_action` again with `action_type` set to one
+of the canonical values from `recovery_action.args_hint.valid_choices`
+(self-contained — no cross-reference to `valid_action_types` required;
+either field carries the same canonical list).
+
+**GRANT_REQUIRED next-call hint** — when `propose_action` returns
+`ok=True` for a Tier-2 BATCH or Tier-3 action requiring a grant:
+
+```json
+{
+  "ok": true,
+  "action_id": 42,
+  "tier": 3,
+  "status": "cooling_off",
+  "requires_grant": true,
+  "requires_per_action_confirmation": true,
+  "recovery_action": {
+    "tool_name": "mint_grant",
+    "args_hint": {
+      "action_type": "send_reply",
+      "email_ids": ["AAk..."],
+      "ttl_seconds": 60
+    },
+    "user_facing_guidance": null
+  }
+}
+```
+
+Self-recovery: call `mint_grant` with `expires_at` computed at mint-time
+as `now() + ttl_seconds`. The relative TTL avoids the race condition that
+an absolute timestamp computed at propose-time would create when
+Hermes-side message latency or follow-up turns delay the actual
+`mint_grant` call.
+
+### Back-compat retention
+
+Story 6-19's `valid_action_types` field and Story 7-0-f30-f31's
+`requires_grant` / `requires_per_action_confirmation` booleans are RETAINED
+alongside the new `recovery_action` envelope. Existing Hermes-side code
+that consumes those fields directly continues to work without modification.
+New code SHOULD prefer the structured envelope.
+
+### Carry-forward surfaces (not yet shipped)
+
+The following surfaces will carry the envelope under named follow-up
+stories (C24-FU-1..4): `HydrateEmailError.CONFIDENTIAL_HYDRATION_BLOCKED`,
+`ProposeActionError` SENSITIVITY_NOT_CLASSIFIED + SENSITIVITY_BLOCKS_API +
+GRANT_REQUIRED + BUDGET_CAP_HIT, Router refusals (SENSITIVITY_BLOCKS_API
++ DEGRADED_MODE + PAUSED), terminal `pending_actions.terminal_reason`
+states, and `MintSensitivityTokenOut` next-call hint. Until those land,
+treat the absence of `recovery_action` on those surfaces as the
+pre-Story-7-0-c24 behavior — infer the next step from this SKILL.md +
+AGENTS.md + your defender persona.
+
 ## End-to-end turn structures
 
 ### Turn structure 1 — "show me unread"
@@ -352,27 +493,44 @@ Steps:
 
 1. Call the Router with `task_type="reference_resolution"`. If ambiguous or
    empty, ask for clarification.
-2. Call `propose_action(email_id, ActionType.DELETE)`. The verb classifies
-   DELETE as Tier-3 AND `requires_sensitivity_token=True` (per Adam's Story
+2. Discover the DELETE handshake requirement: `read_resource("mailbot://action-types")`
+   surfaces DELETE with `requires_sensitivity_token=True` (per Adam's Story
    4-1 CR-2 decision — DELETE always requires a token regardless of the
    email's sensitivity classification, as a belt-and-suspenders defender
-   posture).
-3. Verb returns `ok=False` with `requires_per_action_confirmation=True` AND
-   `requires_sensitivity_token=True`. Surface the proposed-action card to the
-   user with reasoning ("you asked me to delete this; here's what I'd delete;
-   say `/confirm <email_id> delete` to authorize").
-4. User types `/confirm <email_id> delete`. Slash-command dispatcher (Story
-   5-6) routes to `mint_sensitivity_token(email_id, "delete")`. Receive token.
-5. Re-call `propose_action(email_id, ActionType.DELETE,
-   confirmation_token=<token>)`. The verb writes a pending row with
-   `cooling_off`.
-6. The 60-second cooling-off window applies. User can `/cancel <action_id>`.
-7. Drainer applies the delete via the Outlook Graph write adapter. The email
+   posture). The registry is the canonical contract source.
+3. Call `propose_action(email_id, ActionType.DELETE)`. The verb classifies
+   DELETE as Tier-3 and returns `ok=True` with `tier=3, status="pending",
+   requires_grant=True, requires_per_action_confirmation=False`
+   (DELETE is Tier-3 non-SEND; per-action confirmation is reserved for
+   SEND-family — the sensitivity-token handshake covers the
+   destructive-touch invariant separately).
+4. Surface the proposed-action card to the user with reasoning ("you asked
+   me to delete this; here's what I'd delete; say `/confirm <email_id>
+   delete` to authorize"). The user typing `/confirm <email_id> delete`
+   routes (via the Story 5-6 slash dispatcher) to
+   `mint_sensitivity_token(email_id, "delete")`. Receive token.
+5. Before `propose_action` runs, you must ALSO call `mint_grant(action_type="delete",
+   email_ids=[email_id], expires_at=<ISO-8601-UTC + 60s>)` so the drainer
+   can claim the row (Tier-3 grant requirement; `requires_grant=True` from
+   step 3). The grant-mint sequencing is: receive sensitivity token → mint
+   grant → drainer can dispatch when the cooling-off window expires (Tier-3
+   non-SEND skips cooling-off but the grant is still required at
+   drain time).
+6. Drainer applies the delete via the Outlook Graph write adapter (using
+   the captured `change_marker` for the strict ETag check). The email
    leaves. The action row reaches `status="applied"`.
 
-Banned: never short-circuit to step 5 without step 4. Never proceed past step 1
-if `resolved_email_ids` is empty (you cannot delete an email you cannot
-identify; ask for clarification instead).
+The sensitivity-token contract is enforced at `ask_router` time (for any
+Router-mediated draft/summary/etc. step that touches the sensitive body)
+NOT at `propose_action` time. `propose_action(DELETE)` itself does not
+require the token to write the pending row — but the operator-side flow
+(your defender posture) is to mint the token first so the user has
+authorized the destructive touch before the drainer fires.
+
+Banned: never proceed past step 1 if `resolved_email_ids` is empty (you
+cannot delete an email you cannot identify; ask for clarification instead).
+Never call `mint_sensitivity_token` for a confidential email — it will
+refuse per NFR-PRIV-2. Surface the confidential-refusal to the user.
 
 ### Turn structure 4 — `/spend month`
 

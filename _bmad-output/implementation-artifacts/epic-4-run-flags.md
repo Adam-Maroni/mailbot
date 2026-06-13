@@ -83,7 +83,7 @@ Story 4-4's `_build_pre_state(row)` returns `{}` for every action because the em
 ## Aggregated deferred items (Epic 4)
 
 - **Story 4-1 CR-1** (MODIFY_INBOX_RULE vs MODIFY_OUTLOOK_FILTER) — **RESOLVED in 4-5**: both dispatch to the same Graph endpoint; payload distinguishes via optional `payload["rule_kind"]`.
-- **Story 4-1 CR-2** (DELETE requires_sensitivity_token) — **RESOLVED 2026-06-02 — Adam decision (Epic 4 retro decision 13.2): flipped to True.** See story 4-1 Completion Notes + commit (TBD).
+- **Story 4-1 CR-2** (DELETE requires_sensitivity_token) — **RESOLVED 2026-06-02 — Adam decision (Epic 4 retro decision 13.2): flipped to True.** See story 4-1 Completion Notes + commit `e4dac69`. Formal disposition trail + AC §3 DELETE-via-handshake smoke test (`tests/integration/test_actions_delete_sensitivity_handshake.py`, 3 tests) shipped 2026-06-13 under Story 7-0-prep (Epic 7 prep tranche, autonomous-epic-run).
 - **Story 4-2 CR-1** (SEND_NEW_EMAIL email-less) — **RESOLVED in 4-2 patch**: added to EMAIL_LESS_ACTIONS + cooling_off routing for email-less SEND family.
 - **Story 4-2 CR-2** (email-less Tier-3 change_marker_required mismatch) — **RESOLVED in 4-4**: drainer skips ETag check when `email_id IS NULL`.
 - **Story 4-2 deferred (regex robustness)** — AC-14 regex parsing `CHECK(action_type IN (...))` could break if action values ever contain `)`. Pre-existing test design; no current bug.

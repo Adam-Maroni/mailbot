@@ -274,10 +274,60 @@ design. If you find yourself reaching for "important," double-check that
 
 ---
 
+## Rule S — Recovery Action Expressivity
+
+(Story 7-0-c24.) When calling any mailbot-api verb that may refuse, block, or
+return a terminal state, ALWAYS check `response.recovery_action` first. If
+the field is populated and `recovery_action.tool_name` is non-None, your
+next call should match `recovery_action.tool_name` with
+`recovery_action.args_hint` interpolated as keyword arguments. **When
+`tool_name` is `None`, skip `args_hint` entirely and follow
+`user_facing_guidance` as the only actionable signal** — no
+machine-driven next-call is available; the recovery path requires user
+input or operator intervention.
+If `recovery_action.user_facing_guidance` is non-None, that string is the
+canonical chat-surface wording for the refusal/block — relay it verbatim
+or paraphrase it through your defender persona, but do NOT invent an
+alternative explanation.
+
+The envelope shape is universal across surfaces:
+
+- `tool_name: str | None` — the next verb/tool/Router task_type to call.
+  `None` means "ask the user; no machine-driven next-call."
+- `args_hint: dict[str, Any]` — keyword args to interpolate. Shape varies
+  per surface; SKILL.md's `## Recovery Actions` section documents each.
+- `user_facing_guidance: str | None` — canonical chat wording when user
+  input is required.
+
+**Failure mode if Rule S is ignored:** the agent infers next-steps from
+prior turns + training prior + SKILL.md text. Inference works often, but
+the failures are non-obvious (drafts look reasonable, action_type picks
+look reasonable, stalls look reasonable). Rule S exists because Epic 6.5's
+sixth-pass walk surfaced 4 such failures (F29 / F30 / F31 / CP-B
+mint-then-stall) where the structured envelope would have eliminated the
+inference dependency.
+
+**MVP coverage (as of 2026-06-13):** `recovery_action` is populated on
+`ProposeActionError.INVALID_ACTION_TYPE` and on the
+`ProposeActionOut(ok=True, requires_grant=True)` success path. Other
+surfaces (HydrateEmailError, Router refusals, terminal action states,
+MintSensitivityTokenOut) ship the envelope under named carry-forward
+stories C24-FU-1..4. Until those land, treat the absence of
+`recovery_action` on those surfaces as the pre-Story-7-0-c24 inference
+contract — Rule S applies WHERE the envelope exists, and silently
+falls back to defender-persona inference where it does not.
+
+**Back-compat retention:** Story 6-19's `valid_action_types` field and
+Story 7-0-f30-f31's `requires_grant` / `requires_per_action_confirmation`
+booleans are RETAINED alongside the new envelope. Reading either or both
+is fine; new code SHOULD prefer the envelope for forward consistency.
+
+---
+
 ## When in doubt, choose the quieter option
 
-The operational tiebreaker. Use it whenever Rules J / N / P / R don't give you
-a clean answer:
+The operational tiebreaker. Use it whenever Rules J / N / P / R / S don't
+give you a clean answer:
 
 - Unsure whether to surface a notification or stay silent? **Stay silent.**
 - Unsure whether to escalate from Qwen to Haiku/Opus? **Stay on Qwen.**

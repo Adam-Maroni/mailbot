@@ -23,6 +23,7 @@ from mailbot_api.actions.propose import (
 from mailbot_api.actions.propose import (
     propose_action as _propose_action_impl,
 )
+from mailbot_api.actions.recovery_action import RecoveryAction
 from mailbot_api.actions.types import ActionType
 
 # Story 6-19 (F29 closure): the canonical 23 ActionType values as a sorted
@@ -71,6 +72,33 @@ async def propose_action(
                 # CR-2 (sibling defense-in-depth). Pydantic accepts the tuple
                 # at model construction and preserves immutability.
                 valid_action_types=_VALID_ACTION_TYPES,
+                # Story 7-0-c24 (CR-1 fix 2026-06-13): populate the
+                # structured RecoveryAction envelope. Per the back-compat
+                # convention (design doc §4), valid_action_types is
+                # RETAINED for one epic; the envelope adds the universal
+                # tool_name + args_hint shape so consumers that prefer
+                # structured signals over the special-case field can read
+                # either or both. CR-1 (sonnet-4-6 review): the envelope
+                # is self-contained — args_hint carries the canonical
+                # action_type list as `valid_choices` so a Hermes-side
+                # consumer that interpolates args_hint directly into a
+                # next propose_action call cannot loop on an unguarded
+                # placeholder sentinel. user_facing_guidance names the
+                # MCP resource the agent should consult when the chat-
+                # surface mapping is ambiguous.
+                recovery_action=RecoveryAction(
+                    tool_name="propose_action",
+                    args_hint={
+                        "action_type": "<choose one from valid_choices>",
+                        "valid_choices": list(_VALID_ACTION_TYPES),
+                    },
+                    user_facing_guidance=(
+                        "If unsure which canonical action_type matches "
+                        "the user intent, consult the "
+                        "mailbot://action-types MCP resource for "
+                        "synonyms-rejected mappings."
+                    ),
+                ),
             ),
         )
 

@@ -8,6 +8,7 @@ import the contract via the package root:
 
 from __future__ import annotations
 
+from mailbot_api.actions.recovery_action import RecoveryAction
 from mailbot_api.actions.types import (
     ACTION_PROPERTIES,
     EMAIL_LESS_ACTIONS,
@@ -23,6 +24,7 @@ __all__ = [
     "ActionProperties",
     "ActionType",
     "EMAIL_LESS_ACTIONS",
+    "RecoveryAction",
     "is_send_family",
     "requires_grant",
     "tier_for",
