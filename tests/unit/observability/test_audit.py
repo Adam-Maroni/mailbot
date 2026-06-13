@@ -40,7 +40,8 @@ async def test_record_router_call_writes_row_with_all_fields(tmp_path: Path) -> 
         task_type="coarse_class",
         prompt_version="v1",
         model_chosen="qwen2.5:3b-instruct-q4_K_M",
-        model_chosen_reason="policy",
+        # Story 9.2: closed-set vocabulary; was "policy" pre-9.2.
+        model_chosen_reason="policy:coarse_class:default",
         tokens_in=120,
         tokens_out=45,
         cached_tokens_in=0,
@@ -89,7 +90,7 @@ async def test_record_router_call_writes_row_with_all_fields(tmp_path: Path) -> 
     assert task_type == "coarse_class"
     assert prompt_version == "v1"
     assert model_chosen == "qwen2.5:3b-instruct-q4_K_M"
-    assert model_chosen_reason == "policy"
+    assert model_chosen_reason == "policy:coarse_class:default"
     assert tokens_in == 120
     assert tokens_out == 45
     assert cached_tokens_in == 0
@@ -110,7 +111,7 @@ async def test_record_router_call_default_ts_is_utc_z(tmp_path: Path) -> None:
         task_type="sensitivity_class",
         prompt_version="v1",
         model_chosen="qwen2.5:3b-instruct-q4_K_M",
-        model_chosen_reason="policy",
+        model_chosen_reason="policy:sensitivity_class:default",
         outcome="ok",
     )
 
@@ -136,7 +137,7 @@ async def test_record_router_call_caller_origin_defaults_to_unknown(tmp_path: Pa
         task_type="summary_short",
         prompt_version="v1",
         model_chosen="claude-haiku-4-5-20251001",
-        model_chosen_reason="policy",
+        model_chosen_reason="policy:summary_short:default",
         outcome="ok",
     )
     assert row.caller_origin == "unknown"
@@ -152,13 +153,19 @@ async def test_record_router_call_caller_origin_defaults_to_unknown(tmp_path: Pa
 
 
 async def test_record_router_call_escalated_from_reason_accepted(tmp_path: Path) -> None:
-    """The `escalated_from_<X>` parameterized form passes validation."""
+    """The `policy:escalation:<from>→<to>` parameterized form passes validation.
+
+    Story 9.2: the OLD `escalated_from_<X>` form is rejected by the new
+    validator; the new vocabulary uses `policy:escalation:` per the
+    closed-set contract in ``mailbot_api/router/audit_vocab.py``.
+    """
     db_path = _fresh_db_with_migrations(tmp_path)
+    expected_reason = "policy:escalation:claude-haiku-4-5-20251001→claude-opus-4-7"
     row = RouterCallRow(
         task_type="draft_reply",
         prompt_version="v1",
         model_chosen="claude-opus-4-7",
-        model_chosen_reason="escalated_from_claude-haiku-4-5-20251001",
+        model_chosen_reason=expected_reason,
         outcome="escalated",
     )
     await record_router_call(row, db_path=db_path)
@@ -168,7 +175,7 @@ async def test_record_router_call_escalated_from_reason_accepted(tmp_path: Path)
         ("draft_reply",),
     )
     assert len(rows) == 1
-    assert rows[0][0] == "escalated_from_claude-haiku-4-5-20251001"
+    assert rows[0][0] == expected_reason
 
 
 @pytest.mark.parametrize(
@@ -178,10 +185,19 @@ async def test_record_router_call_escalated_from_reason_accepted(tmp_path: Path)
         "escalated",  # missing _from_<X> tail
         "ESCALATED_FROM_QWEN",  # uppercase doesn't match the literal set
         "",
+        # Story 9.2 AC-7 forward-only: pre-9.2 vocabulary is no longer accepted.
+        "policy",
+        "override",
+        "degraded",
+        "response_cache_hit",
+        "force_override",
+        "escalated_from_claude-haiku-4-5-20251001",
     ],
 )
 def test_router_call_row_rejects_bogus_model_chosen_reason(bad_reason: str) -> None:
-    """Pydantic should refuse any reason outside the closed Literal set + escalated_from_ regex."""
+    """Pydantic should refuse any reason outside the Story 9.2 closed-set
+    vocabulary (the four accepted shapes from ``audit_vocab.py``).
+    Pre-9.2 vocabulary is forward-only rejected per AC-7."""
     with pytest.raises(ValidationError):
         RouterCallRow(
             task_type="coarse_class",
@@ -203,7 +219,7 @@ def test_router_call_row_rejects_bogus_outcome(bad_outcome: str) -> None:
             task_type="coarse_class",
             prompt_version="v1",
             model_chosen="qwen2.5:3b-instruct-q4_K_M",
-            model_chosen_reason="policy",
+            model_chosen_reason="policy:coarse_class:default",
             outcome=bad_outcome,
         )
 
@@ -236,7 +252,7 @@ def test_router_call_row_rejects_malformed_ts(bad_ts: str) -> None:
             task_type="coarse_class",
             prompt_version="v1",
             model_chosen="qwen2.5:3b-instruct-q4_K_M",
-            model_chosen_reason="policy",
+            model_chosen_reason="policy:coarse_class:default",
             outcome="ok",
         )
 
@@ -258,7 +274,7 @@ def test_router_call_row_accepts_lenient_ts_shapes(good_ts: str) -> None:
         task_type="coarse_class",
         prompt_version="v1",
         model_chosen="qwen2.5:3b-instruct-q4_K_M",
-        model_chosen_reason="policy",
+        model_chosen_reason="policy:coarse_class:default",
         outcome="ok",
     )
     assert row.ts == good_ts
@@ -276,7 +292,7 @@ def test_router_call_row_accepts_default_factory_ts(tmp_path: Path) -> None:
         task_type="coarse_class",
         prompt_version="v1",
         model_chosen="qwen2.5:3b-instruct-q4_K_M",
-        model_chosen_reason="policy",
+        model_chosen_reason="policy:coarse_class:default",
         outcome="ok",
     )
     assert row.ts.endswith("Z")
@@ -301,7 +317,7 @@ async def test_record_router_call_swallows_db_failure_without_raising(
         task_type="coarse_class",
         prompt_version="v1",
         model_chosen="qwen2.5:3b-instruct-q4_K_M",
-        model_chosen_reason="policy",
+        model_chosen_reason="policy:coarse_class:default",
         outcome="ok",
     )
 

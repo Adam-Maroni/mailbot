@@ -10,7 +10,9 @@ Layer 3 — $30 monthly hard cap entering DEGRADED MODE. Demotion chain
   ``degraded_mode_state`` SQLite singleton row.
 Layer 4 — $0.20 per-call refusal threshold (before dispatch, on estimated
   cost). Override via ``force=True`` kwarg on ``ask_router``; the override
-  is logged with ``model_chosen_reason="force_override"``.
+  is logged with ``model_chosen_reason=ModelChosenReason.OVERRIDE_API`` per
+  Story 9.2's vocabulary consolidation (force=True and force=False both
+  collapse to OVERRIDE_API; the audit row no longer distinguishes them).
 
 Architecture: BudgetGuard is a module-level singleton with in-memory cache of
 (today_spend, this_month_spend) rolled forward from ``router_calls`` on

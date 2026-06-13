@@ -30,7 +30,8 @@ async def _seed_router_call(db_path: str, *, caller_origin: str, ts: str) -> Non
         task_type="coarse_class",
         prompt_version="v1",
         model_chosen="qwen2.5:3b-instruct-q4_K_M",
-        model_chosen_reason="policy",
+        # Story 9.2: closed-set vocabulary; was "policy" pre-9.2.
+        model_chosen_reason="policy:coarse_class:default",
         outcome="ok",
         caller_origin=caller_origin,
     )

@@ -170,7 +170,8 @@ async def test_ask_router_happy_path(tmp_path: Path, _clean_state: None) -> None
 
     rows = await fetchall(db_path, "SELECT model_chosen, model_chosen_reason, outcome FROM router_calls", ())
     assert len(rows) == 1
-    assert rows[0] == ("fake-qwen", "policy", "ok")
+    # Story 9.2: closed-set vocabulary; was bare "policy" pre-9.2.
+    assert rows[0] == ("fake-qwen", "policy:coarse_class:default", "ok")
 
 
 async def test_ask_router_force_model_logs_override(
@@ -187,7 +188,9 @@ async def test_ask_router_force_model_logs_override(
     row = await fetchone(
         db_path, "SELECT model_chosen, model_chosen_reason FROM router_calls", ()
     )
-    assert row == ("fake-opus", "override")
+    # Story 9.2: force=True and force=False both collapse to OVERRIDE_API per
+    # AC-1's vocabulary consolidation. Pre-9.2 this was bare "override".
+    assert row == ("fake-opus", "override:api:force_model")
 
 
 # ---- Timeout ----
@@ -278,11 +281,14 @@ async def test_ask_router_schema_failure_then_escalation_succeeds(
     # then records the original-tier failure. Audit-row ordering reflects
     # finally-block unwinding (inner → outer), not dispatch order.
     assert len(rows) == 2
+    # Story 9.2: vocabulary migrated to "policy:escalation:<from>→<to>" and
+    # templated "policy:<task>:default" per AC-1; pre-9.2 was bare
+    # "escalated_from_<X>" and bare "policy".
     assert rows[0][0] == "claude-haiku-4-5-20251001"
-    assert rows[0][1] == "escalated_from_qwen2.5:3b-instruct-q4_K_M"
+    assert rows[0][1] == "policy:escalation:qwen2.5:3b-instruct-q4_K_M→claude-haiku-4-5-20251001"
     assert rows[0][2] == "ok"
     assert rows[1][0] == "qwen2.5:3b-instruct-q4_K_M"
-    assert rows[1][1] == "policy"
+    assert rows[1][1] == "policy:coarse_class:default"
     # outcome on the outer record reflects the escalated success.
     assert rows[1][2] == "escalated"
 
@@ -539,7 +545,8 @@ async def test_ask_router_response_cache_hit_on_second_call(
 ) -> None:
     """First call hits the adapter and caches; second identical call returns
     cached result with `model_used` ending in `+response_cache` and
-    `outcome="ok"` recorded with `model_chosen_reason="response_cache_hit"`."""
+    `outcome="ok"` recorded with `model_chosen_reason="cache:response_cache_hit"`
+    (Story 9.2 closed-set vocabulary; was bare "response_cache_hit" pre-9.2)."""
     db_path = _setup_db_and_policy(
         tmp_path, model="fake-qwen", escalate=False, cache_ttl=300
     )
@@ -559,14 +566,15 @@ async def test_ask_router_response_cache_hit_on_second_call(
     # Adapter NOT called a second time.
     assert len(adapter.call_log) == 1, "cache hit must short-circuit adapter dispatch"
 
-    # Two router_calls rows; the second has model_chosen_reason='response_cache_hit'.
+    # Two router_calls rows; the second has model_chosen_reason="cache:response_cache_hit"
+    # (Story 9.2 vocabulary; was bare "response_cache_hit" pre-9.2).
     rows = await fetchall(
         db_path,
         "SELECT model_chosen, model_chosen_reason, outcome FROM router_calls ORDER BY id",
         (),
     )
     assert len(rows) == 2
-    assert rows[1][1] == "response_cache_hit"
+    assert rows[1][1] == "cache:response_cache_hit"
     assert rows[1][2] == "ok"
 
 
@@ -691,7 +699,12 @@ tasks:
 async def test_ask_router_layer_4_force_override(
     tmp_path: Path, _clean_state: None
 ) -> None:
-    """force=True bypasses Layer 4 and logs model_chosen_reason='force_override'."""
+    """force=True bypasses Layer 4 and logs model_chosen_reason="override:api:force_model"
+    (Story 9.2 closed-set vocabulary; pre-9.2 distinguished force=True as
+    "force_override", but the audit row now collapses both branches to
+    ModelChosenReason.OVERRIDE_API per AC-1's vocabulary consolidation —
+    `force` boolean still gates degraded-mode behavior internally, just not
+    visible in the audit string)."""
     db_path = str(tmp_path / "test.db")
     apply_pending_migrations(db_path)
     policy_yaml = tmp_path / "policy.yaml"
@@ -723,7 +736,7 @@ tasks:
     )
     assert result.ok is True
     row = await fetchone(db_path, "SELECT model_chosen_reason FROM router_calls", ())
-    assert row == ("force_override",)
+    assert row == ("override:api:force_model",)
 
 
 async def test_ask_router_degraded_mode_demotes_opus_to_haiku(
@@ -766,7 +779,8 @@ tasks:
         "SELECT model_chosen, model_chosen_reason FROM router_calls WHERE outcome = 'ok'",
         (),
     )
-    assert row == ("claude-haiku-4-5-20251001", "degraded")
+    # Story 9.2: vocabulary migrated to "degraded:<from>→<to>"; pre-9.2 was bare "degraded".
+    assert row == ("claude-haiku-4-5-20251001", "degraded:claude-opus-4-7→claude-haiku-4-5-20251001")
 
 
 async def test_ask_router_degraded_mode_blocks_force_opus(

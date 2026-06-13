@@ -63,11 +63,11 @@ def test_enforce_rate_limit_escalations_capped_at_20() -> None:
     # while the escalation reason exhausts the escalation dimension.
     for _ in range(LIMIT_ESCALATIONS_PER_HOUR):
         assert (
-            enforce_rate_limit("batch", "escalated_from_qwen2.5:3b-instruct-q4_K_M")
+            enforce_rate_limit("batch", "policy:escalation:qwen2.5:3b-instruct-q4_K_M→claude-haiku-4-5-20251001")
             is None
         )
     assert (
-        enforce_rate_limit("batch", "escalated_from_qwen2.5:3b-instruct-q4_K_M")
+        enforce_rate_limit("batch", "policy:escalation:qwen2.5:3b-instruct-q4_K_M→claude-haiku-4-5-20251001")
         == "escalations"
     )
 
@@ -86,7 +86,7 @@ def test_enforce_rate_limit_escalation_with_breach_lane_returns_lane_first() -> 
     # Now interactive is exhausted; an escalation still returns the lane breach,
     # not the escalation breach.
     assert (
-        enforce_rate_limit("interactive", "escalated_from_qwen2.5:3b-instruct-q4_K_M")
+        enforce_rate_limit("interactive", "policy:escalation:qwen2.5:3b-instruct-q4_K_M→claude-haiku-4-5-20251001")
         == "lane:interactive"
     )
 

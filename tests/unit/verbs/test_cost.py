@@ -40,7 +40,8 @@ async def _seed(
         task_type=task_type,
         prompt_version="v1",
         model_chosen=model,
-        model_chosen_reason="policy",
+        # Story 9.2: closed-set vocabulary; was "policy" pre-9.2.
+        model_chosen_reason=f"policy:{task_type}:default",
         cost_usd_estimated=cost,
         tokens_in=tokens_in,
         cached_tokens_in=cached_tokens_in,

@@ -3,7 +3,7 @@
 Rate-limit policy (FR-3.x):
   * interactive lane (chat-driven calls) → 60/hr
   * batch lane (ingest-driven calls) → 300/hr
-  * escalations (any `escalated_from_*` reason) → 20/hr
+  * escalations (any `policy:escalation:*` reason — Story 9.2 vocabulary) → 20/hr
 
 Architecture §"D10": rate-limit decisions are at enqueue time and surface
 ``RouterError(code=RATE_LIMITED, retryable=True)`` — the call NEVER enters
@@ -87,7 +87,7 @@ def enforce_rate_limit(
 
     Two checks fire per call:
       1. lane-level (interactive=60/hr; batch=300/hr)
-      2. escalation-level (20/hr) if reason starts with ``escalated_from_``
+      2. escalation-level (20/hr) if reason starts with ``policy:escalation:`` (Story 9.2)
 
     Both checks must pass for the call to proceed. Breach of either fails
     fast. Order: lane first, then escalation (so a chat-tier-exhausted
@@ -118,7 +118,10 @@ def enforce_rate_limit(
     # Story 2-2 enforces the closed set, but a future force_lane param might
     # bypass it).
 
-    if model_chosen_reason.startswith("escalated_from_"):
+    # Story 9.2: vocabulary migrated from "escalated_from_<X>" to
+    # "policy:escalation:<from>→<to>". The escalation rate-limit gate keys
+    # off the new prefix.
+    if model_chosen_reason.startswith("policy:escalation:"):
         if not _RATE_LIMITER.try_acquire("escalations", LIMIT_ESCALATIONS_PER_HOUR):
             _log.warning(
                 "rate limit breached",

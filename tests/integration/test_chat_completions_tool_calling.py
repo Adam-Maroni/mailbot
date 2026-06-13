@@ -1042,8 +1042,9 @@ def test_audit_records_policy_reason_when_hermes_aux_alias_used(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """CR-2: When the caller passes `model="hermes_aux"` (policy alias),
-    the audit row's `model_chosen_reason` is `"policy"`, NOT
-    `"force_override"`. Cost-attribution queries depend on this distinction."""
+    the audit row's `model_chosen_reason` is `"policy:hermes_aux:default"`
+    (Story 9.2 vocabulary; was bare "policy" pre-9.2), NOT
+    `"override:api:force_model"`. Cost-attribution queries depend on this distinction."""
     from mailbot_api.db.connection import fetchone
 
     app, _, db_path = _bootstrap(tmp_path, monkeypatch)
@@ -1070,14 +1071,17 @@ def test_audit_records_policy_reason_when_hermes_aux_alias_used(
 
     row = _aio.run(_check())
     assert row is not None
-    assert row[0] == "policy"
+    assert row[0] == "policy:hermes_aux:default"
 
 
 def test_audit_records_force_override_when_explicit_model_passed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """CR-2: When the caller explicitly passes a non-alias model id, the
-    audit row's `model_chosen_reason` is `"force_override"`."""
+    audit row's `model_chosen_reason` is `"override:api:force_model"` (Story
+    9.2 vocabulary; pre-9.2 distinguished this as bare `"force_override"`
+    but the audit row now collapses both branches per AC-1's vocabulary
+    consolidation)."""
     from mailbot_api.db.connection import fetchone
 
     app, _, db_path = _bootstrap(tmp_path, monkeypatch)
@@ -1104,7 +1108,7 @@ def test_audit_records_force_override_when_explicit_model_passed(
 
     row = _aio.run(_check())
     assert row is not None
-    assert row[0] == "force_override"
+    assert row[0] == "override:api:force_model"
 
 
 def test_audit_tool_calls_count_zero_not_null_on_failed_dispatch(

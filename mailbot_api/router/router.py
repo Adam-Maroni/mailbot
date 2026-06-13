@@ -26,6 +26,12 @@ from mailbot_api.db.connection import fetchone
 from mailbot_api.db.queries import EMAIL_SENSITIVITY_SELECT
 from mailbot_api.observability.audit import RouterCallRow, record_router_call
 from mailbot_api.prompts import PromptResolutionError, resolve_prompt
+from mailbot_api.router.audit_vocab import (
+    ModelChosenReason,
+    degraded_mode_demotion,
+    policy_default,
+    policy_escalation,
+)
 from mailbot_api.router.budget import (
     PER_CALL_REFUSAL_THRESHOLD_USD,
     demote_model,
@@ -169,7 +175,9 @@ async def ask_router(
 
     Story 2-8 additions:
       * ``force`` — bypass Layer 4 per-call refusal threshold ($0.20).
-        Logged with ``model_chosen_reason="force_override"`` on dispatch.
+        Logged with ``model_chosen_reason=ModelChosenReason.OVERRIDE_API`` on
+        dispatch (Story 9.2 vocabulary; pre-9.2 distinguished force=True as
+        "force_override" but the audit row no longer separates them).
       * Degraded mode (Layer 3) demotes opus→haiku→qwen on every call.
       * ``force_model="claude-opus-4-7"`` in degraded mode returns
         DEGRADED_MODE_BLOCKED unless a future confirmation-token flow lifts
@@ -231,12 +239,16 @@ async def ask_router(
         )
 
     # Resolve model.
+    # Story 9.2: force_override and override (force=True vs force=False with
+    # force_model set) both collapse to OVERRIDE_API per AC-1's vocabulary
+    # consolidation. The `force` boolean still gates degraded-mode behavior
+    # below — only the audit string is unified.
     if force_model is not None:
         model = force_model
-        model_chosen_reason = "force_override" if force else "override"
+        model_chosen_reason = ModelChosenReason.OVERRIDE_API.value
     else:
         model = policy_entry.model
-        model_chosen_reason = "policy"
+        model_chosen_reason = policy_default(task_type)
 
     # Story 2-8 Layer 3 — degraded mode gate.
     guard = get_guard()
@@ -256,8 +268,8 @@ async def ask_router(
             )
         demoted = demote_model(model)
         if demoted != model:
+            model_chosen_reason = degraded_mode_demotion(from_model=model, to_model=demoted)
             model = demoted
-            model_chosen_reason = "degraded"
 
     # Story 3-3 AC-5: FR-2.3 hard invariant — sensitivity precondition layer.
     # Story 4-7: extended with confirmation_token handshake for sensitive emails.
@@ -526,7 +538,7 @@ async def _dispatch_with_failure_chain(
                 parsed_cached = None
             if parsed_cached is not None:
                 outcome = "ok"
-                model_chosen_reason = "response_cache_hit"
+                model_chosen_reason = ModelChosenReason.CACHE_HIT.value
                 # cost_usd stays 0 on the audit row even though the original
                 # dispatch cost money — the row reflects THIS call's cost.
                 result = RouterResult(
@@ -701,7 +713,7 @@ async def _dispatch_with_failure_chain(
                     policy_entry=escalated_policy_entry,
                     content=content,
                     model=next_model,
-                    model_chosen_reason=f"escalated_from_{model}",
+                    model_chosen_reason=policy_escalation(from_model=model, to_model=next_model),
                     db_path=db_path,
                     caller_origin=caller_origin,
                     caller_verb=caller_verb,
@@ -915,7 +927,7 @@ async def dispatch_embedding(
             task_type="embedding",
             prompt_version=prompt_version,
             model_chosen=model,
-            model_chosen_reason="policy",
+            model_chosen_reason=policy_default("embedding"),
             tokens_in=0,
             tokens_out=0,
             cached_tokens_in=0,
@@ -945,7 +957,7 @@ async def dispatch_embedding(
             task_type="embedding",
             prompt_version=prompt_version,
             model_chosen=model,
-            model_chosen_reason="policy",
+            model_chosen_reason=policy_default("embedding"),
             tokens_in=0,
             tokens_out=0,
             cached_tokens_in=0,
@@ -978,7 +990,7 @@ async def dispatch_embedding(
             task_type="embedding",
             prompt_version=prompt_version,
             model_chosen=model,
-            model_chosen_reason="policy",
+            model_chosen_reason=policy_default("embedding"),
             tokens_in=0,
             tokens_out=0,
             cached_tokens_in=0,
@@ -1006,7 +1018,7 @@ async def dispatch_embedding(
         task_type="embedding",
         prompt_version=prompt_version,
         model_chosen=model,
-        model_chosen_reason="policy",
+        model_chosen_reason=policy_default("embedding"),
         tokens_in=embedding_response.tokens_in,
         tokens_out=0,
         cached_tokens_in=0,
@@ -1267,11 +1279,16 @@ async def dispatch_tool_call(
             ),
         )
 
-    # CR-2 (Story 6-9 review 2026-06-04): default to "policy" so policy-
+    # CR-2 (Story 6-9 review 2026-06-04): default to policy so policy-
     # resolved dispatches don't pollute cost-attribution queries that filter
-    # by reason. Only flip to "force_override" when the endpoint signaled
-    # this is an explicit user override (via is_force_override=True).
-    model_chosen_reason: str = "force_override" if is_force_override else "policy"
+    # by reason. Only flip to OVERRIDE_API when the endpoint signaled this is
+    # an explicit user override (via is_force_override=True).
+    # Story 9.2: vocabulary migrated to closed-set enum (see audit_vocab.py).
+    model_chosen_reason: str = (
+        ModelChosenReason.OVERRIDE_API.value
+        if is_force_override
+        else policy_default("hermes_aux")
+    )
 
     # ---- Story 2-8 Layer 3 — degraded mode gate ----
     guard = get_guard()
@@ -1293,8 +1310,8 @@ async def dispatch_tool_call(
             )
         demoted = demote_model(model)
         if demoted != model:
+            model_chosen_reason = degraded_mode_demotion(from_model=model, to_model=demoted)
             model = demoted
-            model_chosen_reason = "degraded"
 
     # ---- Story 3-3 + 4-7 sensitivity precondition (Story 6-20 strictest-placement) ----
     #

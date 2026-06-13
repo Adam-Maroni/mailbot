@@ -597,6 +597,21 @@ ROUTER_CALLS_INSERT = (
     ")"
 )
 
+# Story 9.2 AC-5: slice router_calls by closed-set model_chosen_reason.
+# Column order matches ROUTER_CALLS_INSERT + the RouterCallRow field order
+# in observability/audit.py — required by the column-order contract.
+ROUTER_CALLS_BY_REASON_SELECT = (
+    "SELECT ts, task_type, prompt_version, model_chosen, model_chosen_reason, "
+    "  tokens_in, tokens_out, cached_tokens_in, cost_usd_estimated, latency_ms, "
+    "  outcome, caller_verb, caller_origin, email_id, "
+    "  sensitivity_grant_id, sensitivity_grant_minted_at, "
+    "  tool_calls_count, tool_calls_summary "
+    "FROM router_calls "
+    "WHERE model_chosen_reason = ? "
+    "ORDER BY ts DESC "
+    "LIMIT ?"
+)
+
 
 # --- response_cache (Story 2-7) ---
 

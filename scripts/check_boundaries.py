@@ -217,6 +217,26 @@ _MATPLOTLIB_PYPLOT_ALLOW = frozenset(
         "mailbot_api/verbs/analytics/render_spend_chart.py",
     }
 )
+# Story 9.2 AC-4: ``model_chosen_reason`` raw-string writes are banned outside
+# the canonical vocabulary module + audit writer. The enum + helpers in
+# ``mailbot_api/router/audit_vocab.py`` are the single source of truth for
+# the closed-set values; ``mailbot_api/observability/audit.py`` legitimately
+# references them in its validator and docstring; all other modules MUST go
+# through the enum / helper indirection.
+_MODEL_CHOSEN_REASON_LITERAL_ALLOW = frozenset(
+    {
+        "mailbot_api/router/audit_vocab.py",
+        "mailbot_api/observability/audit.py",
+    }
+)
+# Story 9.2 AC-4: any string literal whose content matches one of these
+# stable prefixes is treated as a raw model_chosen_reason write attempt.
+# Case-sensitive (the enum values are lowercase + colons).
+_MODEL_CHOSEN_REASON_PREFIX_RE = re.compile(
+    r"^(policy|override|fallback|degraded|benchmark|cache|sensitivity_gate|"
+    r"slash_command|escalated_from):?"
+)
+
 _ACTION_TYPE_VALUES = frozenset(
     {
         # Tier 1
@@ -646,6 +666,70 @@ def check_file(path: Path, repo_root: Path) -> list[str]:
                         getattr(node, "lineno", 0),
                         "`UPDATE/INSERT emails ... embedding` (in f-string)",
                         _EMBEDDING_WRITE_ALLOW,
+                    )
+                )
+
+        # Story 9.2 AC-4: model_chosen_reason raw-string writes outside the
+        # audit_vocab module + audit writer. Catches three shapes:
+        #   1. keyword arg `model_chosen_reason="<prefix>:..."` inside a Call
+        #   2. bare assignment `model_chosen_reason = "<prefix>:..."`
+        #   3. annotated assignment `model_chosen_reason: str = "<prefix>:..."`
+        # The check only fires on Constant(str) values — Attribute references
+        # (`ModelChosenReason.OVERRIDE_API.value`), Call expressions
+        # (`policy_default(...)`), conditional expressions, and Field
+        # declarations all pass.
+        if isinstance(node, ast.keyword) and node.arg == "model_chosen_reason":
+            if (
+                isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+                and _MODEL_CHOSEN_REASON_PREFIX_RE.match(node.value.value)
+                and rel not in _MODEL_CHOSEN_REASON_LITERAL_ALLOW
+            ):
+                violations.append(
+                    _violation(
+                        getattr(node.value, "lineno", 0),
+                        "raw model_chosen_reason kwarg literal — use ModelChosenReason enum or audit_vocab helpers",
+                        _MODEL_CHOSEN_REASON_LITERAL_ALLOW,
+                    )
+                )
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Name)
+                    and target.id == "model_chosen_reason"
+                    and isinstance(node.value, ast.Constant)
+                    and isinstance(node.value.value, str)
+                    and _MODEL_CHOSEN_REASON_PREFIX_RE.match(node.value.value)
+                    and rel not in _MODEL_CHOSEN_REASON_LITERAL_ALLOW
+                ):
+                    violations.append(
+                        _violation(
+                            getattr(node, "lineno", 0),
+                            (
+                                "raw model_chosen_reason assignment literal — "
+                                "use ModelChosenReason enum or audit_vocab helpers"
+                            ),
+                            _MODEL_CHOSEN_REASON_LITERAL_ALLOW,
+                        )
+                    )
+        if isinstance(node, ast.AnnAssign):
+            if (
+                isinstance(node.target, ast.Name)
+                and node.target.id == "model_chosen_reason"
+                and node.value is not None
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+                and _MODEL_CHOSEN_REASON_PREFIX_RE.match(node.value.value)
+                and rel not in _MODEL_CHOSEN_REASON_LITERAL_ALLOW
+            ):
+                violations.append(
+                    _violation(
+                        getattr(node, "lineno", 0),
+                        (
+                            "raw model_chosen_reason annotated-assignment literal — "
+                            "use ModelChosenReason enum or audit_vocab helpers"
+                        ),
+                        _MODEL_CHOSEN_REASON_LITERAL_ALLOW,
                     )
                 )
 

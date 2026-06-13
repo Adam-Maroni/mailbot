@@ -290,3 +290,39 @@ Neither warrants a follow-up story. Corrected commands are recorded in `epic-6-r
 **Findings (none — clean PASS):** N/A.
 
 **Caveat:** the live Anthropic round-trip (AC-3) was not exercised because no API key was provided. The test gating mechanism is verified; the actual 200-response check is a downstream verification user can run with `ANTHROPIC_API_KEY=<key> pytest -m live tests/unit/router/test_anthropic_adapter.py::test_anthropic_adapter_live_opus_4_7_smoke -v`.
+
+---
+
+## Story 9-2-contract-pin-model-chosen-reason-vocabulary-enum-and-audit-emit-refactor — 2026-06-13
+
+**Headline:** Closed-set `ModelChosenReason(str, Enum)` vocabulary + 3 templated helpers + audit-emit refactor across 10 callsites + boundary check rule + forward-only backwards-compat contract + `router_calls_by_reason` audit-reader helper shipped. 4 gates green at 1288+2-skipped+3-deselected (+88 net tests). MANDATORY-CR pass under sonnet-4-6 (9 findings; 8 Patches all applied = 100%, 1 carry-forward CR-Defer). Zero permission prompts.
+
+**Review rounds:** 1 round under `claude-sonnet-4-6`. 9 findings returned: 8 `[Patch]` + 1 `[Defer]`. All 8 Patches applied (1 of them — CR-F5 — partial-applied: documenting tests added, regex tightening filed as follow-up). The 1 `[Defer]` is CR's own deferral (tests-exempt boundary scan, low-priority doc gap; pre-existing design). **Applied rate 8/8 = 100% on Patches, above the 70% CR cadence v2 threshold.**
+
+**Aggregated `[deferred:*]` items:**
+
+- **CR-F5 regex-tightening deferred:** `POLICY_DEFAULT_RE` (`^policy:[^:]+:default$`) accepts uppercase/spaces/hyphens in the `<task>` slot. Documenting tests added; tightening to `^policy:[a-z][a-z0-9_]*:default$` requires sweep of every real `task_type` value to confirm fit. **Follow-up:** file as backlog enhancement to Story 9.x retrospective.
+- **CR-F8 pre-existing `[Defer]`:** `tests/` directory exempt from boundary-check scan; `docs/audit-vocab.md` doesn't document the tests-exempt carve-out. Low-priority documentation gap; consistent with every other rule in `check_boundaries.py`. **Follow-up:** consider documenting in next docs sweep.
+
+**Gate verdicts:**
+
+| Gate | Verdict | Notes |
+| --- | --- | --- |
+| 2.3.5 (Pre-Review Self-Audit) | PASS | 5 sections + 11 Posture Audit checks complete |
+| 2.4.4 (Dev Agent Record completeness) | PASS | Agent Model + Completion Notes + File List all filled |
+| 2.4.5 (UI scope) | N/A | No graphical frontend; carve-out applies |
+| 2.4.6 (File-List-vs-git) | PASS | 15 MODIFIED tracked + 4 NEW pending add — all 19 accounted for |
+| 2.4.7 (Middleware/Router-real bootstrap, MailBot reframing) | PASS | Zero new state-changing surface; `router_calls_by_reason` is read-only SELECT |
+| 2.4.8 (Verbose-row truncation) | PASS | Verbose narrative captured in story Completion Notes; sprint-status row truncated |
+
+**Step 2.5 (dev-env verification):** N/A — MailBot has no formal `/debug-vista-manager`-equivalent skill registered. Manual verification recommendation: `python -m pytest tests/unit/router/test_audit_vocab.py tests/integration/test_audit_vocab_backwards_compat.py -v` to walk the AC coverage, then run `mailbot status` (CLI) to confirm router still starts cleanly under the new vocabulary.
+
+**Permission-prompt summary:** Zero permission prompts during the run — envelope was sufficient. No permission log configured at this project; prompt count is empirical, not log-derived.
+
+**Out-of-scope working-tree state (deliberately NOT staged):**
+
+- `.claude/settings.json` — pre-existing workspace edit
+- `_bmad-output/planning-artifacts/epics.md` — pre-existing background work
+- `.claude/hooks/`, `.claude/skills/*`, `.claude/scheduled_tasks.lock` — workspace state
+
+**No findings raised against the story's correctness or scope** — clean ship.
