@@ -1,6 +1,6 @@
 ---
 name: mailbot
-description: "MailBot verb surface — Outlook triage + draft-reply + cost reporting via 22 MCP tools."
+description: "MailBot verb surface — Outlook triage + draft-reply + cost reporting via 23 MCP tools."
 version: 1.0.0
 author: Adam Maroni
 license: MIT
@@ -260,6 +260,46 @@ Purpose: mute a notification category until a timestamp (or indefinitely).
 Epic 6's dispatcher reads from `notification_mutes`.
 
 Slash command: `/mute <category> [until]`.
+
+### `set_model_oneshot` — Model override (Story 9-3)
+
+Purpose: arm a one-shot model override for the very next `ask_router` call.
+Adam types `/model qwen` (or `haiku` / `opus`) inline during a Discord
+conversation; the next chat turn dispatches against the chosen model. The
+override has a 5-minute TTL and is consumed on first effective use.
+
+Slash command examples (Hermes-side registration is Story 9-10's scope per
+OQ-2; the verb itself is dispatchable via MCP today, so any slash handler
+Hermes wires up can call it directly):
+
+- `/model qwen` — next chat turn runs against `qwen2.5:3b-instruct-q4_K_M`
+- `/model haiku` — next chat turn runs against `claude-haiku-4-5-20251001`
+- `/model opus` — next chat turn runs against `claude-opus-4-7`
+
+Gates inherited (the override does NOT punch through):
+
+- **Sensitivity gate (NFR-PRIV-1/2):** confidential emails still refuse
+  unconditionally; sensitive emails still require the
+  `mint_sensitivity_token` handshake. The audit row carries
+  `model_chosen_reason=sensitivity_gate:refused` (not the OVERRIDE_SLASH_ONE_SHOT
+  value), AND the override stays armed within its TTL since "gate refused" ≠
+  "actual use."
+- **Budget gate ($0.20/call refusal threshold):** the override does NOT
+  carry implicit `force=true`. Adam must re-issue with explicit force if
+  he wants to bypass the per-call threshold.
+- **Degraded-mode gate:** when the override targets `opus` AND degraded
+  mode is active, the existing `DEGRADED_MODE_BLOCKED` confirmation flow
+  fires unchanged; the override stays armed.
+
+Audit trail: every dispatch that consumed the one-shot writes
+`router_calls.model_chosen_reason = "slash_command:one_shot:adam"` per
+Story 9.2's closed-set vocabulary (`ModelChosenReason.OVERRIDE_SLASH_ONE_SHOT`).
+
+Story 9-4 forward-reference: `/model <task> <model>` (with both arguments
+provided) sets a PERSISTENT per-task override by writing to
+`router/policy.user-overrides.yaml` (companion file from Story 9-1, hot-
+reloads within 1 second). The one-shot variant described here is when
+`/model <model>` is invoked with only the model argument.
 
 ### `render_spend_chart`
 

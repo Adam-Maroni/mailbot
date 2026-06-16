@@ -1,7 +1,8 @@
-"""MCP server exposing MailBot verbs as tools — Story 5-2; extended in Story 5-6 + 6-8.
+"""MCP server exposing MailBot verbs as tools — Story 5-2; extended in Story 5-6 + 6-8 + 9-3.
 
-Builds a ``FastMCP`` instance and registers 22 of the project's verbs as MCP
-tools.
+Builds a ``FastMCP`` instance and registers 23 of the project's verbs as MCP
+tools (Story 9-3 added ``set_model_oneshot`` for the `/model <model>`
+one-shot dispatch override).
 
 The 11 baseline tools (Story 5-2): ``find_emails``, ``hydrate_email``,
 ``get_thread``, ``count_emails``, ``get_sender_summary``, ``propose_action``,
@@ -120,6 +121,9 @@ from mailbot_api.verbs.router_control import (
 from mailbot_api.verbs.router_control import (
     resume_router as _resume_router,
 )
+from mailbot_api.verbs.router_control import (
+    set_model_oneshot as _set_model_oneshot,
+)
 from mailbot_api.verbs.schemas import FindEmailsFilter
 from mailbot_api.verbs.unmute_category import unmute_category as _unmute_category
 
@@ -184,10 +188,11 @@ def _session_id_from_ctx(ctx: Context[Any, Any, Any]) -> str:
 
 
 def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
-    """Construct the 22 tool wrappers closed over the given _ServerContext.
+    """Construct the 23 tool wrappers closed over the given _ServerContext.
     (11 Story-5-2 baseline + 5 Story-5-6 slash-command surface + 1 Story-6-8
     analytics + 2 Story-6-3 notification dispatcher pull/ack +
-    1 Story-6-4 unmute_category + 2 Story-6-5 digest compose/finalize.)
+    1 Story-6-4 unmute_category + 2 Story-6-5 digest compose/finalize +
+    1 Story-9-3 set_model_oneshot.)
 
     Returned dict maps verb-name → wrapper coroutine. The wrappers each take
     only agent-supplied kwargs (db_path / session_id never appear in their
@@ -542,6 +547,34 @@ def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
             _log_ok("resume_router", sid, latency_ms)
         return out
 
+    async def set_model_oneshot(ctx: Context[Any, Any, Any], model: str) -> Any:
+        """Story 9-3: arm a one-shot model override consumed by the next
+        ``ask_router`` call (5-min TTL, gates inherited per AC-3).
+
+        Per OQ-1 Option B (single-slot global): ``sid`` is captured for
+        audit-trail visibility but the override slot itself is keyed
+        neither by session nor caller — the next ``ask_router`` from any
+        source consumes it. Matches MailBot's single-user reality.
+        """
+        sid = _session_id_from_ctx(ctx)
+        t0 = time.perf_counter()
+        try:
+            out = await _set_model_oneshot(
+                db_path=server_ctx.require_db_path(),
+                model=model,
+                session_id=sid,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log_crash("set_model_oneshot", sid, exc, int((time.perf_counter() - t0) * 1000))
+            raise
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        code = _maybe_error_code(out)
+        if code:
+            _log_error_as_data("set_model_oneshot", sid, code, latency_ms)
+        else:
+            _log_ok("set_model_oneshot", sid, latency_ms)
+        return out
+
     async def mute_category(
         category: str,
         ctx: Context[Any, Any, Any],
@@ -755,6 +788,8 @@ def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
         "reset_degraded_mode": reset_degraded_mode,
         "pause_router": pause_router,
         "resume_router": resume_router,
+        # Story 9-3 — `/model <model>` one-shot dispatch.
+        "set_model_oneshot": set_model_oneshot,
         "mute_category": mute_category,
         # Story 6-8 — analytics surface (/spend slash command).
         "render_spend_chart": render_spend_chart,
@@ -838,6 +873,14 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
         "Resume the Router lane scheduler. "
         "Slash-command surface: /resume (Story 5-6)."
     ),
+    "set_model_oneshot": (
+        "Arm a one-shot model override for the very next ask_router call. "
+        "Accepts shorthand (qwen / haiku / opus) or full model IDs. "
+        "5-minute TTL; consumed on first effective use; "
+        "sensitivity + budget + degraded-mode gates UNCHANGED (overrides "
+        "do NOT punch through). Slash-command surface: /model (Story 9-3). "
+        "Audit row carries model_chosen_reason=OVERRIDE_SLASH_ONE_SHOT."
+    ),
     "mute_category": (
         "Mute a notification category until a timestamp (or indefinitely). "
         "SHARP EDGE: silences ALL tiers including urgent. Avoid indefinite "
@@ -882,7 +925,7 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
 }
 
 
-_EXPECTED_TOOL_COUNT = 22
+_EXPECTED_TOOL_COUNT = 23  # Story 9-3 added set_model_oneshot
 
 
 # ---------------------------------------------------------------------------

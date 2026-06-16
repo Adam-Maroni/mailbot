@@ -12,8 +12,8 @@ status: 'complete'
 completedAt: '2026-05-31'
 requirementsConfirmed: true
 epicsApproved: true
-epicCount: 7
-storyCount: 58
+epicCount: 8
+storyCount: 65
 frCoverage: '62/62'
 nfrCoverage: '24/24'
 ---
@@ -394,13 +394,27 @@ Adam SSHes in, runs `mailbot status`, gets a 10-second answer. The 08:00 digest 
 **NFRs:** NFR-OPS-6 (Hermes fallback)
 **AR-\*:** AR-D3-1, AR-D13-1, AR-DEPLOY-4, AR-DEPLOY-5, AR-SCHEMA-7, AR-ANALYTICS-1..2
 
-### Epic 7: Eval & Calibration — Routing Decisions Backed by Data
+### Epic 7: Production Calibration — Continuous Self-Measurement in the Wild
 
-Every Opus assignment cites a benchmark. Drift alerts when inbox composition changes. Bad prompt versions get caught in shadow mode before they affect Adam. Ships the frozen eval corpus, the benchmark runner (uses Router with `force_model` — Rule I unbroken), the objective + subjective scorer (with 20 hand-anchored examples), the report generator (Pareto frontier + DEMOTE/PROMOTE suggestions), Sunday production sampling, weekly KL-divergence drift detection, and shadow-mode prompt rollouts. Discharges the FR-4.3 ≥ 90% reference-resolution promise made in Epic 5. Bumps `policy.yaml` v0 → v1 after first calibration.
+**Scope-cleaved 2026-06-07 (party-mode roundtable).** Original Epic 7 ("Eval & Calibration") covered both the static benchmark loop (corpus + runner + scorer + report) AND the continuous calibration loop (Sunday sampling + KL drift + shadow rollouts). Epic 9 (new) absorbed the static benchmark loop + `/model` manual override surface. Epic 7 retains the production-side continuous calibration: weekly drift detection on production traffic, Sunday production sampling for corpus growth, and shadow-mode prompt rollouts against the production stream. Epic 7 is now a hard dependent of Epic 9 — these stories all REQUIRE the corpus + runner + scorer + report from Epic 9 to already exist (the Sunday sampler samples against the corpus, KL-drift compares production distribution to corpus distribution, shadow-mode validates against scorer ground truth).
 
-**FRs covered:** FR-8.1, FR-8.2, FR-8.3, FR-8.4, FR-8.5, FR-8.6, FR-8.7, FR-4.3 (validated)
-**NFRs:** *(none direct — NFR-PERF-1 cross-validated here for Haiku/Opus latency profiles)*
-**AR-\*:** AR-SCHEMA-8, AR-ANALYTICS-1 (numpy used by scorer + drift report)
+**Original Epic 7 Stories 7.1–7.4 (corpus + runner + scorer + report) MOVED to Epic 9.** Epic 7 retains Stories 7.5 (Sunday production sampling), 7.6 (weekly KL-divergence drift), and 7.7 (shadow-mode rollouts + FR-4.3 production validation).
+
+**Epic 7 sized by net-new only.** Per Adam-decided N.5-epic policy (Epic 6.5 retro 2026-06-06, decision B3): walk-discovered defects spawn an N.5 epic rather than being absorbed; no closure-absorption reserve. The 3 prep/carry-forward stories at the top (`7-0-prep` + `7-0-f30-f31` + `7-0-c24`) are Epic 6.5 retro carry-forwards, NOT net-new Epic 7 scope; they sequence before Epic 9 begins (and therefore before Story 7.5) and ship in their own block.
+
+**FRs covered:** FR-8.5, FR-8.6, FR-8.7, FR-4.3 (production-validated)
+**NFRs:** *(none direct)*
+**AR-\*:** AR-ANALYTICS-1 (numpy used by drift report)
+
+### Epic 9: Manual Model Control & Benchmark Harness — Evidence-Backed Routing
+
+Adam picks the model from chat. Every model assignment in `policy.yaml` is defensible with a benchmark number. Ships the `/model` slash command (one-shot per-call override + persistent per-task override via `policy.user-overrides.yaml` companion file), the frozen eval corpus (~100 hand-labeled emails + 20-item reference-resolution slice + 20 subjective anchors), the resumable cost-capped benchmark runner (via Router `force_model` — Rule I unbroken), the objective + subjective scorer (with cross-evaluator agreement calibration), the report generator (Pareto frontier + DEMOTE/PROMOTE with confidence intervals + sample-size gates), and two contract pins required for both halves (`policy.user-overrides.yaml` merge contract + `model_chosen_reason` vocabulary enum). Discharges FR-6.6's "every Opus assignment cites a benchmark" promise at first-run; closes the LLM-choice surface from "policy-by-intuition" to "policy-by-evidence." Bumps `policy.yaml` v0 → v1 at done-flip with at least one benchmark-driven routing change OR a documented Adam-signed no-change verdict.
+
+**Epic identity:** canary against silent routing drift, so that when CP-1 ships, Adam ships a measured product, not a hoped-for one.
+
+**FRs covered:** FR-3.3 (override surface completed via chat), FR-6.6 (evidence layer), FR-8.1, FR-8.2, FR-8.3, FR-8.4
+**NFRs:** NFR-PRIV-2 (sensitivity gate inherited by `/model` — gate-coverage), NFR-PERF-1 (Haiku/Opus latency profiles measured by runner)
+**AR-\*:** AR-SCHEMA-8 (`benchmark_runs`), AR-MODEL-OVERRIDE (new — `policy.user-overrides.yaml` companion-file merge), AR-COHORT-KEY (new — `(prompt_v, scorer_model, anchors_v, router_policy_v)` four-tuple), AR-ANALYTICS-1 (numpy used by scorer + Pareto frontier)
 
 ---
 
@@ -2117,17 +2131,24 @@ So that the Epic 5 capstone demonstrates the integration between the conversatio
 
 This epic completes the trust surface: `mailbot status` returns the full picture in 10 seconds, the four-tier notification system (urgent / important / informational / silent) is wired end-to-end through Discord, anti-fatigue mechanics keep MailBot quiet under normal conditions and urgent-only when Adam stops responding, the 08:00 daily digest arrives, and the `/spend` chart command renders matplotlib-PNG charts of cost-per-task posted to Discord. The cron split lands (Hermes for agent-involving jobs; mailbot-api internal scheduler for LLM-free critical infra). VPS operator scripts (`setup_vps.sh`, `deploy.sh`, `backup.sh`, `restore.sh`) ship so Adam can deploy from scratch to a fresh Hostinger box with one command.
 
-**Sequencing (per Epic 5 retro 2026-06-02 + Epic 6 retro 2026-06-04 Path B amendment):**
+**Scope cleave (2026-06-04, post-Path-B retrospective):** Epic 6 was originally scoped at 9 stories (6.0–6.8). Phase 3.5 walks surfaced 10 additional stories — sibling-quartet inline closures (6.6.6/6.6.7/6.6.8/6.6.9), Path B additions (6.9/6.10), the Epic 5 capstone walk (6.6.5), and defect-trace fallout (6.11/6.12/6.13/6.14/6.15). These 10 stories are foundation work that surfaced *because* Epic 6 turned the lights on; they are not part of Epic 6's identity statement. They have been moved to **Epic 6.5 — Foundation Catch-Up** so Epic 6's done-flip measures trust-surface delivery against the original 9-story mandate, not against the absorbed foundation debt.
 
-- **Phase 1 (shipped 2026-06-03):** `6.0 → 6.6 → 6.1 → 6.2 → 6.7 → 6.8` front-loaded Hermes-independent work while Story 6.0 closed the F3/F4/F5 Hermes runtime mismatch surfaced in Epic 5 Phase 3.5 Section B.
-- **Phase 1 inline closures (shipped 2026-06-03):** `6.6.6 (F6) → 6.6.7 (F7) → 6.6.8 (F8) → 6.6.9 (SKILL.md frontmatter)` closed four sibling Hermes-integration contract bugs via inline-fix-and-walk loop during Phase 3.5 CP-2 walk attempts.
-- **Phase 2 (shipped 2026-06-03):** `6.3 → 6.4 → 6.5` Hermes-dependent stories landed after the closure gate.
-- **Phase 3 (filed 2026-06-04, Path B amendment):** `6.9 (F11 closure) → 6.10 (Hermes-cron-skill bundle) → 6.6.5 walk + CP-1 deploy walk + CP-2 completion walk → epic done-flip`. F11 (the actual F9 blocker per Epic 6 retro) and the two Hermes-cron-skill consumers for Story 6.3 pull loop + Story 6.5 08:00 digest are filed as Epic 6 follow-ups rather than absorbed into Epic 7 — Epic 7's identity is eval & calibration, not Router/adapter protocol extension.
+**Epic 6 scope (9 stories — original mandate, ALL SHIPPED 2026-06-03):**
+
+- `6.0` Hermes runtime corrective — enabler that closed F3/F4/F5 before Hermes-dependent work
+- `6.1` `mailbot status` CLI
+- `6.2` `mailbot logs` / `pause` / `resume` CLI
+- `6.3` Notification tier dispatcher (mailbot-api side)
+- `6.4` Anti-fatigue mechanics
+- `6.5` 08:00 daily digest (mailbot-api side)
+- `6.6` Worker-process integration
+- `6.7` VPS operator scripts (offline-merged)
+- `6.8` `/spend` chart command
 
 **Closure gates:**
 
-- **Original closure gate (closed 2026-06-03):** F3/F4/F5/F6 RESOLVED before any Hermes-dependent story (6.3 / 6.4 / 6.5) starts.
-- **Epic done-flip gate (open):** F11 must be RESOLVED (via Story 6.9) AND Hermes-cron-skill consumers must ship (via Story 6.10) AND the three Phase 3.5 walks (6.6.5 capstone, 6.7 VPS deploy, CP-2 full `/spend` round-trip) must complete before `epic-6` flips to `done`.
+- **Closure gate (closed 2026-06-03):** F3/F4/F5/F6 RESOLVED before any Hermes-dependent story (6.3 / 6.4 / 6.5) starts.
+- **Epic done-flip gate (closed 2026-06-04 via scope cleave):** All 9 mandate stories shipped, all 4 gates green at every close, MANDATORY-CR cadence honored. CP-1 VPS deploy walk is explicitly **NOT** an Epic 6 gate — it is the **final ship gate across all development phases** and only fires once the product is stable and ready to deploy to production. CP-2 (Story 6.8 live `/spend` round-trip) walked PASS 2026-06-04 via Story 6.9 closure path. CP-3 (Story 6.6.5 Epic 5 capstone walk) and walk-discovered foundation work moved to Epic 6.5.
 
 ### Story 6.0: Hermes runtime corrective — close F3 / F4 / F5 carry-forward from Epic 5
 
@@ -2523,9 +2544,46 @@ So that AR-ANALYTICS-1's discipline (analytics verbs in `mailbot_api/verbs/analy
 **Then** Discord receives a single message with an attached PNG and the documented text summary
 **And** the slash command completes within 5 seconds wall-clock (NFR-PERF-1 — chart rendering on 2 vCPU; pre-measured at typical 100k-row `router_calls` table)
 
-### Story 6.9: `/v1/chat/completions` tool-calling — OpenAI ↔ Anthropic translation (F11 closure)
+---
 
-**Created by Epic 6 retro 2026-06-04 (Path B).** F11 surfaced during Epic 6 Phase 3.5 CP-2 walk attempt #3 as the precisely-scoped successor to the vaguer F9 carry-forward. F11 is the 5th boundary layer in the F6/F7/F8/SKILL.md sibling-quartet pattern and the single largest user-visible gap remaining at Epic 6 close. Filed as a dedicated Epic 6 follow-up story rather than absorbed into Epic 7 because the scope is fundamentally Router/adapter protocol extension — Epic 6's territory — and Epic 7's identity (eval & calibration) shouldn't carry it.
+## Epic 6.5 Detail — Foundation Catch-Up: Walk-Discovered Debt + Hermes-Side Consumers — **DONE 2026-06-06**
+
+**Created by Epic 6 scope cleave 2026-06-04. DONE-FLIPPED 2026-06-06** (sixth-pass Story 6-6.5 walk: CP-A + CP-B + CP-C all PASS; CP-D skipped with rationale). Retrospective: [`epic-6-5-retro-2026-06-06.md`](../implementation-artifacts/epic-6-5-retro-2026-06-06.md). Final scope: 18 stories shipped (vs. 10-story scope cleave start — grew 1.8× via inline-fix-and-walk loop across 4 walk passes). Closure-absorption ratio: 75% (vs. 59% start). 121/121 MANDATORY-CR applied (100% — 4th consecutive epic at 100%). +160 net tests (980 → 1140 + 2 skipped + 3 deselected). 2 new findings filed as Epic 7 carry-forward stubs (F30 + F31 — see Stories 7.0-f30-f31 + 7.0-c24 in Epic 7 Detail above).
+
+This epic holds the foundation work that surfaced *because* Epic 6 (Observability & Trust Signals) turned the lights on — none of it was on the original Epic 6 mandate, all of it is genuine debt that needs closure before the product is stable. Epic 6.5 is the explicit holding pen so velocity on the trust surface can be measured separately from velocity on foundation repair.
+
+**Origin pattern (from Epic 6 retrospective evidence):**
+
+- 8 of 10 stories trace to **earlier-epic latent bugs** that only surfaced once Epic 6's instrumentation, integration walks, or worker-process refactor stressed the corresponding boundaries (Story 2-10 chat_completions scope; Story 4-3/4-4 grant state machine; Story 5-4 invented Hermes contract; sync-side oauth refresh).
+- 2 of 10 stories trace to **upstream tooling drift** — FastMCP / Pydantic / Anthropic SDK contracts moved under us between the dev-cycle and the walk.
+- The single Epic-6-native bug (Story 6.11 / F17 — worker-process pipeline runtime init gap from Story 6.6 refactor) is included here because it is defect-trace fallout from the same integration walk that exposed the rest.
+
+**Epic 6.5 scope (10 stories):**
+
+| Story | Status | Origin |
+| --- | --- | --- |
+| `6.6.5` Epic 5 capstone carry-forward walk | ready-for-walk (PASS-WITH-FINDINGS pending F23) | Walk story — gate on the original Story 5-9 capstone |
+| `6.6.6` MCP redirect fix (F6) | done 2026-06-03 | Sibling-quartet — FastMCP mount-path contract |
+| `6.6.7` MCP transport-security allowed-hosts (F7) | done 2026-06-03 | Sibling-quartet — FastMCP transport-security defaults |
+| `6.6.8` chat_completions hermes_aux alias (F8) | done 2026-06-03 | Story 2-10 narrow scope |
+| `6.6.9` SKILL.md frontmatter (Hermes skill-loader contract) | done 2026-06-03 | Story 5-5 frontmatter contract gap |
+| `6.9` `/v1/chat/completions` tool-calling (F11 closure) | done 2026-06-04 | Story 2-10 narrow scope (Path B addition) |
+| `6.10` Hermes-cron-skill bundle (Story 6.3 pull loop + Story 6.5 08:00 digest) | done 2026-06-04 | Schema-reality reframe consumer side (Path B addition) |
+| `6.11` Ingest pipeline `sensitivity_class` runtime init (F17 closure) | done 2026-06-04 | Story 6.6 worker-process refactor gap |
+| `6.12` Anthropic `temperature` deprecated on opus-4-7 (F19 closure) | backlog | Anthropic upstream deprecation; latent because all Opus tests mocked Router boundary |
+| `6.13` `pending_grant → pending` promotion on `mint_grant` (F22 closure) | backlog | Story 4-3/4-4 state-machine gap |
+| `6.14` Haiku `summary_short` `outcome=failed` despite billing (F21 investigation) | backlog | Latent observability gap; masked by F17 |
+| `6.15` Outlook OAuth re-authorization runbook (F23 closure) | backlog | Operational; oauth refresh rejected for 9+ hours; needs re-auth + alarm wiring |
+
+**Closure gate:** Epic 6.5 done-flips when all 10 stories are `done` AND Story 6.6.5 re-walk produces PASS (CP-A/B with live recipient-inbox verification after F23 re-auth). CP-1 VPS deploy walk is **NOT** an Epic 6.5 gate either — same rule as Epic 6: CP-1 is the final ship gate across all development phases.
+
+**Epic 7 implication:** Epic 7's planning rubric will size by net-new only, with an explicit budget line for "closure absorption from prior epics" (currently estimated at 15-20% reserve). The 59% closure-absorption ratio in Epic 6 is the data point informing this reserve.
+
+The Epic 6.5 stories with full AC blocks (6.9 and 6.10) follow below. The sibling-quartet and 6.11–6.15 are referenced in `_bmad-output/implementation-artifacts/epic-6-run-flags.md` per-story summary tables; the 6.12–6.15 backlog entries have inline-fix-and-walk evidence in the third-pass 6.6.5 walk record.
+
+### Story 6.9 (Epic 6.5): `/v1/chat/completions` tool-calling — OpenAI ↔ Anthropic translation (F11 closure)
+
+**Created by Epic 6 retro 2026-06-04 (Path B); moved to Epic 6.5 by scope cleave 2026-06-04.** F11 surfaced during Epic 6 Phase 3.5 CP-2 walk attempt #3 as the precisely-scoped successor to the vaguer F9 carry-forward. F11 is the 5th boundary layer in the F6/F7/F8/SKILL.md sibling-quartet pattern. Originally filed as an Epic 6 follow-up because Epic 7's identity (eval & calibration) shouldn't carry Router/adapter protocol extension; now lives in Epic 6.5 because it is foundation work that surfaced from a Phase 3.5 walk, not Epic 6 mandate work.
 
 As Adam,
 I want mailbot-api's `/v1/chat/completions` endpoint to accept OpenAI-shape `tools=[...]` and `tool_choice` parameters, forward them through the Router to the AnthropicAdapter, translate the OpenAI tool-call shape to Anthropic's tool-use shape on the way in and back to OpenAI's `tool_calls` shape on the way out, and audit tool-calling usage in `router_calls` — preserving sensitivity-gate preconditions, ephemeral cache (Story 2-6 Rule M), and degraded-mode logic,
@@ -2579,9 +2637,9 @@ So that Hermes's main-inference path (which assembles tool-bearing OpenAI reques
 **And** the `epic-6-run-flags.md` F11 block is amended to "RESOLVED — see Story 6.9 walk record"
 **And** F9 (Discord round-trip "Empty response") is amended to "RESOLVED via F11 closure"
 
-### Story 6.10: Hermes-cron-skill bundle — pull loop (Story 6.3) + 08:00 daily digest trigger (Story 6.5)
+### Story 6.10 (Epic 6.5): Hermes-cron-skill bundle — pull loop (Story 6.3) + 08:00 daily digest trigger (Story 6.5)
 
-**Created by Epic 6 retro 2026-06-04 (Path B).** Two carry-forward Hermes-side consumers shipped as a single bundled story. Per the schema-reality reframe pattern shipped three times in Epic 6 (Stories 6-0, 6-3, 6-5): mailbot-api ships the verb + MCP-tool surface; the Hermes-side consumer is a separate follow-up. This story is the consumer side for two of those three reframes — the third (Story 6-0's Hermes runtime corrective) is fully closed.
+**Created by Epic 6 retro 2026-06-04 (Path B); moved to Epic 6.5 by scope cleave 2026-06-04.** Two carry-forward Hermes-side consumers shipped as a single bundled story. Per the schema-reality reframe pattern shipped three times in Epic 6 (Stories 6-0, 6-3, 6-5): mailbot-api ships the verb + MCP-tool surface; the Hermes-side consumer is a separate follow-up. This story is the consumer side for two of those three reframes — the third (Story 6-0's Hermes runtime corrective) is fully closed.
 
 **Pre-requisite:** Story 6-9 (F11 closure) must land first OR the Hermes-cron-skill must be implemented without MailBot-side tool-calling (i.e., direct MCP `tools/call` invocations from the cron-skill itself rather than via a Hermes main-inference path). The latter is likely simpler and matches Hermes's documented cron-with-agent pattern, but the design choice is part of this story's scope.
 
@@ -2630,9 +2688,147 @@ So that the four-tier notification dispatcher (Story 6.3) and daily digest (Stor
 
 ---
 
-## Epic 7 Detail — Eval & Calibration: Routing Decisions Backed by Data
+## Epic 7 Detail — Production Calibration: Continuous Self-Measurement in the Wild
 
-This epic discharges Rule H ("eval-driven routing — no task is assigned to a model based on intuition") and closes FR-4.3's promised ≥ 90% reference-resolution threshold. After this epic, every policy.yaml entry — especially every escalation to Haiku or Opus — has either been benchmarked or its DEMOTION HYPOTHESIS / PROMOTION HYPOTHESIS is being actively tested. Sunday production sampling grows the corpus weekly; KL-divergence drift catches inbox composition shifts; shadow-mode rollouts prevent silent quality regressions on subjective tasks. `policy.yaml` v0 → v1 bump happens here after the first calibration pass.
+**SCOPE CLEAVE 2026-06-07 (party-mode roundtable):** Original Epic 7 ("Eval & Calibration") covered both the static benchmark loop (corpus + runner + scorer + report) and the continuous calibration loop (Sunday sampling + KL drift + shadow rollouts). Epic 9 (new) absorbed Stories 7.1 through 7.4 plus the `/model` manual-override surface. Epic 7 now retains Stories 7.5 (Sunday production sampling), 7.6 (weekly KL-divergence drift), and 7.7 (shadow-mode rollouts + FR-4.3 production validation) — all of which depend on Epic 9 having shipped the corpus + runner + scorer + report. Epic 7 sequences AFTER Epic 9 done-flip.
+
+This epic discharges the production-side half of Rule H ("eval-driven routing — no task is assigned to a model based on intuition") by running the calibration loop continuously against real inbox traffic. Sunday production sampling grows the corpus weekly via Discord DM prompts; KL-divergence drift catches inbox composition shifts that would silently degrade routing quality; shadow-mode rollouts prevent silent quality regressions on subjective tasks (drafts, summaries) by running new prompt versions alongside production. FR-4.3's ≥ 90% reference-resolution threshold validation lands here against production-sampled data (the corpus build + initial scorer pass land in Epic 9). The `policy.yaml` v1 → v2 bump happens after the first production-sampled calibration round in Epic 7 (the v0 → v1 bump happens at Epic 9 done-flip).
+
+**Sequencing block — Epic 6.5 retro carry-forwards (NOT net-new Epic 7 scope; sized separately):**
+
+| # | Story | Origin | Sequence rule |
+| --- | --- | --- | --- |
+| 7.0-prep | Story 4-1 CR-2 DELETE `requires_sensitivity_token=True` code change | Epic 4 retro decision 2026-06-02 + Epic 6.5 retro B5 sequencing 2026-06-06 | **MUST land before Epic 9 Story 9.5** (corpus build may exercise DELETE-family actions). Sequences before Epic 9, therefore before Epic 7. |
+| 7.0-f30-f31 | Hermes Tier-3 SEND grant-mint flow gap (F30 HIGH) + duplicate `pending_actions` on send confirmation (F31 LOW) | Story 6-6.5 sixth-pass walk 2026-06-06 (Epic 6.5 retro B1) | Sequence before Epic 9 first story OR parallel; surfaced live during Epic 6.5 capstone walk |
+| 7.0-c24 | Hermes-flow signal-expressivity architecture (`recovery_action: {tool_name, args_hint, user_facing_guidance}` on every refusal/blocked/terminal mailbot-api response) | Epic 6.5 retro B4 2026-06-06 | Sequence AFTER 7.0-f30-f31 (those are the load-bearing concrete cases that prove out the contract shape) |
+
+These three stories ship in their own block before Epic 9 begins (Stories 9.1–9.11). Per the N.5-epic policy (Epic 6.5 retro B3), Epic 7's planning rubric measures velocity on Stories 7.5–7.7 only (post-cleave); the 7.0-* block is tracked separately as Epic 6.5 carry-forward debt being burned down during Epic 9's runway. Stories 7.1–7.4 (corpus, runner, scorer, report) were relocated to Epic 9 (Stories 9.5, 9.6, 9.7, 9.9) by the 2026-06-07 scope cleave; their detailed AC specs follow the original Epic 7 numbering below for diff continuity, but they are NOT executed under Epic 7 — they execute under Epic 9 and use the renumbered Story 9.x ids in `sprint-status.yaml`.
+
+### Story 7.0-prep (Epic 6.5 carry-forward): Story 4-1 CR-2 DELETE sensitivity-token code change (C9 closure)
+
+**Created by Epic 6.5 retro 2026-06-06 (action B5).** Epic 4 retro 2026-06-02 decided to flip `mailbot_api/actions/types.py` → `ACTION_PROPERTIES[ActionType.DELETE].requires_sensitivity_token` from `False` to `True` as belt-and-suspenders defense (deleting a sensitive email is a high-consequence destructive action and should require the same confirmation handshake as sending sensitive content to an API). The code change was carried forward across Epics 4 → 5 → 6 → 6.5 without landing; Epic 6.5 retro sequenced it as a prerequisite to Epic 7 first story because Epic 7's eval corpus + Sunday-sampling flow may exercise DELETE-family actions.
+
+As Adam,
+I want `mailbot_api/actions/types.py` → `ACTION_PROPERTIES[ActionType.DELETE].requires_sensitivity_token` flipped from `False` to `True` with a regression test asserting the new invariant and a docstring rationale update,
+So that DELETE-family flows in Epic 7's benchmark runner + production sampler are gated by the same sensitivity-handshake invariant that protects SEND-family flows.
+
+**Acceptance Criteria:**
+
+**Given** Story 4-1's `ACTION_PROPERTIES` registry currently sets `ActionType.DELETE.requires_sensitivity_token = False`
+**When** the flag is flipped
+**Then** the single bool changes to `True`
+**And** the `ActionProperties` class docstring is amended with the new rationale: "DELETE requires a sensitivity token as belt-and-suspenders on destructive touches of sensitive emails. The handshake's role here is not content-leak prevention (the verb doesn't expose body bytes) but extra confirmation on any high-consequence action against a sensitive email."
+
+**Given** `tests/unit/actions/test_types.py` asserts the original "only SEND_* and REPLY_TO_INACTIVE_THREAD require sensitivity token" invariant
+**When** the test is updated
+**Then** the test enumerates the new set including `DELETE`
+**And** a counter-test verifies that flipping the new bool back to `False` would fail the existing `propose_action` refusal arm assertions in `tests/integration/test_propose_action_sensitivity_gate.py` (regression guard)
+
+**Given** Story 4-7's `mint_sensitivity_token` already supports any task_type binding
+**When** the DELETE-via-handshake flow is exercised in test
+**Then** an integration test in `tests/integration/test_actions_delete_sensitivity_handshake.py` verifies the mint→consume pattern works for DELETE identically to SEND_REPLY (smoke; the verb-layer logic is already correct via the registry lookup)
+
+**Given** the work is complete
+**When** `epic-4-run-flags.md` deferred-items section is amended
+**Then** Story 4-1 CR-2 is marked `RESOLVED — Adam decision 2026-06-02; code landed [date]`
+**And** the long-tail debt registry entry C9 across retro docs is marked CLOSED
+**And** `feedback_cr_cadence_v2_structural.md` memory + `project_delete_requires_sensitivity_token.md` memory are not amended (they capture the decision; the closure is in code+tests+epic-4-run-flags)
+
+**Given** the change is a single-line bool flip plus tests + docstring
+**When** CR cadence is evaluated per the 6 criteria
+**Then** ship under §5.12 self-audit cadence (none of the 6 mandatory-CR criteria fire — privacy invariant is being TIGHTENED not loosened, so adversarial-CR has limited surface area to add value over self-audit + the regression test pair)
+
+### Story 7.0-f30-f31 (Epic 6.5 carry-forward): Hermes Tier-3 SEND grant-mint flow gap + duplicate pending_actions on send confirmation
+
+**Created by Epic 6.5 retro 2026-06-06 (action B1).** Both findings surfaced live during Story 6-6.5 sixth-pass walk CP-A (2026-06-06). F30 HIGH: Hermes called `propose_action(send_reply)` correctly, row inserted as `status='cooling_off'`, cooling-off ticker promoted to `pending`, drainer claimed, no valid `action_grants` row existed, drainer reverted to `pending_grant` (Story 6-13 F22 behavior) — but Hermes never called `mint_grant("send_reply", [email_ids], expires_at)` to satisfy the Tier-3 grant requirement. Without operator intervention, both rows would have stayed stuck in `pending_grant` forever. Adam manually minted a grant via `docker exec` to unstick. F31 LOW: Hermes treated the user's `send` confirmation as a fresh "draft a reply" request instead of confirming the existing cooling-off row — 2 identical `pending_actions` rows were created for the same email_id + action_type. Both share root cause: `ProposeActionOut` doesn't expose `requires_grant` / `requires_per_action_confirmation` boolean signals so Hermes has no in-band signal that a grant is required or that "send" should confirm an existing pending action.
+
+As Adam,
+I want `ProposeActionOut` extended to carry `requires_grant: bool` + `requires_per_action_confirmation: bool` populated from the action's Tier classification, plus a Hermes-side SKILL.md amendment documenting the Tier-3 SEND grant-mint flow explicitly, so that Hermes-driven Tier-3 SEND flows (via the chat_completions_tool_call path) complete end-to-end without operator intervention,
+So that the Story 5-9 capstone (DM → draft → cool-off → drainer → real Graph send) runs cleanly under main-inference Haiku without F30/F31 stalls and the sixth-pass walk evidence translates to production reliability.
+
+**Acceptance Criteria:**
+
+**Given** Story 4-2's `propose_action` verb returns `ProposeActionOut` and Story 4-1's `ACTION_PROPERTIES` registry declares per-action `tier` + `is_send_family` metadata
+**When** the return shape is investigated
+**Then** the implementation history is checked first: Story 4-2 ACs DO describe `requires_*=True` fields (per hermes-config SKILL.md line 102: "If the verb returns `requires_grant=True`, you mint a grant") — investigate whether Story 4-2 didn't ship them OR they were silently dropped in a later refactor, and document the finding in the story's Dev Notes
+
+**Given** `ProposeActionOut` does not currently populate `requires_grant` / `requires_per_action_confirmation`
+**When** the schema is extended
+**Then** `requires_grant: bool` is added, populated from `ACTION_PROPERTIES[action_type].tier >= 2` (Tier-2 BATCH + Tier-3 SEND-family both require grants)
+**And** `requires_per_action_confirmation: bool` is added, populated from `ACTION_PROPERTIES[action_type].is_send_family` (Tier-3 SEND-family requires per-action `send` confirmation following the cooling-off window; Tier-2 BATCH grants cover N actions of the same type without per-action re-confirmation)
+**And** existing call sites that destructure `ProposeActionOut` continue to work (the new fields are added without removing existing ones)
+
+**Given** `hermes-config/skills/mailbot/SKILL.md` `### propose_action` section
+**When** the SKILL.md amendment is shipped
+**Then** the section gains a new `#### Tier-3 SEND flow` H4 subsection covering: (a) after `propose_action(send_reply, email_id, payload)` returns with `requires_grant=True`, the agent MUST call `mint_grant(action_type="send_reply", email_ids=[email_id], expires_at=<60s from now>)` BEFORE the cooling-off window closes; (b) the rationale: Tier-3 SEND grants are per-action (single email_id, single action_type) by design — the cooling-off window is the cancel-affordance, the grant is the "yes really send this specific email" signal; (c) the failure mode if mint_grant is missed: drainer reverts the row to `pending_grant`, no operator-visible error, no automatic recovery (manual `mint_grant` via `docker exec` is the only unstick path); (d) the per-action confirmation rule: when the user types "send" after a `propose_action` cooling-off, the agent MUST recognize this as confirming the existing `pending_actions` row (lookup by `find_emails` projection's `pending_actions_pending: [...]` field), NOT as a fresh `propose_action` call
+
+**Given** the verb response shape change
+**When** `tests/unit/verbs/test_propose_action_requires_grant_signal.py` is implemented
+**Then** the test covers: (1) Tier-1 LOCAL actions return `requires_grant=False, requires_per_action_confirmation=False`; (2) Tier-2 BATCH actions return `requires_grant=True, requires_per_action_confirmation=False`; (3) Tier-3 SEND-family actions (`send_reply`, `send_new_email`, `reply_to_inactive_thread`) return `requires_grant=True, requires_per_action_confirmation=True`; (4) the DELETE action (post-7.0-prep) returns `requires_grant=True, requires_per_action_confirmation=False` (Tier-2 BATCH semantics; sensitivity-token covers the destructive-touch invariant separately)
+
+**Given** F31 (duplicate `pending_actions` on send confirmation)
+**When** the SKILL.md per-action-confirmation rule is documented (above)
+**Then** a regression test against the `find_emails` projection contract verifies that `pending_actions_pending` lookup is the canonical way the agent discovers existing cooling-off rows on a follow-up confirmation turn
+**And** the test asserts that the projection includes `pending_action_id` + `action_type` + `cool_off_until_ts` for each pending row so the agent has enough context to issue a confirmation rather than a fresh propose
+
+**Given** the work is complete
+**When** Story 6-6.5 is RE-walked (operator-scheduled, no Adam-side new content needed — same fixtures)
+**Then** the F30 reproduction sequence (sixth-pass CP-A `router_calls.id=8685 → 8686`) is repeated; the drainer dispatches both replies without operator intervention; no `pending_grant` revert observed; no duplicate `pending_actions` row created on the "send" confirmation
+**And** the verification is recorded in `epic-6-run-flags.md § Story 6-6.5 walk record § Seventh pass (or whatever pass number)` with `router_calls` diff before/after
+
+**Given** the cross-story load-bearing seam (Story 4-2 ProposeActionOut + Story 6-9 dispatch_tool_call + Story 6-20 sensitivity-gate + Story 4-3/4-4 grant-state-machine)
+**When** CR cadence is evaluated per the 6 criteria
+**Then** criteria 4 (capstone — cross-story-collision) + criteria 6 (load-bearing-orchestrator — ProposeActionOut is the contract every Hermes-flow chat dispatch decodes) BOTH fire → **MANDATORY-CR per §5.12** with sonnet-4-6 reviewer
+
+### Story 7.0-c24 (Epic 6.5 carry-forward): Hermes-flow signal-expressivity architecture — recovery_action field on refusals/blocks/terminal states
+
+**Created by Epic 6.5 retro 2026-06-06 (action B4).** Generalizes the pattern observed across F30 + F31 + CP-C tone-drift sub-finding + CP-B mint-then-stall during Epic 6.5's sixth-pass walk: **mailbot-api returns terminal states (refused / requires-grant / sensitivity-blocked / dispatched / drained) without a structured "next-step" signal Hermes can use to drive the agent forward.** Hermes infers next-steps from SKILL.md + AGENTS.md + SOUL.md + main-inference Haiku's training prior. Inference works most of the time. When it fails, the failures are non-obvious because the agent stays plausible (drafts a reply that looks reasonable, picks an action_type that looks reasonable, gives up at a stall point that looks reasonable). The fix-shape is consistent across F30/F31/tone-drift/mint-stall: every refusal/blocked/terminal response should carry a `recovery_action: {tool_name: str, args_hint: dict, user_facing_guidance: str | None}` field. Hermes parses it; agent acts on it; no inference required.
+
+**Pre-requisite:** Story 7.0-f30-f31 ships first. F30 + F31 are the load-bearing concrete cases that prove out the contract shape — start by retro-fitting `requires_grant` / `requires_per_action_confirmation` into the more general `recovery_action` envelope, then propagate the envelope to all other refusal/blocked/terminal surfaces.
+
+As Adam,
+I want every mailbot-api refusal/blocked/terminal response to carry a structured `recovery_action: {tool_name: str, args_hint: dict, user_facing_guidance: str | None}` field that Hermes parses to drive the agent forward without main-inference Haiku having to infer next-steps from SKILL.md + AGENTS.md + SOUL.md + training prior,
+So that the Hermes-flow signal-expressivity gap (observed concretely across F28/F29/F30/F31 + the CP-B mint-then-stall + the CP-C tone-drift sub-finding) is closed at the architectural layer rather than being patched case-by-case.
+
+**Acceptance Criteria:**
+
+**Given** the existing refusal/blocked/terminal response surfaces across mailbot-api
+**When** the surfaces are enumerated
+**Then** a design document `_bmad-output/implementation-artifacts/7-0-c24-design-decision.md` is written FIRST (before code) listing every surface that should carry `recovery_action`: (a) verb errors — `ProposeActionError.INVALID_ACTION_TYPE` (already shipped Story 6-19's `valid_action_types` field — generalize to `recovery_action` envelope), `ProposeActionError.SENSITIVITY_NOT_CLASSIFIED`, `ProposeActionError.SENSITIVITY_BLOCKS_API`, `ProposeActionError.GRANT_REQUIRED`, `ProposeActionError.BUDGET_CAP_HIT`, `HydrateEmailError.CONFIDENTIAL_HYDRATION_BLOCKED`; (b) router refusals — `RouterRefusal.SENSITIVITY_BLOCKS_API` (the new F28 multi-id branch), `RouterRefusal.DEGRADED_MODE`, `RouterRefusal.PAUSED`; (c) terminal action states — `pending_actions.terminal_reason='pending_grant_reverted'` (the F30 unstuck state), `pending_actions.terminal_reason='budget_cap_hit'`, `pending_actions.terminal_reason='expired'`; (d) sensitivity-handshake terminal states — `MintSensitivityTokenOut` (next step is for the user to provide `/confirm <email_id>` slash command on next turn — recovery_action.user_facing_guidance carries the canonical wording)
+
+**Given** the design document
+**When** the `recovery_action` envelope is specified
+**Then** the Pydantic model is: `class RecoveryAction(BaseModel): tool_name: str | None = None  # e.g. "mint_grant", "mint_sensitivity_token", "list_resources"; args_hint: dict = Field(default_factory=dict)  # e.g. {"action_type": "send_reply", "email_ids": ["<email_id>"], "expires_at": "<ISO-8601-UTC + 60s>"}; user_facing_guidance: str | None = None  # canonical wording the agent should use in chat`
+**And** the envelope is added as an optional field to every refusal/blocked/terminal response shape enumerated in the design doc
+
+**Given** Story 7.0-f30-f31 shipped `requires_grant` / `requires_per_action_confirmation` as bare booleans on `ProposeActionOut`
+**When** the recovery_action envelope is propagated
+**Then** the bare booleans are RETAINED for backwards compatibility (Hermes-flow code paths and existing tests still work) AND `ProposeActionOut.recovery_action` is added carrying the full envelope (for new Hermes-flow code paths that prefer structured signals over boolean tuples)
+**And** the design doc records the convention: "BACK-COMPATIBLE EXPANSION — when promoting a boolean signal to a structured recovery_action, retain the boolean for one full epic to give Hermes-side consumers time to migrate"
+
+**Given** the cross-doc updates
+**When** `hermes-config/skills/mailbot/SKILL.md` is amended
+**Then** a new `## Recovery Actions — the universal next-step contract` section is added documenting the envelope, with worked examples for the 4 highest-traffic refusal types (INVALID_ACTION_TYPE, SENSITIVITY_BLOCKS_API, GRANT_REQUIRED, BUDGET_CAP_HIT)
+**And** AGENTS.md gains a new Rule R "Recovery action expressivity — when calling a mailbot-api verb that may refuse/block/terminate, ALWAYS check `response.recovery_action` first; the agent's next call should match `recovery_action.tool_name` with `recovery_action.args_hint` interpolated"
+
+**Given** Story 6-19 already shipped a special-case recovery field (`valid_action_types`) on `ProposeActionError.INVALID_ACTION_TYPE`
+**When** the envelope is propagated
+**Then** the special-case field is migrated INTO the new envelope: `recovery_action = RecoveryAction(tool_name="propose_action", args_hint={"action_type": "<one of valid_action_types>"}, user_facing_guidance=None)` — and the original `valid_action_types` field is retained for one epic per the back-compatible-expansion convention
+
+**Given** the work is complete
+**When** integration tests verify the envelope is populated correctly
+**Then** `tests/integration/test_recovery_action_envelope_coverage.py` enumerates every surface from the design doc and asserts: (a) the envelope is present on every refusal/blocked/terminal response; (b) `tool_name` matches the canonical next-step verb for each surface; (c) `args_hint` is structurally complete enough that Hermes can construct the next call without prompting Adam for additional parameters; (d) `user_facing_guidance` is present on surfaces where the agent should relay an explanation rather than silently auto-recover (e.g. SENSITIVITY_BLOCKS_API needs user authorization; INVALID_ACTION_TYPE does not)
+
+**Given** the cross-story load-bearing seam (touches every verb response shape + router refusal shapes + Story 4-2 ProposeActionOut + Story 4-3/4-4 grant-state-machine + Story 5-1 hydrate_email + Story 5-2 MCP server + Story 6-9 dispatch_tool_call + Story 6-19 valid_action_types special-case + Story 6-20 multi-id sensitivity gate)
+**When** CR cadence is evaluated per the 6 criteria
+**Then** criteria 1 (boundary-introducing — new pydantic response envelope) + criteria 4 (capstone — cross-story-collision touching 8+ stories) + criteria 5 (privacy-invariant — touches SENSITIVITY_BLOCKS_API refusal shape) + criteria 6 (load-bearing-orchestrator — RecoveryAction becomes the canonical Hermes↔mailbot-api signaling contract) ALL fire → **MANDATORY-CR per §5.12** with sonnet-4-6 reviewer; expect high CR yield given surface breadth
+
+**Given** the Hermes-side consumer migration
+**When** the envelope is propagated through to Hermes
+**Then** at least 2 high-traffic refusal types (INVALID_ACTION_TYPE + GRANT_REQUIRED) get a live-walk verification that the agent successfully self-recovers via the envelope on the first turn (no inference fallback, no operator intervention)
+**And** the live-walk evidence is recorded in `epic-6-run-flags.md § Story 6-6.5 walk record § Eighth pass (or whatever)` — Story 6-6.5 becomes the canonical regression-walk story across Epic 6.5 carry-forwards landing in Epic 7's 7-0-* block
+
+---
 
 ### Story 7.1: Eval corpus — `email_corpus_v1.jsonl` with ~100 hand-labeled emails
 
@@ -2860,3 +3056,359 @@ So that subjective prompt regressions (Rule O — "v3 of draft prompt is subtly 
 **And** `router/policy.yaml` carries `version: v1` with at least one DEMOTE or PROMOTE change cited to a benchmark run_id
 **And** FR-4.3 has a numeric answer recorded in `evals/reports/fr-4-3-validation-{date}.md`
 **And** Adam reports the eval loop is "self-running" — Sundays produce reports without manual intervention, calibration changes are evidence-backed, and Rule Ω is being actively defended by measured data rather than intuition
+
+---
+
+## Epic 9 Detail — Manual Model Control & Benchmark Harness: Evidence-Backed Routing
+
+**Created 2026-06-07 via party-mode roundtable scope cleave.** Original Epic 7 ("Eval & Calibration") covered both the static benchmark loop (corpus + runner + scorer + report) and the continuous calibration loop (Sunday sampling + KL drift + shadow rollouts). Adam's posture is ship-when-mature (no time pressure on CP-1). The roundtable converged on splitting Epic 7 into two epics: Epic 9 absorbs the static benchmark loop and adds a new `/model` manual-override surface (one-shot per-call + persistent per-task via `policy.user-overrides.yaml` companion file); Epic 7 retains the continuous calibration loop. Rationale: both halves of Epic 9 answer the same architectural question — *how does the router defend its choices?* /model is the manual-override path; benchmark is the automated-evidence path. They share three load-bearing artifacts (`model_chosen_reason` enum, `router_calls` audit schema, `policy*.yaml` merge contract). Splitting them would orphan the manual knob from its evidence backing.
+
+**Epic identity:** canary against silent routing drift, so that when CP-1 ships, Adam ships a measured product, not a hoped-for one. Today's `policy.yaml` is honest hypothesis-driven assignment with DEMOTION/PROMOTION HYPOTHESIS annotations on every Opus task. Epic 9 ships the machinery + the corpus + the first benchmark run that converts at least one of those hypotheses into a measured verdict. At Epic 9 done-flip, `policy.yaml` bumps v0 → v1 with at least one benchmark-driven routing change OR a documented Adam-signed no-change verdict.
+
+**Done-flip live-walk budget:** ~$11-14 of real Anthropic spend (recalculated from the original $11-26 estimate during Round 6 cost-reduction roundtable). Breakdown: full 100-item corpus walk on production routing (~$4-5) + Haiku-vs-Opus comparison on `draft_reply` for the one binding DEMOTE/PROMOTE data point (~$5) + cross-evaluator anchor calibration on 20 anchors (~$1-3) + anchor-drift baseline persistence (~$1). The multi-model fan-out across all tasks is OPERATOR-triggered post-Epic-9 (not a done-flip requirement); Epic 9 produces ONE binding routing decision to prove the tool informs the system.
+
+**Sequencing:** Epic 6.5 carry-forward block (7.0-prep + 7.0-f30-f31 + 7.0-c24, documented in Epic 7 detail above) ships BEFORE Epic 9 begins. Epic 9 sequences before Epic 7 (Production Calibration) because Sunday sampling + KL drift + shadow rollouts all REQUIRE the corpus + runner + scorer + report that Epic 9 ships. CP-1 final ship gate fires only after Epic 7 done-flip.
+
+**Contract pins (Stories 9.1 + 9.2 + cohort_key decision) land FIRST.** These are load-bearing decisions that change the shape of every downstream story; deferring them creates rework. Story 9.1 = `policy.user-overrides.yaml` merge contract (shallow-leaf semantics, schema, validator). Story 9.2 = `model_chosen_reason` vocabulary enum (closed-set, no string literals at callsites, audit callsite refactor). Cohort_key composition `(prompt_v, scorer_model, anchors_v, router_policy_v)` is a 15-minute Adam-decision that gates Story 9.6 (migration); no story of its own but blocking.
+
+**FRs covered:** FR-3.3 (manual override surface completed via chat — was API-only, now chat-accessible), FR-6.6 (evidence layer — every Opus assignment can cite a benchmark), FR-8.1 (frozen corpus), FR-8.2 (benchmark runner), FR-8.3 (scorer), FR-8.4 (report generator)
+**NFRs:** NFR-PRIV-2 (sensitivity gate inherited by `/model` — gate-coverage regression), NFR-PERF-1 (Haiku/Opus latency profiles measured by runner)
+**AR-\*:** AR-SCHEMA-8 (`benchmark_runs`), AR-MODEL-OVERRIDE (new — `policy.user-overrides.yaml` companion-file merge), AR-COHORT-KEY (new — four-tuple), AR-AUDIT-VOCAB (new — `model_chosen_reason` enum), AR-ANALYTICS-1 (numpy used by scorer + Pareto frontier)
+
+**Epic 9 Story List:**
+
+| # | Story | Dep-on | +tests | MANDATORY-CR | Notes |
+| --- | --- | --- | --- | --- | --- |
+| 9.1 | Contract pin: `policy.user-overrides.yaml` schema + shallow-leaf merge semantics | — | +6 | high | front-loaded |
+| 9.2 | Contract pin: `model_chosen_reason` vocabulary enum + audit-emit refactor | — | +4 | high | front-loaded |
+| 9.3 | `/model` one-shot dispatch (session-flag, TTL, gates inherited) | 9.1, 9.2 | +12 | high | partial gate-coverage on sensitivity+budget+degraded |
+| 9.4 | `/model` persistent override + `/model` inspect | 9.3 | +8 | medium | |
+| 9.5 | Corpus build (~100 items + 20 reference slice + 20 anchors) | — | +3 (schema) | n/a | Adam-labor 3-5h |
+| 9.6 | Runner: `benchmark_runs` migration + `ask_router(force_model)` + resumable + $5 confirmation + $30-cap-counting (abort-with-partial) + cohort_key | 9.2, 9.5 | +18 | high | |
+| 9.7 | Scorer: objective (acc/prec/rec + confusion matrix) + field-level + subjective (evaluator-pinned + ±0.5 anchor calibration) + cross-evaluator agreement coefficient | 9.6 | +16 | high | |
+| 9.8 | E2E join: 5-item canary corpus → runner → scorer → report | 9.7 | +2 | medium | |
+| 9.9 | Report renderer (markdown + JSON, cohort_key tagged, Pareto frontier, DEMOTE/PROMOTE with confidence intervals + n≥15 sample-size gate) | 9.7 | +6 | medium | |
+| 9.10 | Hermes `config.yaml` slash registration drift test | 9.3 | +3 | low | gate-coverage-only |
+| 9.11 | Anchor stability audit (cross-evaluator one-shot) | 9.7 | +4 | medium | half-story; ship-when-mature addition |
+
+**Total: 11 stories, ~82 net-new tests.**
+
+**Done-flip gate (11 clauses):**
+
+1. Stories 9.1 through 9.11 status=done in sprint-status.yaml
+2. 9.8 E2E canary produces valid `report.json` on 5-item corpus with all cohort_key fields populated and evaluator model version pinned
+3. `/model qwen --once` executed by Adam in live Hermes session, audit log shows `model_chosen_reason="slash_command:one_shot:adam"`, response returned, session-flag cleared after dispatch
+4. `/model <task> <model>` executed in live session, `router/policy.user-overrides.yaml` written with shallow-leaf merge intact (shipped `router/policy.yaml` byte-identical), next chat picks the overridden model, audit log shows `model_chosen_reason="slash_command:persistent:adam"`
+5. Sensitivity gate regression: `/model qwen --once` on confidential email → refused with `model_chosen_reason="sensitivity_gate_refused"`, no qwen dispatch, no body leak
+6. Benchmark cost-cap test: forced-run hitting $30 monthly cap aborts with partial results persisted + `benchmark_runs.status="aborted_cost_cap"` + Adam-receivable notification
+7. **Full 100-item corpus live walk on production routing** (~$4-5 real Anthropic spend) produces a real benchmark output, not a smoke-test fixture
+8. **Haiku-vs-Opus comparison on `draft_reply`** (100 items × 2 models, ~$5 real spend) produces first real DEMOTE/PROMOTE data point on the highest-cost task
+9. **Cross-evaluator anchor calibration on 20 anchors** (Krippendorff α reported; ~$1-3 real spend) — **BLOCKS done-flip if α < 0.6** (two reasonable evaluators disagreeing on anchors means the eval pipeline is single-point-of-failure)
+10. Anchor-drift baseline persisted in `evals/anchor_baselines/v1.json` (~$1 real spend) for future drift detection
+11. **`policy.yaml` v0 → v1 bump** with either (a) at least one routing decision changed based on benchmark output (DEMOTE or PROMOTE) cited to a specific `benchmark_runs.run_id`, OR (b) an Adam-signed retro entry in `epic-9-retro-{date}.md` stating "policy.yaml reviewed against benchmark output, no changes warranted, here's why" with the benchmark output cited
+
+The 11th clause is the load-bearing one. Without it, Epic 9 closes at infrastructure-complete; with it, Epic 9 closes at tool-informed-the-system. Winston (Round 5) framed it: Epic 9 isn't done when the code ships; it's done when the code has been USED to make a decision.
+
+---
+
+### Story 9.1: Contract pin — `policy.user-overrides.yaml` schema + shallow-leaf merge semantics
+
+As Adam,
+I want a companion-file pattern for routing overrides at `router/policy.user-overrides.yaml` (bind-mounted, not in image), merged into the shipped `router/policy.yaml` at load time via shallow-leaf semantics, with the same Pydantic schema validation + hot-reload + validation-or-no-swap discipline,
+So that `/model` persistent overrides (Story 9.4) survive image-rebuild deploys instead of being silently lost when a new policy.yaml ships, and so the merge contract is settled before either /model or benchmark stories touch the policy-load pathway.
+
+**Acceptance Criteria:**
+
+**Given** the current single-file load path `router.policy.load_policy()` reads only `router/policy.yaml`
+**When** the load path is extended
+**Then** the loader reads `router/policy.yaml` (baseline, in-image), then reads `router/policy.user-overrides.yaml` if present (companion, bind-mounted), then merges via `_merge_user_overrides(baseline, overrides)` with shallow-leaf semantics
+**And** shallow-leaf semantics means: for each top-level key in `tasks`, if the key exists in overrides, the OVERRIDE LEAVES (per-field — `model`, `prompt_version`, etc.) replace the baseline; fields NOT present in overrides keep their baseline value; the override does NOT need to specify all 6 fields per task
+**And** if a task exists in overrides but not in baseline, the loader logs a WARNING (`policy.user-overrides.unknown_task`) and discards the override entry (defensive — protects against typos)
+
+**Given** the merge happens on every load
+**When** `router/policy.user-overrides.yaml` is malformed (invalid YAML, schema violation)
+**Then** the loader logs ERROR (`policy.user-overrides.parse_failed` with the specific validation error) and continues with the BASELINE policy only
+**And** the running policy is NOT swapped (validation-or-no-swap per AR-D11-1, same discipline as `policy.yaml`)
+**And** the file is NOT auto-corrected or rewritten — Adam fixes it manually
+
+**Given** watchfiles is already wired for `router/policy.yaml`
+**When** `router/policy.user-overrides.yaml` is added to the watch set
+**Then** hot-reload fires on either file changing
+**And** mid-call race is acceptable (AR-D11-2 unchanged)
+**And** the audit log emits `policy.user-overrides.swap` with both file paths + the merged effective config diff on successful swap
+
+**Given** the schema is shared with the baseline `policy.yaml`
+**When** the user-overrides Pydantic model is defined
+**Then** every field is `Optional` (since overrides can specify any subset)
+**And** the model rejects unknown fields (`extra="forbid"`) for typo defense
+**And** a unit test in `tests/unit/router/test_policy_user_overrides_merge.py` covers: empty overrides → baseline unchanged; single-field override on one task → other tasks + other fields unchanged; full-task override on one task → that task fully replaced field-wise but other tasks unchanged; unknown-task override → warning + discard; malformed override → ERROR + no swap
+
+**Given** the merge function is symmetric in input shape but NOT in semantics
+**When** the merge is documented
+**Then** a docstring in `mailbot_api/router/policy.py:_merge_user_overrides` documents the shallow-leaf rule with examples
+**And** `docs/policy-overrides.md` is created (~1 page) explaining: why companion file, how to use, the merge rule, the audit log entries, the `/model` persistent flow integration point (forward-reference Story 9.4)
+
+**Given** this is a contract pin
+**When** CR cadence is evaluated per the 6 criteria
+**Then** criteria 1 (new architectural surface — companion-file load path) + criteria 6 (load-bearing — every policy read depends on this) fire → **MANDATORY-CR per §5.12**
+
+---
+
+### Story 9.2: Contract pin — `model_chosen_reason` vocabulary enum + audit-emit refactor
+
+As Adam,
+I want `router_calls.model_chosen_reason` to draw from a closed-set Python enum (`ModelChosenReason`) instead of free-form strings, with all existing callsites refactored to use the enum and the report generator able to slice `router_calls` by reason without string-matching,
+So that the benchmark report (Story 9.9) and any future routing analytics can group calls cleanly, and the audit trail stays interpretable as new override paths are added (/model one-shot, /model persistent, future shadow-mode, etc.).
+
+**Acceptance Criteria:**
+
+**Given** `model_chosen_reason` is currently a free-form `str` column written from a handful of callsites
+**When** `mailbot_api/router/audit_vocab.py` is created
+**Then** it defines `class ModelChosenReason(str, Enum)` with at LEAST the following members: `POLICY_DEFAULT` (`"policy:<task>:default"`), `POLICY_ESCALATION` (`"policy:escalation:<from>→<to>"`), `OVERRIDE_API` (`"override:api:force_model"`), `OVERRIDE_SLASH_ONE_SHOT` (`"slash_command:one_shot:adam"`), `OVERRIDE_SLASH_PERSISTENT` (`"slash_command:persistent:adam"`), `FALLBACK_TIMEOUT` (`"fallback:timeout"`), `FALLBACK_BUDGET_REFUSAL_RETRY` (`"fallback:budget_refusal_retry"`), `DEGRADED_MODE_DEMOTION` (`"degraded:opus→haiku"` / `"degraded:haiku→qwen"`), `BENCHMARK_FORCE_MODEL` (`"benchmark:force_model"`), `CACHE_HIT` (`"cache:response_cache_hit"`), `SENSITIVITY_GATE_REFUSED` (`"sensitivity_gate:refused"`), `SENSITIVITY_GATE_NORMAL` (`"sensitivity_gate:normal"`)
+**And** the enum values are stable strings (string-backed enum) so existing rows in `router_calls` remain interpretable post-refactor
+**And** a docstring documents the closed-set rule: any new override or fallback path MUST add an enum member, never write a raw string
+
+**Given** existing callsites in `router/router.py`, `router/budget.py`, `router/escalation.py`, `observability/audit.py` write `model_chosen_reason` as raw strings
+**When** the refactor is applied
+**Then** every write goes through `ModelChosenReason.<MEMBER>.value` (or just the enum member if the column accepts the enum type via Pydantic field serialization)
+**And** a new boundary check rule `forbid_raw_model_chosen_reason_strings` is added to `scripts/check_boundaries.py` — AST scan flags any string literal matching `r"policy:|override:|fallback:|degraded:|benchmark:|cache:|sensitivity_gate:"` written to `router_calls.model_chosen_reason`
+
+**Given** the report generator (Story 9.9) will slice `router_calls` by reason
+**When** the SQL is written
+**Then** the slicing uses the enum values directly (e.g., `WHERE model_chosen_reason IN (...)`) and a query helper `db.queries.router_calls_by_reason(reason: ModelChosenReason)` is added
+**And** the helper is exercised by a regression test confirming each enum member round-trips through a real INSERT + SELECT
+
+**Given** the boundary check enforces enum-only writes
+**When** `tests/unit/router/test_audit_vocab.py` runs
+**Then** every enum member has a corresponding write-and-read test
+**And** a counter-test injects a raw string (e.g., `"some_new_reason"`) into the audit writer and asserts the boundary check fails / the type check catches it
+
+**Given** this is a contract pin
+**When** CR cadence is evaluated per the 6 criteria
+**Then** criteria 1 (new boundary rule + enum) + criteria 6 (load-bearing — every router_calls write depends on this) fire → **MANDATORY-CR per §5.12**
+
+---
+
+### Story 9.3: `/model` one-shot dispatch — session-scoped per-call override from chat
+
+As Adam,
+I want to type `/model qwen` (or `/model haiku`, `/model opus`) in a Hermes Discord chat session and have the very next `ask_router` call in that session use the specified model via the existing `force_model` parameter, with all sensitivity + budget + degraded-mode gates UNCHANGED, the one-shot flag consumed on first use, and the audit row carrying `model_chosen_reason=OVERRIDE_SLASH_ONE_SHOT`,
+So that I can experiment with routing decisions inline during real conversations without editing `policy.yaml`, and so the override is visibly logged with full provenance.
+
+**Acceptance Criteria:**
+
+**Given** the MCP server (Story 5-2) exposes verbs as tools
+**When** a new verb `set_model_oneshot(model: str) → SetModelOneShotOut` is added to `mailbot_api/verbs/router_control.py`
+**Then** the verb validates `model` against the policy-allowed model set (`qwen2.5:3b-instruct-q4_K_M`, `claude-haiku-4-5-20251001`, `claude-opus-4-7`, plus any policy-registered aliases like `qwen`/`haiku`/`opus` shorthand)
+**And** the verb writes a session-scoped flag to an in-memory dict `_oneshot_overrides: dict[session_id, OneShotOverride]` keyed by Hermes `session_id` (from MCP ctx, same source Story 5-2 uses)
+**And** the flag has a TTL of 5 minutes from set-time; expired flags are evicted on read (not just on write)
+**And** the verb returns `SetModelOneShotOut(ok=True, model=..., expires_at=..., session_id=...)` on success or `SetModelOneShotOut(ok=False, error=...)` on unknown model
+
+**Given** the next `ask_router` call from the same session fires within the TTL
+**When** the router enters `ask_router(task_type, content, force_model=None, ...)`
+**Then** a NEW pre-check at the head of the function looks up `_oneshot_overrides[session_id]` (session_id sourced from ctx if available)
+**And** if a valid (non-expired) override is present, `force_model` is treated as if set to the override's model (overriding any explicit `force_model=None`; if `force_model=X` was explicitly passed, the explicit value wins and the one-shot stays armed for the next call)
+**And** the flag is CONSUMED on use (cleared from `_oneshot_overrides`) regardless of whether the call succeeds or fails
+**And** the resulting `router_calls` row carries `model_chosen_reason=ModelChosenReason.OVERRIDE_SLASH_ONE_SHOT`
+
+**Given** the sensitivity + budget + degraded-mode gates are already enforced in the router
+**When** `/model opus` is set on a `sensitive` email and the next call is `ask_router(task_type="draft_reply", email_id=<sensitive_id>)`
+**Then** the existing sensitivity-token precondition layer refuses the call with `SENSITIVITY_BLOCKS_API` UNCHANGED (no override punch-through)
+**And** the audit row carries `model_chosen_reason=ModelChosenReason.SENSITIVITY_GATE_REFUSED` not `OVERRIDE_SLASH_ONE_SHOT` (the override never took effect because the gate fired first)
+**And** when the next call is on a `confidential` email, refusal is unconditional UNCHANGED
+**And** when the estimated cost exceeds $0.20 per-call refusal threshold, the call is refused with `PER_CALL_THRESHOLD_EXCEEDED` UNCHANGED (one-shot does NOT carry implicit `force=true`; Adam must re-issue with explicit force)
+**And** when degraded mode is active and the override targets `claude-opus-4-7`, the existing FR-6.3 confirmation re-prompt fires UNCHANGED
+
+**Given** the slash command is registered in `hermes-config/config.yaml` under `slash_commands` per Story 5-6 pattern
+**When** the entry is added
+**Then** `slash_commands[].name = "model"`, dispatcher routes to the `set_model_oneshot` MCP tool, command help describes the 5-minute TTL + one-shot consumption + gate-inheritance behavior
+**And** `hermes-config/skills/mailbot/SKILL.md` gets a new section "Model override" with 1-line examples for each subcommand form (one-shot here; persistent forward-references Story 9.4)
+**[OQ-2 DISCHARGE 2026-06-16]** — the `slash_commands` YAML block was discharged as architecturally-impossible during Story 9.3 dev-pass: per `RECONCILIATION-NOTES §1.4/§1.5`, real Hermes registers Discord slash commands at runtime via the Developer Portal, NOT via `config.yaml`. The Story 5-6 pattern was a fictional contract. Story 9.3 ships SKILL.md docs + MCP-dispatchable `set_model_oneshot` verb; Story 9-10 owns the runtime-registration mechanism. See the story file's `## Open Questions / Architectural Decisions § OQ-2` for the full disposition trail. The `slash_commands[]` requirement in this AC is **scope-reduced** to SKILL.md docs only.
+
+**Given** the parametrized sensitivity-gate regression matrix
+**When** `tests/unit/router/test_oneshot_override_sensitivity_gate.py` runs
+**Then** the test asserts: 4 action_types (draft_reply, summary_short, importance_scoring, action_extraction) × 3 sensitivity levels (normal, sensitive, confidential) × {with confirmation_token, without confirmation_token} = ~24 assertions covering the override-DOES-NOT-punch-through invariant
+**And** `tests/unit/router/test_oneshot_override_budget_gate.py` covers $0.20 threshold + degraded mode confirmation
+**And** `tests/integration/test_oneshot_yaml_equivalence.py` asserts: same `(email, task, model)` triple dispatched via one-shot override vs via direct `force_model=<model>` produces equivalent `router_calls` rows (modulo `model_chosen_reason`)
+
+**Given** the touch surface (new slash + Hermes config + privacy gates + cross-story Stories 4-7/5-2/5-6/6-20)
+**When** CR cadence is evaluated per the 6 criteria
+**Then** criteria 1 (new verb + new slash) + criteria 2 (external Discord-facing) + criteria 5 (privacy-invariant — sensitivity gate parity is load-bearing) + criteria 6 (load-bearing — touches the router force_model hot path) fire → **MANDATORY-CR per §5.12**
+
+---
+
+### Story 9.4: `/model` persistent per-task override + `/model` inspect — write to `policy.user-overrides.yaml`
+
+As Adam,
+I want to type `/model <task> <model>` to persistently override a single task's model assignment by writing to `router/policy.user-overrides.yaml` (companion file from Story 9.1, hot-reload picks it up within 1 second), and `/model` with no arguments to print the current effective policy table (baseline + overrides merged, with override leaves visually marked),
+So that I can persistently redirect specific tasks without editing the shipped policy.yaml (survives image rebuilds per Story 9.1 contract), and so I can inspect the current routing state from chat without SSHing into the VPS.
+
+**Acceptance Criteria:**
+
+**Given** Story 9.1's companion-file merge contract is in place
+**When** a new verb `set_model_persistent(task: str, model: str) → SetModelPersistentOut` is added to `mailbot_api/verbs/router_control.py`
+**Then** the verb validates `task` against the 16 known task names and `model` against the policy-allowed set (same as Story 9.3)
+**And** the verb reads existing `router/policy.user-overrides.yaml` (or creates an empty `{tasks: {}}` skeleton if absent)
+**And** the verb applies the shallow-leaf update: `overrides["tasks"][task]["model"] = model` (only the `model` field; other fields of the task entry — `prompt_version`, `lane`, etc. — stay at baseline by virtue of shallow-leaf merge semantics)
+**And** the verb writes the updated file atomically using `os.replace()` + tempfile + `fsync` (CR will demand this — naive write is a partial-write race)
+**And** the verb returns `SetModelPersistentOut(ok=True, task=..., model=..., file_path=..., effective_after_reload_ms=...)` after observing hot-reload via watchfiles confirmation (poll with timeout 2s; if reload not observed, return ok=False with a clear error)
+
+**Given** Story 9.1's hot-reload observability log emits `policy.user-overrides.swap`
+**When** the verb returns
+**Then** the next `ask_router(task_type=<task>, ...)` call uses the new model
+**And** the `router_calls` row carries `model_chosen_reason=ModelChosenReason.OVERRIDE_SLASH_PERSISTENT`
+
+**Given** the inspect path
+**When** `/model` with no arguments is dispatched to a new verb `inspect_policy() → InspectPolicyOut`
+**Then** the verb returns a markdown-formatted table of all 16 tasks with columns: task | baseline_model | override_model | effective_model | lane | sensitivity | last_changed (from file mtime if override present)
+**And** override rows are visually marked (e.g., 🔧 prefix) so Adam can see at a glance which tasks have been touched
+**And** the markdown is delivered to Discord via Hermes's existing response channel; if it exceeds Discord's 2000-character limit, it's split into chunks or attached as a file (whichever Story 5-2/6-8 precedent honors)
+**And** the output also includes a "current degraded mode state" line + "active one-shot override (if any)" line so the inspect surface is the canonical "what is the router doing right now" view
+
+**Given** the slash command registration
+**When** `hermes-config/config.yaml` slash_commands is extended
+**Then** the existing `model` slash command dispatches differently based on argument count: 0 args → `inspect_policy`; 1 arg → `set_model_oneshot` (Story 9.3); 2 args → `set_model_persistent`
+**And** SKILL.md "Model override" section is extended with the persistent and inspect subcommand forms
+
+**Given** the atomic-write semantics and the byte-equality invariant
+**When** `tests/integration/test_persistent_override_atomic_write.py` runs
+**Then** a parametrized test asserts: after persistent override write, `router/policy.yaml` is byte-identical to its pre-write state (overrides land in the companion file ONLY)
+**And** a crash-during-write test (simulated via mocking `os.replace` to raise mid-write) asserts the companion file is either fully updated or fully unchanged (no partial write)
+**And** a hot-reload propagation test asserts the next `ask_router` call after the write sees the new model within 2 seconds
+
+**Given** the inspect path is read-only
+**When** CR cadence is evaluated per the 6 criteria
+**Then** criteria 1 (new verb + atomic-write semantics) + criteria 6 (load-bearing — touches the policy load path observed by every call) fire → **MANDATORY-CR per §5.12** (inspect is gate-coverage-only sub-surface within the larger CR scope)
+
+---
+
+### Story 9.5: Corpus build — `evals/email_corpus_v1.jsonl` with ~100 hand-labeled emails + 20 reference-resolution slice + 20 subjective anchors
+
+**This story carries the original Story 7.1 AC text** (see Epic 7 detail above for the full AC list — every field, schema, slice-tagging rule applies unchanged). The relocation from Epic 7 to Epic 9 changes ONLY the epic-id and sprint-status-yaml story-id; the deliverable, the schema, the coverage floor (≥ 8 items per category), the reference-resolution slice rules, the anchor structure, and the scoring rubric files are all unchanged from the original Story 7.1 spec.
+
+**Adam-labor:** 3-5 hours one-time. No engineering work (other than schema validation tests). Sequence after 7.0-prep + 7.0-f30-f31 + 7.0-c24 + Stories 9.1 + 9.2 land — Adam labels in parallel with Stories 9.3 + 9.4 dev.
+
+**Ship-when-mature addition (Round 5 roundtable):** include 5-10 ADVERSARIAL items in the corpus — deliberately ambiguous, multi-signal borderline, edge-case sensitivity classifications (the F27 pattern Adam already paid for). This catches F27-class regressions early in the benchmark loop instead of waiting for production traffic. Adam-decision at corpus-build time on which adversarial cases to include.
+
+---
+
+### Story 9.6: Benchmark runner + `benchmark_runs` table + cost confirmation gate + cohort_key
+
+**This story carries the original Story 7.2 AC text** (see Epic 7 detail above for the full AC list — every CLI flag, resumability rule, $5 confirmation gate, $30 monthly cap interaction, `ask_router` Rule-I enforcement, force_model parameter passing, error-row recording all apply unchanged) PLUS the following Round 4–6 contract additions:
+
+**Cohort_key column on `benchmark_runs`** — composite key `(prompt_version, scorer_model, anchors_version, router_policy_version)` to enable comparable-run grouping across prompt/scorer/anchor/policy evolution. Pareto plots and DEMOTE/PROMOTE suggestions (Story 9.9) ONLY combine rows within the same cohort. Cross-cohort comparison is allowed but the report flags it as "comparing across prompt evolution" so quiet routing-vs-prompt drift can't silently bias verdicts.
+
+**$30 monthly cap interaction** — benchmark spend MUST count against Adam's $30 cap (Rule Ω applies symmetrically; carving out an exemption defeats the rule the benchmark exists to validate). If a single benchmark run trips degraded mode mid-run, the runner ABORTS with partial results disclosure (clean data beats fuller data when calibrating a router; Winston Round 3). `benchmark_runs.status="aborted_cost_cap"` for the partial-completion rows; Adam-receivable notification.
+
+**Evaluator model pinning** — the runner records the exact Anthropic model version used for any subjective auto-scoring in `benchmark_runs.scorer_model` (e.g., `claude-opus-4-7-2026-XX-XX`). Anchors are frozen against a specific evaluator version; re-anchoring becomes a deliberate operation tagged with a new `anchors_version` and old benchmark rows stay comparable within their original cohort.
+
+---
+
+### Story 9.7: Scorer — objective + subjective with anchor-calibrated auto-eval + cross-evaluator agreement coefficient
+
+**This story carries the original Story 7.3 AC text** (see Epic 7 detail above for the full AC list — objective scorer accuracy/precision/recall/confusion-matrix, field-level extraction scorer, subjective scorer with anchored prompt + ±0.5 anchor calibration, `benchmark_scores` table, all apply unchanged) PLUS the following Round 5 maturity-bar addition:
+
+**Cross-evaluator agreement coefficient** — alongside the primary scorer (Opus-anchored), the scorer surface ALSO supports running a SECOND strong-model evaluator (Sonnet or DeepSeek-V3) on the same 20 anchored items. The agreement coefficient (Krippendorff's α on ordinal scale) is computed and reported alongside every subjective scoring run. This surfaces — but does not solve — the recursive-scoring concern (Opus grading Opus-generated drafts). If α < 0.6 between the two evaluators, the report flags the run as low-confidence; if α < 0.6 at Epic 9 done-flip, the done-flip BLOCKS until reconciled (Story 9.11 anchor stability audit is the dedicated story for the first such measurement; Story 9.7 is the recurring infrastructure).
+
+---
+
+### Story 9.8: E2E join — 5-item canary corpus → runner → scorer → report
+
+As Adam,
+I want a 5-item canary subset of `evals/email_corpus_v1.jsonl` (one item per coarse category, hand-selected) wired into an end-to-end integration test that exercises Story 9.6 runner → Story 9.7 scorer → Story 9.9 report on a single `run_id`,
+So that Epic 9 done-flip can verify the pipe is connected without burning the full $11-14 budget on every CI run, and so the integration seam is regression-tested on every PR.
+
+**Acceptance Criteria:**
+
+**Given** the runner + scorer + report are in place
+**When** `tests/integration/test_benchmark_e2e_canary.py` runs against a 5-item fixture corpus
+**Then** the test invokes `python -m benchmark.runner --corpus evals/fixtures/canary_5.jsonl --tasks coarse_class,summary_short,draft_reply --models qwen,haiku --cost-mock`
+**And** `--cost-mock` uses recorded Anthropic responses (httpx.MockTransport with fixtures captured from a prior real run, ~$0.50 of one-time real-API recording cost amortized across all CI runs)
+**And** the runner produces `benchmark_runs` rows for 5 × 3 × 2 = 30 dispatches
+**And** the scorer produces `benchmark_scores` rows for the same 30 tuples
+**And** the report renderer produces `benchmark/reports/<run_id>.md` with the per-task table populated
+**And** the report's Pareto frontier and DEMOTE/PROMOTE columns are EMPTY (n < 15 sample-size gate) — the test asserts the empty-state rendering is correct
+
+**Given** the E2E test exercises the cost-mock pathway
+**When** the same test is run with `--cost-mock-failure-mid-run` (mock raises after 15 dispatches)
+**Then** the runner partial-state persists, `benchmark_runs.status="in_progress"` for completed rows + `"interrupted"` marker for the run as a whole
+**And** a resume invocation `python -m benchmark.runner --run-id <id> --resume` picks up at dispatch 16 and completes the remaining 15
+
+**Given** the canary test is gate-coverage-eligible (mechanical integration on already-CR'd surfaces)
+**When** CR cadence is evaluated per the 6 criteria
+**Then** none of the 6 mandatory-CR criteria fire (no new architectural surface, no privacy-invariant touch, no external-facing change beyond CI fixture) → ship under §5.12 self-audit cadence
+
+---
+
+### Story 9.9: Report renderer — Pareto frontier + DEMOTE/PROMOTE suggestions with confidence intervals + sample-size gate
+
+**This story carries the original Story 7.4 AC text** (see Epic 7 detail above for the per-task table format, Pareto frontier rendering, DEMOTE-valid/DEMOTE-invalid/PROMOTE-needed verdict logic, `evals/reports/<run_id>.md` output format — all apply unchanged) PLUS the following Round 5 maturity-bar additions:
+
+**Sample-size gate on DEMOTE/PROMOTE** — the verdict engine refuses to emit DEMOTE or PROMOTE suggestions for any task with n < 15 per cohort. The empty-state rendering displays `"INSUFFICIENT DATA — n=<count>, gate=15"` so Adam sees what's missing rather than acting on noise.
+
+**Confidence intervals on every metric** — accuracy, precision, recall, p95 latency, cost per 100 calls all include a confidence interval (Wilson score interval for accuracy/precision/recall; bootstrap CI for latency/cost; both at 95% confidence). Point estimates alone are visual noise on small samples.
+
+**Cohort_key as primary slice** — the report's per-task tables ONLY combine rows within the same cohort (per Story 9.6 cohort_key contract). Cross-cohort comparisons are allowed but rendered in a separate "cross-cohort drift comparison" section with an explicit warning header that the comparison spans prompt/scorer/anchor/policy evolution.
+
+**Cross-evaluator agreement section** — when Story 9.7's secondary-evaluator data is present for a run, the report includes a "Scorer calibration" section with the Krippendorff α value, the per-anchor disagreement breakdown, and the verdict ("scorer trusted" / "scorer uncertain — α<0.6 boundary" / "scorer untrusted — blocks routing decisions until reconciled").
+
+---
+
+### Story 9.10: Hermes `config.yaml` slash registration drift test
+
+As Adam,
+I want a test that asserts the `slash_commands` block in `hermes-config/config.yaml` covers every MCP tool intended to be Discord-callable, and that no tool exists in the MCP server's tool-registration list without a corresponding slash entry (or an explicit allowlist exemption),
+So that the next time someone adds a verb without registering the slash (the silent-no-op failure mode from Story 5-6), CI catches it instead of Adam discovering it in production.
+
+**Acceptance Criteria:**
+
+**Given** the MCP server (Story 5-2) exposes a known list of tools and the Hermes config registers a known list of slash commands
+**When** `tests/integration/test_slash_registration_coverage.py` runs
+**Then** the test loads `hermes-config/config.yaml` and extracts `slash_commands[].name` values
+**And** the test introspects the MCP server's tool-registration metadata (via the same `_VERBS_IMPORT_ALLOW` allowlist Story 5-2 maintains) and extracts the tool names intended for slash dispatch
+**And** the test asserts: every Discord-callable tool has a registered slash command, with explicit exclusions allowed via a `tests/fixtures/slash_exempt_tools.yaml` file (e.g., internal tools not meant for Discord)
+
+**Given** the drift surface includes the new `/model` family from Story 9.3 + 9.4
+**When** the test runs against the post-Story-9.4 state
+**Then** the `model` slash command is registered, the `set_model_oneshot` + `set_model_persistent` + `inspect_policy` verbs are mapped to it, and the test passes
+**And** a deliberate-omission test (commenting out the `model` slash entry) makes the test FAIL with a clear error naming the missing entry
+
+**Given** this is gate-coverage-eligible (single drift test, no new production code)
+**When** CR cadence is evaluated per the 6 criteria
+**Then** none of the 6 mandatory-CR criteria fire → ship under §5.12 self-audit cadence
+
+---
+
+### Story 9.11: Anchor stability audit — one-shot cross-evaluator calibration measurement
+
+As Adam,
+I want a one-shot story that runs the 20 hand-anchored subjective items from Story 9.5 through a SECOND strong-model evaluator (Sonnet or DeepSeek-V3 via OpenRouter), computes the Krippendorff α agreement coefficient against the primary Opus evaluator, persists the result as the baseline in `evals/anchor_baselines/v1.json`, and writes the agreement number into the Epic 9 retro,
+So that we have a defensible number for "are our subjective scores trustworthy" at Epic 9 close instead of leaving the recursive-scoring concern surfaced-but-unmeasured, and so future drift detection has a clean baseline to diff against.
+
+**Acceptance Criteria:**
+
+**Given** Stories 9.5 (corpus + anchors) + 9.7 (scorer with cross-evaluator support) are in place
+**When** the audit is run via `python -m benchmark.anchor_stability_audit --evaluators primary,secondary --secondary-model claude-sonnet-4-5 --output evals/anchor_baselines/v1.json`
+**Then** the script invokes the scorer's subjective auto-eval pathway with BOTH evaluators on the same 20 anchored items
+**And** the script computes Krippendorff α on the ordinal 1–5 scale across the two evaluators' scores
+**And** the script writes `evals/anchor_baselines/v1.json` with structure: `{baseline_date, primary_evaluator, secondary_evaluator, anchors_version, per_anchor_scores: [{anchor_id, primary_score, secondary_score, delta}], krippendorff_alpha, verdict: "trusted" | "uncertain" | "untrusted"}`
+**And** the verdict thresholds: α ≥ 0.8 → "trusted"; 0.6 ≤ α < 0.8 → "uncertain (acceptable but flagged)"; α < 0.6 → "untrusted (BLOCKS Epic 9 done-flip)"
+
+**Given** the audit is also persistence for future drift detection
+**When** `tests/integration/test_anchor_baseline_persistence.py` runs
+**Then** the test asserts the baseline file structure validates against `evals/schemas/anchor_baseline.schema.json`
+**And** a stale-baseline detection helper `evals.anchor_baselines.compare_against_current(baseline_path)` is exposed for future Epic-10+ drift checks
+
+**Given** the audit consumes real API budget (~$1-3 for the 20 secondary-evaluator scoring calls)
+**When** the audit is executed
+**Then** it goes through `ask_router(force_model=..., bypass_threshold=True)` per Rule I (same as Story 9.6 runner) and counts against the $30 monthly cap (same as Story 9.6 runner)
+**And** the audit caches the secondary-evaluator scores so re-running the audit within 24h does NOT re-burn budget (uses Story 2-7 response cache via task_type-keyed entry)
+
+**Given** the Krippendorff α verdict directly gates Epic 9 done-flip clause #9
+**When** the audit completes and produces a verdict of "untrusted"
+**Then** the audit script EXITS WITH NON-ZERO code (CI-friendly), prints a clear failure message naming the per-anchor disagreements, and refuses to mark the baseline file as canonical (writes to `evals/anchor_baselines/v1-FAILED-CALIBRATION.json` instead, gitignored)
+**And** Epic 9 done-flip cannot proceed until either (a) the disagreement is reconciled by adjusting anchor labels or evaluator prompts and the audit re-runs to PASS, or (b) Adam signs off in the epic retro on a `"we accept the calibration uncertainty for v1 because <documented reason>"` verdict (the OR-branch exists because reconciliation may be a multi-day investigation and Adam may legitimately decide to ship with a flag)
+
+**Given** this is a one-shot measurement story (not recurring infrastructure)
+**When** CR cadence is evaluated per the 6 criteria
+**Then** criteria 6 (load-bearing — the baseline file becomes the reference for all future drift detection) fires → CR escalates to MANDATORY-CR but with reduced scope (sonnet-4-6 reviewer, focused on baseline file schema + verdict thresholds + reconciliation flow; the cross-evaluator dispatch path itself is already CR'd in Story 9.7)

@@ -326,3 +326,39 @@ Neither warrants a follow-up story. Corrected commands are recorded in `epic-6-r
 - `.claude/hooks/`, `.claude/skills/*`, `.claude/scheduled_tasks.lock` — workspace state
 
 **No findings raised against the story's correctness or scope** — clean ship.
+
+
+---
+
+## Story 9-3-model-one-shot-dispatch-session-flag-ttl-gates-inherited — 2026-06-16
+
+**Headline:** /model qwen|haiku|opus one-shot dispatch shipped — NEW mailbot_api/router/oneshot.py leaf module + set_model_oneshot MCP verb + ask_router peek-and-consume with gate-inheritance correctness (sensitivity / budget / degraded all leave override armed). MANDATORY-CR pass under sonnet-4-6 (8 Patches all applied = 100% incl. CR-F1 cache-hit-audit-clobber correctness bug fix). Zero permission prompts.
+
+**Review rounds:** 1 round under claude-sonnet-4-6. 8 findings returned — all [Patch], no [Defer]. All 8 applied = **100% applied rate** (well above 70% CR cadence v2 threshold). CR-F1 was a real correctness bug (cache-hit on engaged override clobbered OVERRIDE_SLASH_ONE_SHOT → CACHE_HIT in audit log, hiding Adam'''s /model intent); CR-F6 surfaced a test-hygiene gap (cross-file private-symbol import for _FakeAdapter) → extracted to tests/_helpers/fake_adapter.py.
+
+**Aggregated [deferred:*] items:** none.
+
+**Gate verdicts:**
+
+| Gate | Verdict | Notes |
+| --- | --- | --- |
+| 2.3.5 (Pre-Review Self-Audit) | PASS | 5 sections + 11 Posture Audit checks complete |
+| 2.4.4 (Dev Agent Record completeness) | PASS | Agent Model + Completion Notes + File List all filled |
+| 2.4.5 (UI scope) | N/A | No graphical frontend; carve-out applies |
+| 2.4.6 (File-List-vs-git) | PASS | All 16 production paths tracked or pending-add; 4 NEW pending add (oneshot.py + 4 test files + tests/_helpers/ package) |
+| 2.4.7 (Middleware/Router-real bootstrap, MailBot reframing) | PASS | New verb + ask_router hot-path change; verified by 27 router-real / DB-real integration-style tests covering gate-inheritance + audit-row equivalence |
+| 2.4.8 (Verbose-row truncation) | PASS | Verbose narrative in story Completion Notes; sprint-status row truncated to 1-2 sentence headline |
+
+**Step 2.5 (dev-env verification):** N/A — no <dev-env-skill> configured on MailBot. Manual verification recommendation: python -m pytest tests/unit/verbs/test_set_model_oneshot.py tests/unit/router/test_oneshot_override_*.py tests/integration/test_oneshot_yaml_equivalence.py -v (49 tests) confirms the verb + ask_router integration + gate inheritance behavior end-to-end against a real SQLite + real ask_router chain.
+
+**Permission-prompt summary:** Zero permission prompts during the run.
+
+**Out-of-scope working-tree state (deliberately NOT staged):**
+
+- .claude/settings.json — pre-existing workspace edit
+- .claude/hooks/, .claude/skills/*, .claude/scheduled_tasks.lock — pre-existing workspace state
+
+**Architectural decisions surfaced + ratified during dev-pass:**
+
+- **OQ-1 Option B (single-slot global):** Adam-decided 2026-06-14. Override slot is module-level global in router/oneshot.py; session_id from MCP ctx is captured for audit trail only, NOT used as a lookup key. Regression sentinel: test_override_set_with_session_a_consumed_from_session_b.
+- **OQ-2 expanded (AC-4 YAML slash_commands block discharged):** the original AC-4 hermes-config/config.yaml slash_commands[] requirement is architecturally-impossible per RECONCILIATION-NOTES §1.4/§1.5. Real Hermes registers slash commands at runtime via the Developer Portal. Discharged as scope-reduction to SKILL.md docs + MCP-dispatchable verb; Story 9-10 owns runtime registration. Annotation added to epics.md AC-4 per CR-F8.

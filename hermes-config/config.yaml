@@ -140,6 +140,19 @@ discord:
     users: true
     replied_user: true
 
+# Story 9-3 OQ-2 (Adam-decided 2026-06-16): the original AC-4 spec called
+# for adding `discord.slash_commands[]` here, but `test_hermes_config_
+# discord_at_top_level_not_under_gateway` documents that `slash_commands`
+# was a Story 5-4 invention — real Hermes registers Discord slash commands
+# at runtime via the Discord Developer Portal, NOT via config.yaml. The
+# fictional 5-6 path is filed as Story 9-10's drift work; this story
+# documents the `/model` command in SKILL.md only, and Adam registers it
+# manually via the Discord bot's Developer Portal (or Story 9-10 will
+# introduce a runtime-registration mechanism). The verb itself
+# (`set_model_oneshot`) IS dispatchable today via MCP — Hermes can
+# invoke it programmatically from any slash-command handler that gets
+# wired up later.
+
 # Per-user session isolation in shared channels (Adam-only deploy, but
 # keeping the default so a future second-user case doesn't surprise us).
 group_sessions_per_user: true

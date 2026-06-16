@@ -51,6 +51,10 @@ from mailbot_api.router.models import (
     AdapterResponse,
     AdapterTimeout,
 )
+from mailbot_api.router.oneshot import (
+    _consume_oneshot_override,
+    _get_active_oneshot_override,
+)
 from mailbot_api.router.pause import get_pause_state
 from mailbot_api.router.policy import PolicyTable, snapshot_for_dispatch
 from mailbot_api.router.pricing import estimate_cost_usd
@@ -203,6 +207,21 @@ async def ask_router(
             ),
         )
 
+    # Story 9-3 — `/model <model>` one-shot override peek.
+    # AC-2: if `force_model is None`, lift the active override into
+    # `force_model` for the remainder of this call. PEEK only — do NOT
+    # consume yet. Consume happens at the effective-dispatch site after
+    # all gates pass (sensitivity / budget / degraded). Gate-refused paths
+    # leave the override armed within its TTL per AC-3.
+    # If `force_model is not None` was passed explicitly by the API caller,
+    # the explicit value wins and the one-shot stays armed for the next call.
+    _oneshot_engaged: bool = False
+    if force_model is None:
+        _oneshot_active = _get_active_oneshot_override()
+        if _oneshot_active is not None:
+            force_model = _oneshot_active.model
+            _oneshot_engaged = True
+
     # Capture the dispatch-time policy snapshot per AR-D11-2 race semantics.
     try:
         policy: PolicyTable = snapshot_for_dispatch()
@@ -243,9 +262,16 @@ async def ask_router(
     # force_model set) both collapse to OVERRIDE_API per AC-1's vocabulary
     # consolidation. The `force` boolean still gates degraded-mode behavior
     # below — only the audit string is unified.
+    # Story 9-3: if the one-shot peek lifted an override into force_model
+    # (`_oneshot_engaged`), the audit reason is OVERRIDE_SLASH_ONE_SHOT
+    # instead of OVERRIDE_API — distinguishes Adam's chat-side `/model`
+    # intent from a direct API force_model from a non-chat caller.
     if force_model is not None:
         model = force_model
-        model_chosen_reason = ModelChosenReason.OVERRIDE_API.value
+        if _oneshot_engaged:
+            model_chosen_reason = ModelChosenReason.OVERRIDE_SLASH_ONE_SHOT.value
+        else:
+            model_chosen_reason = ModelChosenReason.OVERRIDE_API.value
     else:
         model = policy_entry.model
         model_chosen_reason = policy_default(task_type)
@@ -383,6 +409,12 @@ async def ask_router(
                 },
             )
 
+    # Story 9-3 — consume happens INSIDE _dispatch_with_failure_chain
+    # after the $0.20 per-call budget gate. Sensitivity / degraded gates
+    # fire ABOVE this point (in ask_router), so they leave the override
+    # armed automatically. Budget gate fires INSIDE the dispatch chain;
+    # the `_oneshot_engaged` flag is threaded through so the dispatch
+    # chain can do the consume itself once all its gates pass.
     return await _dispatch_with_failure_chain(
         task_type=task_type,
         prompt=prompt,
@@ -397,6 +429,7 @@ async def ask_router(
         force=force,
         sensitivity_grant_id=_sensitivity_grant_id,
         sensitivity_grant_minted_at=_sensitivity_grant_minted_at,
+        _oneshot_engaged=_oneshot_engaged,
     )
 
 
@@ -415,8 +448,16 @@ async def _dispatch_with_failure_chain(
     force: bool = False,
     sensitivity_grant_id: str | None = None,
     sensitivity_grant_minted_at: str | None = None,
+    _oneshot_engaged: bool = False,
 ) -> RouterResult:
-    """Inner dispatch + failure chain. Recursive on escalation."""
+    """Inner dispatch + failure chain. Recursive on escalation.
+
+    Story 9-3: `_oneshot_engaged` indicates that the outer `ask_router`
+    lifted a one-shot override into `force_model`. The consume happens
+    inside this function AFTER the $0.20 per-call budget gate so that
+    PER_CALL_THRESHOLD_EXCEEDED refusals leave the override armed within
+    its TTL per AC-3.
+    """
 
     tokens_in = 0
     tokens_out = 0
@@ -521,6 +562,14 @@ async def _dispatch_with_failure_chain(
             )
             return result
 
+        # Story 9-3 — consume the one-shot override now that ALL gates
+        # (sensitivity in ask_router, budget here) have passed. From this
+        # point forward the dispatch is committed: cache lookup, adapter
+        # call, failure chain. AC-3 invariant satisfied: any gate-refused
+        # path above leaves the override armed within its TTL.
+        if _oneshot_engaged:
+            _consume_oneshot_override()
+
         # ----- Story 2-7: response cache lookup -----
         # The lookup runs unconditionally — if a row exists and is within
         # its stored TTL, return the cached result. Insertion is gated on
@@ -538,7 +587,15 @@ async def _dispatch_with_failure_chain(
                 parsed_cached = None
             if parsed_cached is not None:
                 outcome = "ok"
-                model_chosen_reason = ModelChosenReason.CACHE_HIT.value
+                # Story 9-3 CR-F1: when the one-shot override is engaged AND
+                # we hit the response cache, Adam's `/model` intent must NOT
+                # be hidden behind CACHE_HIT in the audit log. Preserve the
+                # OVERRIDE_SLASH_ONE_SHOT reason so the row reflects WHY the
+                # dispatch happened (Adam's override), not HOW it was
+                # served (cache). The override IS consumed even on cache
+                # hit — a cache-hit IS actual use of Adam's intent.
+                if not _oneshot_engaged:
+                    model_chosen_reason = ModelChosenReason.CACHE_HIT.value
                 # cost_usd stays 0 on the audit row even though the original
                 # dispatch cost money — the row reflects THIS call's cost.
                 result = RouterResult(
@@ -707,6 +764,18 @@ async def _dispatch_with_failure_chain(
                 # dispatch that escalates leaves the escalated row's
                 # sensitivity_grant_id NULL — breaking the "which API calls
                 # were made for sensitive email X" forensic query.
+                # Story 9-3 CR-F7: `_oneshot_engaged` is intentionally NOT
+                # forwarded to the recursive escalated call. Reasoning:
+                # the outer call already consumed the override at this point
+                # in the call stack (consume site is BEFORE the failure
+                # chain reaches escalation). The escalated leg's row
+                # should carry `policy:escalation:<from>→<to>` (the
+                # routing-decision reason for THIS row), NOT the original
+                # OVERRIDE_SLASH_ONE_SHOT. Forwarding `_oneshot_engaged=True`
+                # here would (a) cause a double-consume attempt on the
+                # already-cleared slot (a no-op but logic-misleading) AND
+                # (b) overwrite the policy:escalation reason in the
+                # cache-hit branch. Default to False is correct.
                 escalated = await _dispatch_with_failure_chain(
                     task_type=task_type,
                     prompt=prompt,
