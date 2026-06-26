@@ -173,10 +173,11 @@ def _parse_tool_result(result: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def test_build_mcp_server_registers_23_tools_with_expected_names(tmp_path: Path) -> None:
+def test_build_mcp_server_registers_25_tools_with_expected_names(tmp_path: Path) -> None:
     """Story 5-6 → 16; Story 6-8 → 17; Story 6-3 → 19; Story 6-4 → 20;
     Story 6-5 → 22 (compose_digest + finalize_digest_delivery);
-    Story 9-3 → 23 (set_model_oneshot)."""
+    Story 9-3 → 23 (set_model_oneshot);
+    Story 9-4 → 25 (set_model_persistent + inspect_policy)."""
     server = build_mcp_server(db_path=str(tmp_path / "x.db"))
     tool_names = sorted(server._tool_manager._tools.keys())  # type: ignore[attr-defined]
     expected = sorted(
@@ -211,10 +212,13 @@ def test_build_mcp_server_registers_23_tools_with_expected_names(tmp_path: Path)
             "finalize_digest_delivery",
             # Story 9-3 addition (1).
             "set_model_oneshot",
+            # Story 9-4 additions (2).
+            "set_model_persistent",
+            "inspect_policy",
         ]
     )
     assert tool_names == expected, f"unexpected tool set: {tool_names}"
-    assert len(tool_names) == 23
+    assert len(tool_names) == 25
 
 
 def test_internal_verbs_are_not_registered(tmp_path: Path) -> None:
@@ -277,8 +281,9 @@ async def test_list_tools_returns_constraint_phrases(tmp_path: Path) -> None:
     by_name = {t.name: t for t in listed.tools}
     # Story 5-6 → 16; Story 6-8 → 17; Story 6-3 → 19; Story 6-4 → 20;
     # Story 6-5 → 22 (compose_digest + finalize_digest_delivery);
-    # Story 9-3 → 23 (set_model_oneshot).
-    assert len(by_name) == 23
+    # Story 9-3 → 23 (set_model_oneshot);
+    # Story 9-4 → 25 (set_model_persistent + inspect_policy).
+    assert len(by_name) == 25
     # find_emails must mention the 100-cap + Rule J.
     assert "100" in by_name["find_emails"].description
     assert "Rule J" in by_name["find_emails"].description

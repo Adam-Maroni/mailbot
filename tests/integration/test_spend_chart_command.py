@@ -104,13 +104,14 @@ def test_mcp_server_registers_render_spend_chart(tmp_path: Path) -> None:
     assert "PNG" in tools["render_spend_chart"].description
 
 
-def test_mcp_server_has_23_tools_after_story_9_3(tmp_path: Path) -> None:
+def test_mcp_server_has_25_tools_after_story_9_4(tmp_path: Path) -> None:
     """Story 5-6 → 16; Story 6-8 → 17; Story 6-3 → 19; Story 6-4 → 20;
     Story 6-5 → 22 (compose_digest + finalize_digest_delivery);
-    Story 9-3 → 23 (set_model_oneshot)."""
+    Story 9-3 → 23 (set_model_oneshot);
+    Story 9-4 → 25 (set_model_persistent + inspect_policy)."""
     server = build_mcp_server(db_path=str(tmp_path / "x.db"))
     tools = server._tool_manager._tools  # type: ignore[attr-defined]
-    assert len(tools) == 23
+    assert len(tools) == 25
     assert "render_spend_chart" in tools
 
 

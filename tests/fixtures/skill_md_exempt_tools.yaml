@@ -1,0 +1,33 @@
+# Story 9-10: SKILL.md drift-test exemption list.
+#
+# Tools listed here are registered MCP tools that legitimately do NOT
+# appear as `### <tool_name>` headings in hermes-config/skills/mailbot/SKILL.md.
+#
+# Adding a tool to this list is the controlled escape hatch. The drift
+# test validates: (a) every registered MCP tool has either a SKILL.md
+# entry OR an entry here; (b) every entry here is a real registered
+# MCP tool (cannot exempt a non-existent tool).
+#
+# When to add a tool to this list:
+#   - The tool is operator-only (e.g., something Hermes never invokes
+#     because it's invoked programmatically by a worker process, not
+#     via Adam's chat).
+#   - The tool is a transitional helper that will be removed soon.
+#   - There is a documented architectural reason the docs surface
+#     intentionally excludes it.
+#
+# When NOT to add a tool to this list:
+#   - "I forgot to update SKILL.md" — write the docs.
+#   - "The tool is too new to document" — write the docs now; that's
+#     the point of the drift test.
+#
+# Procedure for adding an entry:
+#   1. Append the tool name to `exempt:` below.
+#   2. Add an inline YAML comment naming the architectural reason.
+#   3. Have the rationale reviewed before merging.
+#
+# Current state (Story 9-10 ship time, 2026-06-26):
+# All 25 MCP tools post-Story-9-4 have SKILL.md entries; this list is
+# empty by design.
+
+exempt: []

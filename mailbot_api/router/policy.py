@@ -46,8 +46,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
+import tempfile
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -102,12 +104,23 @@ class PolicyTable(BaseModel):
     Story 2-2 review fix MEDIUM: ``tasks`` enforces ``min_length=1`` so an
     operator-shipped ``tasks: {}`` fails validation rather than silently
     breaking every Router lookup at first dispatch.
+
+    Story 9-4 AC-2: ``overrides_applied`` carries per-task provenance — the
+    set of task names whose merged entry differs from baseline due to
+    ``policy.user-overrides.yaml`` shallow-leaf merging. The router uses
+    this to emit ``ModelChosenReason.OVERRIDE_SLASH_PERSISTENT`` instead of
+    ``policy_default(task)`` for overridden tasks. Empty frozenset on
+    baseline-only snapshots; populated only when an override file applied
+    at least one field. Pydantic stores it as a frozenset — immutable +
+    hashable, matches the snapshot semantic of "captured at dispatch time,
+    never mutated mid-call."
     """
 
     model_config = ConfigDict(extra="forbid")
 
     tasks: dict[str, PolicyEntry] = Field(min_length=1)
     version: str
+    overrides_applied: frozenset[str] = Field(default_factory=frozenset)
 
 
 class UserOverridesEntry(BaseModel):
@@ -202,7 +215,7 @@ def _compute_merged_version(baseline_version: str, overrides_text: str | None) -
 
 def _merge_user_overrides(
     baseline: PolicyTable, overrides: UserOverridesTable
-) -> tuple[dict[str, PolicyEntry], int]:
+) -> tuple[dict[str, PolicyEntry], int, frozenset[str]]:
     """Story 9-1: apply shallow-leaf user overrides to the baseline policy.
 
     **Shallow-leaf semantics — four contract points:**
@@ -254,6 +267,7 @@ def _merge_user_overrides(
     """
     merged_tasks: dict[str, PolicyEntry] = dict(baseline.tasks)
     applied_field_count = 0
+    overridden_task_names: set[str] = set()
     for task_key, override_entry in overrides.tasks.items():
         if task_key not in baseline.tasks:
             _log.warning(
@@ -281,6 +295,12 @@ def _merge_user_overrides(
             continue
         merged_tasks[task_key] = baseline.tasks[task_key].model_copy(update=override_fields)
         applied_field_count += len(override_fields)
+        # Story 9-4 AC-2: per-task provenance. Only tasks where at least
+        # one field was effectively applied (passed the not-None +
+        # known-task gates) appear here. Tasks dropped as unknown or
+        # all-None do NOT appear, so the set reflects "what observers see
+        # as effectively-overridden" — consistent with applied_field_count.
+        overridden_task_names.add(task_key)
     # CR-F6 (Story 9-1, sonnet-4-6): return the raw task dict + the
     # applied-field count. The caller (load_policy) is responsible for
     # composing the final PolicyTable with the correct version-suffix
@@ -288,7 +308,139 @@ def _merge_user_overrides(
     # vs was empty. applied_field_count is the count of override fields
     # actually merged (CR-F3 uses it to suppress +overrides: suffix when
     # the override file is operationally empty).
-    return merged_tasks, applied_field_count
+    # Story 9-4 AC-2: also return the per-task provenance frozenset so the
+    # snapshot can answer "is this task overridden?" at audit-emit time
+    # without re-running the merge.
+    return merged_tasks, applied_field_count, frozenset(overridden_task_names)
+
+
+# ---------------------------------------------------------------------------
+# Story 9-4: helpers for set_model_persistent (verbs/router_control.py).
+#
+# Co-located with the existing YAML readers so the `yaml.safe_load` /
+# `yaml.safe_dump` calls remain inside the Story-2-2 AC-12 + Story-9-1
+# boundary: the policy module is the ONLY place where router policy YAML
+# is parsed or written. Verbs reach into these helpers rather than
+# importing `yaml` directly. The boundary checker enforces this via the
+# `_YAML_LOAD_ALLOW` frozenset.
+# ---------------------------------------------------------------------------
+
+
+class UserOverridesWriteError(Exception):
+    """Raised by ``write_user_overrides_atomic`` on any failure path
+    (parent missing, target not writable, atomic-replace failure). The
+    ``set_model_persistent`` verb maps this to an actionable error message
+    in ``SetModelPersistentOut.error`` per Story 9-4 OQ-3."""
+
+    def __init__(self, details: str) -> None:
+        super().__init__(details)
+        self.details = details
+
+
+def read_user_overrides_raw(path: Path) -> dict[str, Any]:
+    """Story 9-4: read the current `policy.user-overrides.yaml` content as
+    a Python dict, normalizing edge cases for the verb's read-modify-write
+    cycle.
+
+    Contract:
+    * Missing file → returns ``{"tasks": {}}`` (caller's first write will
+      create the file; the file-existence pre-check is the caller's job
+      because OQ-3 requires it to refuse first-write when watchfiles can't
+      pick up a newly-appeared file).
+    * Zero-byte / comments-only file → returns ``{"tasks": {}}``.
+    * Top-level not a mapping → raises ``UserOverridesWriteError`` (the
+      verb should not silently overwrite a list/scalar).
+    * Schema-invalid mapping (unknown fields, wrong types) is NOT validated
+      here — that's ``UserOverridesTable.model_validate``'s job at LOAD
+      time. The verb reads the raw dict, mutates it, and writes it back;
+      validation happens on the next hot-reload via ``load_policy_with_status``.
+    """
+    if not path.exists():
+        return {"tasks": {}}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise UserOverridesWriteError(
+            f"read failed for {path}: {sanitize_error(exc)}"
+        ) from exc
+    if not text.strip():
+        return {"tasks": {}}
+    try:
+        raw = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise UserOverridesWriteError(
+            f"YAML parse failed for {path}: {sanitize_error(exc)}"
+        ) from exc
+    if raw is None:
+        return {"tasks": {}}
+    if not isinstance(raw, dict):
+        raise UserOverridesWriteError(
+            f"top-level must be a mapping; got {type(raw).__name__}"
+        )
+    raw.setdefault("tasks", {})
+    if not isinstance(raw["tasks"], dict):
+        raise UserOverridesWriteError(
+            f"'tasks' must be a mapping; got {type(raw['tasks']).__name__}"
+        )
+    return raw
+
+
+def write_user_overrides_atomic(path: Path, data: dict[str, Any]) -> str:
+    """Story 9-4 AC-1: atomic write to `policy.user-overrides.yaml`.
+
+    Contract:
+    * ``data`` must be the post-mutation dict (caller is responsible for
+      the read-modify-update cycle via ``read_user_overrides_raw``).
+    * The write is atomic via the standard tempfile + fsync + os.replace
+      idiom. The tempfile is created in ``path.parent`` so ``os.replace``
+      stays on the same filesystem (atomic by POSIX).
+    * On any I/O failure during the write, the tempfile is removed and
+      ``UserOverridesWriteError`` is raised. The original target file is
+      left in its pre-call state (the whole point of atomic write).
+    * The parent directory must exist; if not, raises. The verb's OQ-3
+      pre-flight will have already confirmed the file is writable, which
+      implicitly confirms the parent exists.
+
+    Returns the SHA-256 first-8-hex of the new file content (for the
+    audit-log emission in ``set_model_persistent``).
+    """
+    if not path.parent.exists():
+        raise UserOverridesWriteError(
+            f"parent directory does not exist: {path.parent}"
+        )
+    new_text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+    tmp_fd, tmp_path_str = tempfile.mkstemp(
+        prefix=".policy.user-overrides.",
+        suffix=".yaml.tmp",
+        dir=str(path.parent),
+    )
+    tmp_path = Path(tmp_path_str)
+    try:
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as tmp_f:
+                tmp_f.write(new_text)
+                tmp_f.flush()
+                os.fsync(tmp_f.fileno())
+        except OSError as exc:
+            raise UserOverridesWriteError(
+                f"tempfile write failed: {sanitize_error(exc)}"
+            ) from exc
+        try:
+            os.replace(tmp_path_str, str(path))
+        except OSError as exc:
+            raise UserOverridesWriteError(
+                f"atomic replace failed: {sanitize_error(exc)}"
+            ) from exc
+    except UserOverridesWriteError:
+        # Best-effort tempfile cleanup. If unlink itself fails (rare), let
+        # the verb's structured log surface the original error — leaking
+        # a tmpfile is recoverable; double-raising obscures the cause.
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return _compute_overrides_hash(new_text)
 
 
 def load_policy(path: Path, *, overrides_path: Path | None = None) -> PolicyTable:
@@ -441,18 +593,29 @@ def load_policy_with_status(
         )
         return baseline, "parse_failed"
 
-    # Merge. CR-F6: receive (merged_tasks, applied_field_count) directly.
-    merged_tasks, applied_field_count = _merge_user_overrides(baseline, overrides)
+    # Merge. CR-F6: receive (merged_tasks, applied_field_count, overrides_applied) directly.
+    # Story 9-4 AC-2: third return element is the per-task provenance set.
+    merged_tasks, applied_field_count, overrides_applied = _merge_user_overrides(
+        baseline, overrides
+    )
 
     if applied_field_count == 0:
         # CR-F3 (Story 9-1 AC-6): `tasks: {}`, unknown-task-only, or
         # all-None entries yield zero applied fields → version has NO
         # +overrides: suffix (operationally indistinguishable from absent
-        # for the cohort_key surface).
+        # for the cohort_key surface). Baseline carries overrides_applied
+        # = frozenset() by default; no provenance to propagate.
         return baseline, "empty"
 
     merged_version = _compute_merged_version(baseline.version, overrides_text)
-    return PolicyTable(tasks=merged_tasks, version=merged_version), "applied"
+    return (
+        PolicyTable(
+            tasks=merged_tasks,
+            version=merged_version,
+            overrides_applied=overrides_applied,
+        ),
+        "applied",
+    )
 
 
 _policy: PolicyTable | None = None
@@ -646,11 +809,14 @@ __all__ = [
     "PolicyValidationError",
     "UserOverridesEntry",
     "UserOverridesTable",
+    "UserOverridesWriteError",
     "_reset_policy_snapshot_for_test",
     "get_policy",
     "load_policy",
     "load_policy_with_status",
     "policy_reload_loop",
+    "read_user_overrides_raw",
     "set_policy_snapshot",
     "snapshot_for_dispatch",
+    "write_user_overrides_atomic",
 ]

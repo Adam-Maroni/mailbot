@@ -274,7 +274,32 @@ async def ask_router(
             model_chosen_reason = ModelChosenReason.OVERRIDE_API.value
     else:
         model = policy_entry.model
-        model_chosen_reason = policy_default(task_type)
+        # Story 9-4 AC-2: per-task provenance from policy.overrides_applied.
+        # If this task's merged entry came from policy.user-overrides.yaml
+        # (Story 9-1 shallow-leaf merge), the audit reason MUST distinguish
+        # it from the policy_default case so observers can see that Adam's
+        # /model <task> <model> persistent override is in force. OQ-4
+        # precedence: one-shot already won above (it's the `if force_model
+        # is not None` branch via the peek lift at lines 210-223), so this
+        # branch only runs when there is NO oneshot engagement — meaning
+        # OVERRIDE_SLASH_PERSISTENT is the correct emission when the task
+        # is in the provenance set.
+        if task_type in policy.overrides_applied:
+            model_chosen_reason = ModelChosenReason.OVERRIDE_SLASH_PERSISTENT.value
+        else:
+            model_chosen_reason = policy_default(task_type)
+
+    # Story 9-4 AC-2 sibling carve-out for cache-hit clobber: thread the
+    # persistent-engaged signal into _dispatch_with_failure_chain the same
+    # way Story 9-3 threaded _oneshot_engaged. The cache-hit branch at
+    # line 614 narrows the CACHE_HIT clobber so that overridden tasks
+    # preserve OVERRIDE_SLASH_PERSISTENT in the audit row — mirrors the
+    # CR-F1 fix Story 9-3 applied for one-shot. The flag is computed here
+    # (in ask_router, where `policy` is in scope) so the inner function
+    # can use it as a local boolean without reaching back through `policy`.
+    _persistent_engaged: bool = (
+        force_model is None and task_type in policy.overrides_applied
+    )
 
     # Story 2-8 Layer 3 — degraded mode gate.
     guard = get_guard()
@@ -430,6 +455,7 @@ async def ask_router(
         sensitivity_grant_id=_sensitivity_grant_id,
         sensitivity_grant_minted_at=_sensitivity_grant_minted_at,
         _oneshot_engaged=_oneshot_engaged,
+        _persistent_engaged=_persistent_engaged,
     )
 
 
@@ -449,6 +475,7 @@ async def _dispatch_with_failure_chain(
     sensitivity_grant_id: str | None = None,
     sensitivity_grant_minted_at: str | None = None,
     _oneshot_engaged: bool = False,
+    _persistent_engaged: bool = False,
 ) -> RouterResult:
     """Inner dispatch + failure chain. Recursive on escalation.
 
@@ -457,6 +484,15 @@ async def _dispatch_with_failure_chain(
     inside this function AFTER the $0.20 per-call budget gate so that
     PER_CALL_THRESHOLD_EXCEEDED refusals leave the override armed within
     its TTL per AC-3.
+
+    Story 9-4: `_persistent_engaged` indicates that the outer `ask_router`
+    saw `task_type in policy.overrides_applied` — Adam's persistent
+    `/model <task> <model>` override is in force for this task. Used by
+    the cache-hit branch below to narrow the CACHE_HIT clobber so that
+    OVERRIDE_SLASH_PERSISTENT is preserved in the audit row (mirrors the
+    Story 9-3 CR-F1 carve-out for one-shot). Persistent overrides do NOT
+    need a consume — they are file-system-state, not module-state. The
+    flag is read-only here.
     """
 
     tokens_in = 0
@@ -587,14 +623,20 @@ async def _dispatch_with_failure_chain(
                 parsed_cached = None
             if parsed_cached is not None:
                 outcome = "ok"
-                # Story 9-3 CR-F1: when the one-shot override is engaged AND
-                # we hit the response cache, Adam's `/model` intent must NOT
-                # be hidden behind CACHE_HIT in the audit log. Preserve the
-                # OVERRIDE_SLASH_ONE_SHOT reason so the row reflects WHY the
-                # dispatch happened (Adam's override), not HOW it was
-                # served (cache). The override IS consumed even on cache
-                # hit — a cache-hit IS actual use of Adam's intent.
-                if not _oneshot_engaged:
+                # Story 9-3 CR-F1 + Story 9-4 AC-2 sibling carve-out: when
+                # Adam's `/model` intent (one-shot OR persistent) is in
+                # force, do NOT overwrite the audit reason with CACHE_HIT.
+                # The row must reflect WHY the dispatch happened (Adam's
+                # override), not HOW it was served (cache). Two paths:
+                #   - _oneshot_engaged True    → preserve OVERRIDE_SLASH_ONE_SHOT
+                #   - _persistent_engaged True → preserve OVERRIDE_SLASH_PERSISTENT
+                # Both layers still continue normally; cache-hit IS actual
+                # use of Adam's intent for both. `policy.overrides_applied`
+                # is not in scope here (this function does not receive
+                # `policy`); the boolean flag is computed in ask_router
+                # and threaded through as a kwarg per the same pattern as
+                # _oneshot_engaged.
+                if not _oneshot_engaged and not _persistent_engaged:
                     model_chosen_reason = ModelChosenReason.CACHE_HIT.value
                 # cost_usd stays 0 on the audit row even though the original
                 # dispatch cost money — the row reflects THIS call's cost.
@@ -776,6 +818,16 @@ async def _dispatch_with_failure_chain(
                 # already-cleared slot (a no-op but logic-misleading) AND
                 # (b) overwrite the policy:escalation reason in the
                 # cache-hit branch. Default to False is correct.
+                #
+                # Story 9-4: `_persistent_engaged` is ALSO intentionally NOT
+                # forwarded. Same reasoning: the escalated leg's audit row
+                # carries `policy:escalation:<from>→<to>` because the
+                # routing decision for THIS row IS the policy-driven
+                # escalation, not Adam's persistent override (which only
+                # caused the OUTER row's model selection). The cache-hit
+                # carve-out should NOT preserve OVERRIDE_SLASH_PERSISTENT
+                # at this level — the outer row already records Adam's
+                # intent. Default to False is correct.
                 escalated = await _dispatch_with_failure_chain(
                     task_type=task_type,
                     prompt=prompt,

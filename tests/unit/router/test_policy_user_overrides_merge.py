@@ -23,6 +23,7 @@ from mailbot_api.router.policy import (
     _compute_overrides_hash,
     _merge_user_overrides,
     load_policy,
+    load_policy_with_status,
 )
 
 _BASELINE_YAML = """\
@@ -300,7 +301,7 @@ def test_null_in_override_preserves_baseline_field() -> None:
         version="b-v1",
     )
     overrides = UserOverridesTable(tasks={"draft_reply": UserOverridesEntry(model=None)})
-    merged_tasks, applied_count = _merge_user_overrides(baseline, overrides)
+    merged_tasks, applied_count, _overrides_applied = _merge_user_overrides(baseline, overrides)
     # model stays baseline value despite explicit-None override.
     assert merged_tasks["draft_reply"].model == "claude-haiku-4-5-20251001"
     # CR-F6: None override = zero applied fields.
@@ -484,7 +485,7 @@ def test_merge_user_overrides_returns_dict_and_count() -> None:
     overrides = UserOverridesTable(
         tasks={"draft_reply": UserOverridesEntry(model="claude-opus-4-7")}
     )
-    merged_tasks, applied_count = _merge_user_overrides(baseline, overrides)
+    merged_tasks, applied_count, _overrides_applied = _merge_user_overrides(baseline, overrides)
     assert isinstance(merged_tasks, dict)
     assert merged_tasks["draft_reply"].model == "claude-opus-4-7"
     assert applied_count == 1
@@ -507,7 +508,7 @@ def test_merge_user_overrides_applied_count_zero_for_unknown_task() -> None:
     overrides = UserOverridesTable(
         tasks={"unknown_task": UserOverridesEntry(model="claude-opus-4-7")}
     )
-    merged_tasks, applied_count = _merge_user_overrides(baseline, overrides)
+    merged_tasks, applied_count, _overrides_applied = _merge_user_overrides(baseline, overrides)
     assert applied_count == 0
     assert "unknown_task" not in merged_tasks
     assert merged_tasks["draft_reply"].model == "claude-haiku-4-5-20251001"
@@ -536,5 +537,219 @@ def test_merge_user_overrides_counts_multiple_fields() -> None:
             )
         }
     )
-    merged_tasks, applied_count = _merge_user_overrides(baseline, overrides)
+    merged_tasks, applied_count, _overrides_applied = _merge_user_overrides(baseline, overrides)
     assert applied_count == 3
+
+
+# ---------------------------------------------------------------------------
+# Story 9-4 AC-2: per-task provenance tests for the new `overrides_applied`
+# frozenset returned by _merge_user_overrides (3rd tuple element) and stored
+# on PolicyTable for the router to consume at audit-emit time.
+# ---------------------------------------------------------------------------
+
+
+def test_overrides_applied_single_task_present() -> None:
+    """Story 9-4: a task with an applied field appears in the provenance set."""
+    baseline = PolicyTable(
+        tasks={
+            "draft_reply": PolicyEntry(
+                model="claude-haiku-4-5-20251001",
+                prompt_version="v3",
+                escalate=False,
+                lane="interactive",
+                sensitivity="any",
+            ),
+            "coarse_class": PolicyEntry(
+                model="qwen2.5:3b-instruct-q4_K_M",
+                prompt_version="v1",
+                escalate=False,
+                lane="batch",
+                sensitivity="any",
+            ),
+        },
+        version="b-v1",
+    )
+    overrides = UserOverridesTable(
+        tasks={"draft_reply": UserOverridesEntry(model="claude-opus-4-7")}
+    )
+    _merged, _count, overrides_applied = _merge_user_overrides(baseline, overrides)
+    assert isinstance(overrides_applied, frozenset)
+    assert overrides_applied == frozenset({"draft_reply"})
+    assert "coarse_class" not in overrides_applied  # AC-3 isolation
+
+
+def test_overrides_applied_unknown_task_excluded() -> None:
+    """Story 9-4: an unknown-task override is NOT in the provenance set
+    (mirrors the applied_count == 0 contract from Story 9-1)."""
+    baseline = PolicyTable(
+        tasks={
+            "draft_reply": PolicyEntry(
+                model="claude-haiku-4-5-20251001",
+                prompt_version="v3",
+                escalate=False,
+                lane="interactive",
+                sensitivity="any",
+            )
+        },
+        version="b-v1",
+    )
+    overrides = UserOverridesTable(
+        tasks={"phantom_task": UserOverridesEntry(model="claude-opus-4-7")}
+    )
+    _merged, _count, overrides_applied = _merge_user_overrides(baseline, overrides)
+    assert overrides_applied == frozenset()
+
+
+def test_overrides_applied_all_none_excluded() -> None:
+    """Story 9-4: an all-None override entry yields zero applied fields AND
+    is NOT in the provenance set — consistent with applied_count semantics."""
+    baseline = PolicyTable(
+        tasks={
+            "draft_reply": PolicyEntry(
+                model="claude-haiku-4-5-20251001",
+                prompt_version="v3",
+                escalate=False,
+                lane="interactive",
+                sensitivity="any",
+            )
+        },
+        version="b-v1",
+    )
+    overrides = UserOverridesTable(
+        tasks={"draft_reply": UserOverridesEntry(model=None)}
+    )
+    _merged, _count, overrides_applied = _merge_user_overrides(baseline, overrides)
+    assert overrides_applied == frozenset()
+
+
+def test_overrides_applied_multi_task() -> None:
+    """Story 9-4: multiple tasks with applied fields all appear."""
+    baseline = PolicyTable(
+        tasks={
+            "draft_reply": PolicyEntry(
+                model="claude-haiku-4-5-20251001",
+                prompt_version="v3",
+                escalate=False,
+                lane="interactive",
+                sensitivity="any",
+            ),
+            "coarse_class": PolicyEntry(
+                model="qwen2.5:3b-instruct-q4_K_M",
+                prompt_version="v1",
+                escalate=False,
+                lane="batch",
+                sensitivity="any",
+            ),
+            "summary_short": PolicyEntry(
+                model="qwen2.5:3b-instruct-q4_K_M",
+                prompt_version="v1",
+                escalate=False,
+                lane="batch",
+                sensitivity="any",
+            ),
+        },
+        version="b-v1",
+    )
+    overrides = UserOverridesTable(
+        tasks={
+            "draft_reply": UserOverridesEntry(model="claude-opus-4-7"),
+            "coarse_class": UserOverridesEntry(model="claude-haiku-4-5-20251001"),
+        }
+    )
+    _merged, _count, overrides_applied = _merge_user_overrides(baseline, overrides)
+    assert overrides_applied == frozenset({"draft_reply", "coarse_class"})
+    assert "summary_short" not in overrides_applied
+
+
+def test_policy_table_overrides_applied_default_empty() -> None:
+    """Story 9-4: PolicyTable without an explicit overrides_applied gets
+    frozenset() — backward-compat for Story 9-1's PolicyTable callers."""
+    table = PolicyTable(
+        tasks={
+            "draft_reply": PolicyEntry(
+                model="claude-haiku-4-5-20251001",
+                prompt_version="v3",
+                escalate=False,
+                lane="interactive",
+                sensitivity="any",
+            )
+        },
+        version="b-v1",
+    )
+    assert table.overrides_applied == frozenset()
+
+
+def test_policy_table_overrides_applied_explicit() -> None:
+    """Story 9-4: PolicyTable with explicit overrides_applied stores the set."""
+    table = PolicyTable(
+        tasks={
+            "draft_reply": PolicyEntry(
+                model="claude-opus-4-7",
+                prompt_version="v3",
+                escalate=False,
+                lane="interactive",
+                sensitivity="any",
+            )
+        },
+        version="b-v1+overrides:abc12345",
+        overrides_applied=frozenset({"draft_reply"}),
+    )
+    assert table.overrides_applied == frozenset({"draft_reply"})
+
+
+def test_load_policy_with_status_applied_carries_provenance(tmp_path: Path) -> None:
+    """Story 9-4: load_policy_with_status returns a PolicyTable whose
+    overrides_applied frozenset reflects the merged-in tasks."""
+    baseline_path = tmp_path / "policy.yaml"
+    baseline_path.write_text(
+        """tasks:
+  draft_reply:
+    model: claude-haiku-4-5-20251001
+    prompt_version: v3
+    escalate: false
+    lane: interactive
+    sensitivity: any
+  coarse_class:
+    model: qwen2.5:3b-instruct-q4_K_M
+    prompt_version: v1
+    escalate: false
+    lane: batch
+    sensitivity: any
+version: b-v1
+""",
+        encoding="utf-8",
+    )
+    overrides_path = tmp_path / "policy.user-overrides.yaml"
+    overrides_path.write_text(
+        """tasks:
+  draft_reply:
+    model: claude-opus-4-7
+""",
+        encoding="utf-8",
+    )
+    table, status = load_policy_with_status(baseline_path, overrides_path=overrides_path)
+    assert status == "applied"
+    assert table.overrides_applied == frozenset({"draft_reply"})
+    assert table.tasks["draft_reply"].model == "claude-opus-4-7"
+    assert table.tasks["coarse_class"].model == "qwen2.5:3b-instruct-q4_K_M"
+
+
+def test_load_policy_with_status_baseline_only_empty_provenance(tmp_path: Path) -> None:
+    """Story 9-4: when no overrides file is present, the returned PolicyTable
+    has overrides_applied=frozenset()."""
+    baseline_path = tmp_path / "policy.yaml"
+    baseline_path.write_text(
+        """tasks:
+  draft_reply:
+    model: claude-haiku-4-5-20251001
+    prompt_version: v3
+    escalate: false
+    lane: interactive
+    sensitivity: any
+version: b-v1
+""",
+        encoding="utf-8",
+    )
+    table, status = load_policy_with_status(baseline_path)
+    assert status == "absent"
+    assert table.overrides_applied == frozenset()

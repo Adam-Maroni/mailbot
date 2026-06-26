@@ -1,6 +1,6 @@
 ---
 name: mailbot
-description: "MailBot verb surface — Outlook triage + draft-reply + cost reporting via 23 MCP tools."
+description: "MailBot verb surface — Outlook triage + draft-reply + cost reporting via 25 MCP tools."
 version: 1.0.0
 author: Adam Maroni
 license: MIT
@@ -301,6 +301,96 @@ provided) sets a PERSISTENT per-task override by writing to
 reloads within 1 second). The one-shot variant described here is when
 `/model <model>` is invoked with only the model argument.
 
+### `set_model_persistent` — Persistent per-task model override (Story 9-4)
+
+Purpose: persistently override one task's model assignment by writing to
+the companion file `router/policy.user-overrides.yaml`. Survives image
+rebuilds (Story 9-1 contract — overrides file is bind-mounted RW from the
+host, not baked into the image). Hot-reloads within ~1 second.
+
+Slash command examples (Hermes-side registration is Story 9-10's scope per
+the Story 9-3 OQ-2 architectural-impossibility caveat that also applies
+here; the verb itself is dispatchable via MCP today):
+
+- `/model draft_reply opus` — all subsequent `draft_reply` dispatches go to
+  `claude-opus-4-7` until the override is reverted (delete the entry from
+  `router/policy.user-overrides.yaml` or set it back to baseline).
+- `/model coarse_class haiku` — same shape, different task/model.
+
+Arg-count dispatch table (single `/model` Discord command, three behaviors
+depending on argument count):
+
+| arg count | example                       | verb                  | behavior                              |
+|-----------|-------------------------------|-----------------------|---------------------------------------|
+| 0         | `/model`                      | `inspect_policy`      | render current effective policy table |
+| 1         | `/model haiku`                | `set_model_oneshot`   | arm one-shot for next call (5-min TTL)|
+| 2         | `/model draft_reply opus`     | `set_model_persistent`| persistent write to overrides file    |
+
+Atomic-write semantics: tempfile + `os.fsync` + `os.replace`. A crash
+mid-write leaves the original file unchanged (atomic by POSIX). Validates
+the task name against the live policy snapshot and the model id against
+the same alias set as the one-shot variant (`qwen` / `haiku` / `opus` +
+their full IDs).
+
+First-write bootstrap requirement (Story 9-1 OQ-3 inheritance): if
+`router/policy.user-overrides.yaml` did NOT exist when `mailbot-api`
+started, the `watchfiles` watcher could not pick it up — Story 9-1
+documents this contract limitation. The verb refuses-with-actionable-
+error in that case; the operator must run
+`cp router/policy.user-overrides.yaml.example router/policy.user-overrides.yaml`
+on the host AND restart `mailbot-api` before the first persistent override
+can take effect. After the first restart, all subsequent persistent
+writes hot-reload normally.
+
+Gate inheritance: identical to the one-shot variant — the persistent
+override does NOT punch through the sensitivity / budget / degraded-mode
+gates. The router merely changes WHICH model the policy selects for the
+overridden task; everything downstream is unchanged.
+
+Cross-precedence with one-shot: if BOTH a one-shot AND a persistent
+override are active for the same task, the **one-shot wins** for the very
+next call only, then evaporates per its TTL; the persistent override
+remains active for all subsequent calls.
+
+Audit trail: every dispatch where the persistent override caused the
+model selection writes
+`router_calls.model_chosen_reason = "slash_command:persistent:adam"`
+per Story 9.2's closed-set vocabulary
+(`ModelChosenReason.OVERRIDE_SLASH_PERSISTENT`).
+
+### `inspect_policy` — Current effective policy view (Story 9-4)
+
+Purpose: read-only render of the current effective routing policy as a
+markdown table. Composes baseline + overrides + degraded-mode + active
+one-shot state into a single "what is the router doing right now" view.
+
+Slash command: `/model` (with NO arguments). Same architectural-
+impossibility caveat — Hermes-side registration is Story 9-10's scope;
+the `inspect_policy` MCP tool is dispatchable today.
+
+Output shape (markdown table + two status lines):
+
+```
+| task | baseline_model | override_model | effective_model | lane | sensitivity | last_changed |
+|---|---|---|---|---|---|---|
+| 🔧 draft_reply | claude-haiku-4-5-20251001 | claude-opus-4-7 | claude-opus-4-7 | interactive | any | 2026-06-26T18:14:32+00:00 |
+| coarse_class | qwen2.5:3b-instruct-q4_K_M | — | qwen2.5:3b-instruct-q4_K_M | batch | any | — |
+…
+
+Current degraded mode state: Not active
+Active one-shot override: None
+```
+
+The 🔧 prefix on the `task` column marks rows where Adam's persistent
+override is in force. The `last_changed` column shows the file-level
+mtime of `router/policy.user-overrides.yaml` (per-task mtime tracking is
+deferred to a future story; file-level mtime is the v1 surface).
+
+The "Current degraded mode state" line reads from the live budget guard;
+the "Active one-shot override" line reads from the Story 9-3 one-shot slot.
+Both lines update reactively with every call — `inspect_policy` is the
+canonical truth source for what the router will do on the very next call.
+
 ### `render_spend_chart`
 
 Purpose: render a 1200×800 PNG horizontal bar chart of cost-per-task over
@@ -320,6 +410,52 @@ redactor before being baked into the image. The `render_spend_chart` verb is
 the FIRST analytics verb to ship; future analytics verbs follow the same
 package-isolation discipline (lives under `mailbot_api/verbs/analytics/`,
 boundary-checker-enforced `matplotlib.pyplot` isolation).
+
+### `unmute_category`
+
+Purpose: lift a notification-category mute set earlier via `mute_category`.
+Resets the per-category mute state immediately; subsequent Epic-6 dispatcher
+runs deliver normally for the unmuted category.
+
+Slash command: `/unmute <category>` (Story 6-4).
+
+### `pull_pending_notifications`
+
+Purpose: Hermes-pulled urgent-tier notification dispatch (Story 6-3). Atomically
+claims up to N urgent rows from `notifications_outbox` (rows transition `pending`
+→ `delivering` under a single SQL transaction so concurrent pullers don't double-
+deliver). Hermes posts each row's payload to Discord, then acknowledges via
+`ack_notification` for terminal-state transition.
+
+Called programmatically by Hermes's pull loop (~10s cadence, `no_agent=True`).
+Not Adam-facing — the verb has no slash command; it's transport plumbing.
+
+### `ack_notification`
+
+Purpose: Hermes finalizes a notification row pulled via `pull_pending_notifications`
+with terminal state `ok` (delivered successfully) or `failed` (Discord post failed;
+the row stays in retry until the per-row TTL elapses).
+
+Called programmatically by Hermes's pull loop after each Discord post. Not
+Adam-facing.
+
+### `compose_digest`
+
+Purpose: assemble the 08:00 daily digest body — the per-category summary +
+top-importance email list + tone-matched intro paragraph (Story 6-5). Returns
+the composed markdown + a `digest_id` Hermes uses to finalize delivery.
+
+Called programmatically by Hermes's daily-digest cron skill (Story 6-10) — not
+Adam-facing. Adam SEES the digest in Discord at 08:00 but doesn't invoke it.
+
+### `finalize_digest_delivery`
+
+Purpose: mark the digest identified by `digest_id` as delivered, persist the
+per-day delivery row for observability, and clear the per-category accumulator
+so the next day's digest starts fresh.
+
+Called programmatically by Hermes's daily-digest cron skill (Story 6-10) right
+after posting the composed body to Discord. Not Adam-facing.
 
 ## Router-internal — `ask_router` is intentionally NOT MCP-exposed
 

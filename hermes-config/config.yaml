@@ -152,6 +152,14 @@ discord:
 # (`set_model_oneshot`) IS dispatchable today via MCP — Hermes can
 # invoke it programmatically from any slash-command handler that gets
 # wired up later.
+#
+# Story 9-4 (Adam-confirmed 2026-06-26): same architectural-impossibility
+# constraint applies — the new `set_model_persistent` + `inspect_policy`
+# verbs are documented in SKILL.md only. The single `/model` slash
+# command dispatches three behaviors based on argument count (0 args →
+# inspect, 1 arg → one-shot, 2 args → persistent); the dispatch logic
+# lives in the Hermes-side handler once Story 9-10 wires it up. Both new
+# verbs are MCP-dispatchable today.
 
 # Per-user session isolation in shared channels (Adam-only deploy, but
 # keeping the default so a future second-user case doesn't surprise us).

@@ -1,8 +1,10 @@
-"""MCP server exposing MailBot verbs as tools — Story 5-2; extended in Story 5-6 + 6-8 + 9-3.
+"""MCP server exposing MailBot verbs as tools — Story 5-2; extended in Story 5-6 + 6-8 + 9-3 + 9-4.
 
-Builds a ``FastMCP`` instance and registers 23 of the project's verbs as MCP
+Builds a ``FastMCP`` instance and registers 25 of the project's verbs as MCP
 tools (Story 9-3 added ``set_model_oneshot`` for the `/model <model>`
-one-shot dispatch override).
+one-shot dispatch override; Story 9-4 added ``set_model_persistent`` for
+the `/model <task> <model>` persistent override + ``inspect_policy`` for
+the `/model` (no args) inspect surface).
 
 The 11 baseline tools (Story 5-2): ``find_emails``, ``hydrate_email``,
 ``get_thread``, ``count_emails``, ``get_sender_summary``, ``propose_action``,
@@ -116,6 +118,9 @@ from mailbot_api.verbs.pull_pending_notifications import (
 from mailbot_api.verbs.revert_action import revert_action as _revert_action
 from mailbot_api.verbs.revoke_grant import revoke_grant as _revoke_grant
 from mailbot_api.verbs.router_control import (
+    inspect_policy as _inspect_policy,
+)
+from mailbot_api.verbs.router_control import (
     pause_router as _pause_router,
 )
 from mailbot_api.verbs.router_control import (
@@ -123,6 +128,9 @@ from mailbot_api.verbs.router_control import (
 )
 from mailbot_api.verbs.router_control import (
     set_model_oneshot as _set_model_oneshot,
+)
+from mailbot_api.verbs.router_control import (
+    set_model_persistent as _set_model_persistent,
 )
 from mailbot_api.verbs.schemas import FindEmailsFilter
 from mailbot_api.verbs.unmute_category import unmute_category as _unmute_category
@@ -188,11 +196,12 @@ def _session_id_from_ctx(ctx: Context[Any, Any, Any]) -> str:
 
 
 def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
-    """Construct the 23 tool wrappers closed over the given _ServerContext.
+    """Construct the 25 tool wrappers closed over the given _ServerContext.
     (11 Story-5-2 baseline + 5 Story-5-6 slash-command surface + 1 Story-6-8
     analytics + 2 Story-6-3 notification dispatcher pull/ack +
     1 Story-6-4 unmute_category + 2 Story-6-5 digest compose/finalize +
-    1 Story-9-3 set_model_oneshot.)
+    1 Story-9-3 set_model_oneshot + 2 Story-9-4 set_model_persistent /
+    inspect_policy.)
 
     Returned dict maps verb-name → wrapper coroutine. The wrappers each take
     only agent-supplied kwargs (db_path / session_id never appear in their
@@ -575,6 +584,77 @@ def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
             _log_ok("set_model_oneshot", sid, latency_ms)
         return out
 
+    async def set_model_persistent(
+        ctx: Context[Any, Any, Any], task: str, model: str
+    ) -> Any:
+        """Story 9-4 AC-1: write a per-task persistent model override to
+        ``router/policy.user-overrides.yaml`` and wait for hot-reload pickup.
+
+        Validates inputs against the live policy snapshot's task set + the
+        Story 9-3 alias/full-ID set. OQ-3 refuses-with-actionable-error
+        when the target file is absent or read-only (host-side bootstrap
+        required first). Atomic-write via tempfile + fsync + os.replace.
+        Captures session_id for structured-log audit visibility (single-
+        user reality per Story 9-3 OQ-1).
+        """
+        sid = _session_id_from_ctx(ctx)
+        t0 = time.perf_counter()
+        try:
+            out = await _set_model_persistent(
+                db_path=server_ctx.require_db_path(),
+                task=task,
+                model=model,
+                session_id=sid,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log_crash(
+                "set_model_persistent",
+                sid,
+                exc,
+                int((time.perf_counter() - t0) * 1000),
+            )
+            raise
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        code = _maybe_error_code(out)
+        if code:
+            _log_error_as_data("set_model_persistent", sid, code, latency_ms)
+        else:
+            _log_ok("set_model_persistent", sid, latency_ms)
+        return out
+
+    async def inspect_policy(ctx: Context[Any, Any, Any]) -> Any:
+        """Story 9-4 AC-2: read-only render of current effective policy as a
+        markdown table for Discord display.
+
+        Composes baseline + overrides + degraded-mode + one-shot state
+        into a single "what is the router doing right now" view. The
+        verb does NOT chunk for Discord's 2000-char limit — that's a
+        Hermes/MCP-client concern per Story 5-2/6-8 precedent. ``sid`` is
+        captured for audit visibility only.
+        """
+        sid = _session_id_from_ctx(ctx)
+        t0 = time.perf_counter()
+        try:
+            out = await _inspect_policy(
+                db_path=server_ctx.require_db_path(),
+                session_id=sid,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log_crash(
+                "inspect_policy",
+                sid,
+                exc,
+                int((time.perf_counter() - t0) * 1000),
+            )
+            raise
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        code = _maybe_error_code(out)
+        if code:
+            _log_error_as_data("inspect_policy", sid, code, latency_ms)
+        else:
+            _log_ok("inspect_policy", sid, latency_ms)
+        return out
+
     async def mute_category(
         category: str,
         ctx: Context[Any, Any, Any],
@@ -790,6 +870,9 @@ def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
         "resume_router": resume_router,
         # Story 9-3 — `/model <model>` one-shot dispatch.
         "set_model_oneshot": set_model_oneshot,
+        # Story 9-4 — `/model <task> <model>` persistent + `/model` inspect.
+        "set_model_persistent": set_model_persistent,
+        "inspect_policy": inspect_policy,
         "mute_category": mute_category,
         # Story 6-8 — analytics surface (/spend slash command).
         "render_spend_chart": render_spend_chart,
@@ -881,6 +964,26 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
         "do NOT punch through). Slash-command surface: /model (Story 9-3). "
         "Audit row carries model_chosen_reason=OVERRIDE_SLASH_ONE_SHOT."
     ),
+    "set_model_persistent": (
+        "Persistent per-task model override — atomically writes "
+        "router/policy.user-overrides.yaml and waits for hot-reload "
+        "(typically <2s). Validates task against the live policy snapshot, "
+        "model against the same alias/full-ID set as set_model_oneshot. "
+        "Survives image rebuilds via the Story 9-1 companion-file pattern. "
+        "Refuses with actionable error if the target file is absent "
+        "(host-side bootstrap required first per Story 9-1's hot-reload "
+        "contract limitation). Slash-command surface: /model <task> <model> "
+        "(Story 9-4 — docs in SKILL.md; Hermes-side runtime registration "
+        "is Story 9-10's scope). Audit row carries "
+        "model_chosen_reason=OVERRIDE_SLASH_PERSISTENT on subsequent calls."
+    ),
+    "inspect_policy": (
+        "Read-only render of current effective policy as a markdown table "
+        "(baseline + overrides + degraded-mode + active one-shot). "
+        "Overridden rows are visually marked with the 🔧 prefix. "
+        "Slash-command surface: /model (no args; Story 9-4 — docs in "
+        "SKILL.md). No state mutation; safe to call at any time."
+    ),
     "mute_category": (
         "Mute a notification category until a timestamp (or indefinitely). "
         "SHARP EDGE: silences ALL tiers including urgent. Avoid indefinite "
@@ -925,7 +1028,7 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
 }
 
 
-_EXPECTED_TOOL_COUNT = 23  # Story 9-3 added set_model_oneshot
+_EXPECTED_TOOL_COUNT = 25  # Story 9-4 added set_model_persistent + inspect_policy
 
 
 # ---------------------------------------------------------------------------

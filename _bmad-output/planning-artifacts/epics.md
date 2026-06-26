@@ -3270,6 +3270,8 @@ So that I can persistently redirect specific tasks without editing the shipped p
 **Then** the existing `model` slash command dispatches differently based on argument count: 0 args → `inspect_policy`; 1 arg → `set_model_oneshot` (Story 9.3); 2 args → `set_model_persistent`
 **And** SKILL.md "Model override" section is extended with the persistent and inspect subcommand forms
 
+> **OQ-1 discharge note (2026-06-26):** the `hermes-config/config.yaml` slash_commands extension is architecturally-impossible per Story 9-3 OQ-2 precedent — `test_hermes_config_discord_at_top_level_not_under_gateway` explicitly forbids the `discord.slash_commands` block (RECONCILIATION-NOTES §1.4/§1.5; real Hermes registers Discord slash commands at runtime via the Developer Portal). AC-4 is scope-reduced to SKILL.md docs only; the verbs `set_model_persistent` + `inspect_policy` ARE MCP-dispatchable today. Story 9-10 (reframed at the same time per Adam-confirm 2026-06-26 — Path γ MCP-tool-registry-vs-SKILL.md drift test) is the canonical owner of the OQ-1 discharge surface. See `_bmad-output/implementation-artifacts/9-4-...md` Open Question OQ-1 for the full discharge trail.
+
 **Given** the atomic-write semantics and the byte-equality invariant
 **When** `tests/integration/test_persistent_override_atomic_write.py` runs
 **Then** a parametrized test asserts: after persistent override write, `router/policy.yaml` is byte-identical to its pre-write state (overrides land in the companion file ONLY)
@@ -3376,6 +3378,8 @@ So that the next time someone adds a verb without registering the slash (the sil
 **Given** this is gate-coverage-eligible (single drift test, no new production code)
 **When** CR cadence is evaluated per the 6 criteria
 **Then** none of the 6 mandatory-CR criteria fire → ship under §5.12 self-audit cadence
+
+> **OQ-1 discharge note (2026-06-26 — Path γ reframing):** the original ACs above assume a `slash_commands` block exists in `hermes-config/config.yaml`. That block is architecturally-impossible per `test_hermes_config_discord_at_top_level_not_under_gateway` (RECONCILIATION-NOTES §1.4/§1.5; real Hermes registers slash commands at runtime via the Developer Portal). Story 9-10 was REFRAMED at autonomous-epic-run kickoff to an **MCP-tool-registry-vs-SKILL.md drift test** that preserves the original silent-no-op-detection intent using the architecturally-correct surface. The reframed ACs live in `_bmad-output/implementation-artifacts/9-10-hermes-config-yaml-slash-registration-drift-test.md`. Same precedent chain as Story 9-3 OQ-2 + Story 9-4 OQ-1.
 
 ---
 
