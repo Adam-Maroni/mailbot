@@ -127,6 +127,7 @@ This asymmetric discipline (hard-baseline, soft-overrides) reflects the trust mo
 | `policy.user-overrides.empty_entry` | Override entry with all fields None (no-op) | DEBUG |
 | `policy.reload.failed` | Baseline `PolicyValidationError` on reload | ERROR |
 | `policy.reload.loop.error` | Defensive catch-all in the reloader | ERROR |
+| `policy.user-overrides.absent_at_runtime` | Override file deleted at runtime (Story 9-1.5 F35 closure) | WARNING |
 
 ## Version-suffix derivation
 
@@ -153,12 +154,14 @@ The SHA-256 first-8-hex-chars is content-addressed: same YAML content → same s
 | Scenario | Hot-reload picks up changes? |
 |---|---|
 | Override file exists at startup, content changes | ✅ Yes |
-| Override file exists at startup, file deleted at runtime | ⚠ Watcher may error or stop (untested in Story 9-1; defer to Story 9-4 design) |
+| Override file exists at startup, file deleted at runtime | ⚠ Detected: ONE `policy.user-overrides.swap` event swaps to baseline-only, ONE `policy.user-overrides.absent_at_runtime` WARNING fires, then subsequent watchfiles spurious fires are silently coalesced (Story 9-1.5 F35 closure). Operator must restart `mailbot-api` to re-arm the watcher. |
 | Override file ABSENT at startup, operator creates it at runtime | ❌ No — `mailbot-api` must restart to watch it |
 
 **Operator-flow implication for Story 9-4:** the first `/model <task> <model>` call against a fresh deploy (where the override file doesn't yet exist) will create the file but the change will NOT take effect until the next mailbot-api restart. Story 9-4's verb response should surface this requirement explicitly. Subsequent calls (against an existing file) propagate via hot-reload within ~2 seconds.
 
 **First-deploy bootstrap:** consider `touch router/policy.user-overrides.yaml` in `setup_vps.sh` (or equivalent) so the file exists from day one. Empty file is fine — it's a no-op.
+
+**Runtime delete recovery (Story 9-1.5 F35 closure):** if an operator directly `rm`'s `router/policy.user-overrides.yaml` while mailbot-api is running, the loop emits a single `policy.user-overrides.absent_at_runtime` WARNING and stops emitting further per-fire log lines for the deleted path. To restore the override surface, the operator must (a) recreate the override file on disk (or the bootstrap `cp .example`) AND (b) restart mailbot-api so `watchfiles.awatch()` can re-bind a fresh descriptor to the new file. This restart is the same F33 contract that applies to first-time override creation.
 
 ## Hot-reload race semantics
 

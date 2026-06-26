@@ -32,6 +32,11 @@
 - **MEDIUM finding (dev-self-caught) → [accepted-with-rationale: scope expansion to fix pre-existing SKILL.md docs drift]** — Story 9-10's mid-pass surfaced 5 MCP-registered tools mentioned in SKILL.md prose but lacking `### <tool_name>` headings. Fix was to add the 5 missing sections (the principled fix per the fixture's "When NOT to add to exempt list" criteria) rather than ship a known-failing test on already-drifted docs. This is exactly the failure mode Story 9-10 is designed to prevent recurring. **Action carry-forward:** none — the fix is correctly inline with the test introduction.
 - **LOW finding (dev-self-caught) → [accepted-with-rationale: safe-by-default exemption-fixture parser]** — `_load_exempt_set()` silently returns empty set on malformed YAML rather than raising. Failure mode is safe-by-default (forward-drift treats all tools as needing SKILL.md entries). **Action carry-forward:** none.
 
+### From Story 9-1-5 (F35 closure)
+
+- **CR-F5 LOW → [deferred: pre-existing risk profile of real-FS integration tests]** — `test_baseline_edit_after_delete_resumes_policy_reloaded` asserts exactly `len(reloaded_events) == 1` after 0.5s hold; on some CI filesystem backends watchfiles fires double-write events on a single write. The existing Story 9-1 baseline tests use `>= 1` for this reason. **Action carry-forward:** if Story 9-1.5's exact-count assertion fails on CI, relax to `>= 1` matching the Story 9-1 baseline pattern.
+- **CR-F6 LOW → [deferred: pre-existing risk profile of real-FS integration tests]** — `test_recreating_override_at_runtime_does_not_auto_pickup` asserts `len(swap_events) == 0` after a 2-second hold but does not recheck post-`stop_event.set()`; any late-arriving watchfiles event between the assertion and teardown is invisible. Not a production defect; test-coverage blind-spot. **Action carry-forward:** if test flakes on CI, add a post-stop_event assertion.
+
 ---
 
 ## UX advisory

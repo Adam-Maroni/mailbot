@@ -620,6 +620,23 @@ def load_policy_with_status(
 
 _policy: PolicyTable | None = None
 
+# F35 closure (Story 9-1.5): once the override file transitions from
+# "present + applied" to "absent at runtime" via direct operator `rm`, the
+# watchfiles descriptor keeps firing change events at ~310ms cadence against
+# the nonexistent path. This flag tracks "we've already emitted the
+# absent_at_runtime warning + announced the transition; subsequent fires
+# against the still-absent path are spurious and must be silently coalesced
+# until either the baseline version changes (operator edited policy.yaml,
+# AC-3 resume contract) OR the watcher is restarted (F33 contract — there is
+# no auto-pickup of recreated override file at runtime).
+_override_absent_after_applied: bool = False
+
+
+def _reset_override_absent_flag_for_test() -> None:
+    """Test-only helper to clear the F35 suppression flag between tests."""
+    global _override_absent_after_applied  # noqa: PLW0603
+    _override_absent_after_applied = False
+
 
 def get_policy() -> PolicyTable:
     """Return the current policy snapshot.
@@ -706,6 +723,13 @@ async def policy_reload_loop(
     #     one-time configuration step.
     #   * Story 9-1 still picks up MUTATIONS to a pre-existing overrides
     #     file (the common case once Adam has at least one override).
+    # CR-F1 (Story 9-1.5, sonnet-4-6): function-top global declaration for
+    # symmetry with set_policy_snapshot's `global _policy` pattern. The flag
+    # is touched in two distinct branches below (suppression-coalesce + AC-3
+    # resume-clear + absent_at_runtime arm); declaring once at function scope
+    # is cleaner than three inline `global` statements.
+    global _override_absent_after_applied  # noqa: PLW0603
+
     watch_paths: tuple[str, ...]
     paths_to_watch: list[str] = [str(path)]
     if overrides_path is not None and overrides_path.exists():
@@ -751,6 +775,43 @@ async def policy_reload_loop(
         prev_had_overrides = _version_has_overrides_suffix(prev_version)
         new_has_overrides = _version_has_overrides_suffix(new_version)
 
+        # F35 closure (Story 9-1.5): spurious-fire suppression + F33
+        # contract preservation. Once we've announced the absent-after-
+        # applied transition:
+        #   (a) subsequent fires returning override_status=="absent" with
+        #       prev_version==new_version are watchfiles thrashing against
+        #       the deleted path — suppress silently (the F35 flood).
+        #   (b) fires returning override_status=="applied" (the operator
+        #       recreated the override file at runtime) MUST also be
+        #       suppressed: F33 says the watcher cannot reliably observe a
+        #       recreated file; on platforms where it does (Windows
+        #       ReadDirectoryChangesW), AC-4 mandates we still ignore the
+        #       re-creation so the contract holds uniformly across
+        #       platforms. Operators must restart mailbot-api to re-arm.
+        # AC-3 resume contract: clear the flag when the baseline version
+        # changes between fires (operator edited policy.yaml).
+        # CR-F2 (Story 9-1.5, sonnet-4-6): the resume condition must also
+        # fire when override_status == "empty" — load_policy_with_status
+        # returns "empty" (not "absent") when an operator creates an empty
+        # override file (zero-byte, comments-only, tasks: {}, or all-None
+        # entries). If we only checked "absent", a simultaneous create-
+        # empty-override + edit-baseline would leave the suppression flag
+        # armed and silently drop the baseline change. Both shapes are
+        # operationally indistinguishable for the suppression surface per
+        # Story 9-1 CR-F3 (no +overrides: suffix in either case).
+        if _override_absent_after_applied:
+            # AC-3: baseline change wakes us back up.
+            baseline_changed = (
+                override_status in ("absent", "empty")
+                and prev_version != new_version
+            )
+            if baseline_changed:
+                _override_absent_after_applied = False
+            else:
+                # Both (a) absent-spurious and (b) recreated-file fires
+                # are silently coalesced. No log emission.
+                continue
+
         if new_has_overrides or prev_had_overrides:
             # Either we just gained overrides, lost overrides, or the
             # overrides hash changed — all three are "operator-visible
@@ -769,6 +830,36 @@ async def policy_reload_loop(
                         "version_after": new_version,
                     },
                 )
+                # F35 closure (Story 9-1.5): detect the absent-after-applied
+                # transition — operator `rm`'d the override file at runtime.
+                # Emit the one-shot WARNING that names the F33 restart
+                # requirement (the watchfiles descriptor was bound to the
+                # now-deleted path; auto-pickup of a recreated file is not
+                # possible per the documented F33 contract). Then arm the
+                # suppression flag so subsequent spurious fires against the
+                # nonexistent path are silently coalesced per AC-2.
+                # set_policy_snapshot has already cleared the flag IF the
+                # new snapshot still carried +overrides: — that's not this
+                # branch (we're here because the override surface lost the
+                # suffix). So setting the flag here is unconditional.
+                if prev_had_overrides and not new_has_overrides and override_status == "absent":
+                    _override_absent_after_applied = True
+                    _log.warning(
+                        "override file deleted at runtime; subsequent edits "
+                        "will require mailbot-api restart to re-arm watcher "
+                        "(watchfiles cannot watch newly-appeared paths per "
+                        "F33 upstream contract)",
+                        extra={
+                            "event": "policy.user-overrides.absent_at_runtime",
+                            "baseline_path": str(path),
+                            "overrides_path": (
+                                str(overrides_path)
+                                if overrides_path is not None
+                                else None
+                            ),
+                            "baseline_version": new_version,
+                        },
+                    )
                 continue
             # Versions identical despite override-suffix presence — could
             # happen if the watcher fired spuriously (e.g., file touched
@@ -810,6 +901,7 @@ __all__ = [
     "UserOverridesEntry",
     "UserOverridesTable",
     "UserOverridesWriteError",
+    "_reset_override_absent_flag_for_test",
     "_reset_policy_snapshot_for_test",
     "get_policy",
     "load_policy",
