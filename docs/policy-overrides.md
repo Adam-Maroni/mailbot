@@ -146,6 +146,7 @@ The SHA-256 first-8-hex-chars is content-addressed: same YAML content → same s
 - **Story 9-4** is the consumer of this contract — `set_model_persistent` writes to `router/policy.user-overrides.yaml` atomically via `os.replace()` + tempfile + `fsync`, then relies on the hot-reload (this story's AC-3) to make the change effective within 2 seconds.
 - **Story 9-6** consumes the post-merge `version` for `benchmark_runs.cohort_key.router_policy_version`.
 - **Story 9-7+** (eval/calibration) need cohort_key consistency to compute DEMOTE/PROMOTE verdicts against comparable runs only.
+- **Story 9-5** (eval corpus) replicates the gitignore + `.example`-sibling + bind-mount pattern this story established, for `evals/email_corpus_v1.jsonl` + `evals/anchors/*.jsonl`. See [`eval-corpus.md`](./eval-corpus.md) for the corpus contract.
 
 ## Hot-reload contract limitation — file-must-exist-at-startup
 

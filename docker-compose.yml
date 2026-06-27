@@ -98,6 +98,15 @@ services:
       # /app/router/sensitivity_patterns.yaml; dev mode masked by
       # docker-compose.override). Out of scope for Story 9-1; will be filed
       # as a sibling finding in epic-9-run-flags.md for a follow-up story.
+      # Story 9-5: benchmark corpus + subjective-task anchors. Read-only —
+      # the running container loads these during Story 9-6 benchmark runs;
+      # corpus + anchor AUTHORING happens host-side via scripts/build_corpus.py.
+      # File-level mount for the corpus (single artifact); directory-level for
+      # anchors (so the VERSION file stays co-located with the JSONLs the
+      # Story 9-7 scorer reads). Same .gitignore + .example-sibling treatment
+      # as router/policy.user-overrides.yaml (Story 9-1 precedent).
+      - ./evals/email_corpus_v1.jsonl:/app/evals/email_corpus_v1.jsonl:ro
+      - ./evals/anchors:/app/evals/anchors:ro
     environment:
       # mailbot-api holds the Anthropic key (Rule F.1)
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}

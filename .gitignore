@@ -67,3 +67,23 @@ hermes-config/.hermes/
 # as a discoverable template.
 router/policy.user-overrides.yaml
 !router/policy.user-overrides.yaml.example
+
+# Story 9-5: evals/email_corpus_v1.jsonl is privacy-sensitive operator-state
+# (Adam's real inbox content + Adam-labeled ground truth). The .example sibling
+# IS tracked as a discoverable template; the 5-item canary fixture IS tracked
+# for CI use (PII-free by construction per AC-7).
+evals/email_corpus_v1.jsonl
+!evals/email_corpus_v1.jsonl.example
+
+# Story 9-5 AC-11: evals/anchors/*.jsonl carry real model_output examples
+# Adam authored against production-sampled corpus rows. Same privacy-treatment
+# as the corpus itself: gitignored, VPS-only, bind-mounted. The .example
+# siblings + VERSION file ARE tracked.
+evals/anchors/*.jsonl
+!evals/anchors/*.jsonl.example
+
+# Story 9-5 AC-15: evals/_labeling/ holds the CSV worksheets the AC-15
+# co-pilot session writes + Adam edits. Privacy-sensitive (worksheets carry
+# raw_body during labeling, and prefill-output captures may carry real model
+# responses). Worksheets are scratch state; no .example carve-out.
+evals/_labeling/
