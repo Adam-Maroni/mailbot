@@ -163,3 +163,15 @@ tasks:
     sensitivity: "any"
     response_cache_ttl_seconds: 600
     notes: "Story 6-5: 08:00 digest intro paragraph (≤200 chars). Qwen-served, batch-lane, response-cached 10 min so digest retries within the window re-use the same intro. Input is structured counts only (no email bodies — Rule J)."
+
+  # --- Story 9-7: anchor-calibrated subjective scorer (AC-6) ---
+
+  anchor_calibrated_eval:
+    model: "claude-opus-4-7"
+    prompt_version: "v1"
+    escalate: false
+    max_tokens_out: 256
+    lane: "batch"
+    sensitivity: "any"
+    response_cache_ttl_seconds: 86400
+    notes: "Story 9-7: strong-model evaluator that scores draft_reply / summary_short outputs 1-5 across rubric axes, calibrated against the 20 hand-anchored examples per task. Dispatched by benchmark/scoring/subjective.py via ask_router(force_model=<scorer>, force=True, caller_origin=benchmark-scorer, email_id=None). 24h response-cache TTL matches Story 9-11 anchor-stability-audit re-run dedup contract — re-scoring within a day reuses prior evaluator dispatches. CR-F1 (HIGH) 2026-06-28: lane=batch (NOT interactive) because a full-corpus scoring run can dispatch ~800 evaluator calls per (task,model) pair (20 anchors + ~100 per-row) which would exhaust the interactive lane's 60 req/hr cap 13× over and RATE_LIMIT real Discord/chat user requests during the run. The scorer is a non-interactive CLI surface — batch lane (300 req/hr) is the correct semantic."

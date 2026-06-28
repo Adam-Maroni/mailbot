@@ -1,0 +1,13 @@
+"""Fixture: contains `INSERT INTO benchmark_scores` outside the benchmark/scorer_db.py allowlist.
+
+Must trigger Story 9-7 AC-2 / AC-10 boundary check. Only
+``benchmark/scorer_db.py`` is allowed to emit this literal (or its
+``INSERT OR REPLACE INTO benchmark_scores`` upsert variant) — any other
+file fails the check with a dedicated message pointing at the
+benchmark_scores writer-monopoly boundary.
+"""
+
+BENCHMARK_SCORES_INSERT_ROGUE = (
+    "INSERT OR REPLACE INTO benchmark_scores (run_id, task_type, model, metric_name) "
+    "VALUES (?, ?, ?, ?)"
+)

@@ -59,6 +59,11 @@ _OS_ENVIRON_ALLOW = frozenset(
         # AND sets BENCHMARK_COST_MOCK=1 as a runtime contract with Story 9-8's
         # adapter layer (env-var carrier for the --cost-mock flag).
         "benchmark/runner.py",
+        # Story 9-7: benchmark/scorer.py is a CLI entry (python -m benchmark.scorer)
+        # that legitimately reads MAILBOT_DB_PATH at startup AND sets
+        # BENCHMARK_COST_MOCK=1 as the env-var carrier for Story 9-8 — same
+        # CLI shape and contract as the runner above.
+        "benchmark/scorer.py",
     }
 )
 _RAW_SQL_ALLOW = frozenset(
@@ -82,6 +87,11 @@ _RAW_SQL_ALLOW = frozenset(
         # the new _BENCHMARK_RUNS_INSERT_ALLOW check) and co-owns the SQL
         # contract — same pattern as audit.py + embedding.py above.
         "benchmark/db.py",
+        # Story 9-7: benchmark/scorer_db.py is the sole writer of
+        # benchmark_scores (per the new _BENCHMARK_SCORES_INSERT_ALLOW
+        # check) and co-owns the SQL contract for the benchmark_runs READ
+        # side too (read_run_runs SELECT) — same pattern as benchmark/db.py.
+        "benchmark/scorer_db.py",
     }
 )
 # Story 2-1 AC-6: `INSERT INTO router_calls` may only appear in the audit
@@ -100,6 +110,17 @@ _ROUTER_CALLS_INSERT_ALLOW = frozenset(
 _BENCHMARK_RUNS_INSERT_ALLOW = frozenset(
     {
         "benchmark/db.py",
+    }
+)
+# Story 9-7 AC-2 / AC-10: `INSERT INTO benchmark_scores` (and the
+# `INSERT OR REPLACE INTO benchmark_scores` upsert variant the scorer uses
+# for the AC-1 7-column UNIQUE re-scoring idempotency) may only appear in
+# `benchmark/scorer_db.py`. Same writer-monopoly pattern as Story 9-6's
+# benchmark_runs + Story 2-1's router_calls. The migration file is .sql
+# and not AST-scanned.
+_BENCHMARK_SCORES_INSERT_ALLOW = frozenset(
+    {
+        "benchmark/scorer_db.py",
     }
 )
 # Story 2-2 AC-12: `yaml.safe_load` / `yaml.load` may only appear in the
@@ -318,6 +339,16 @@ _ROUTER_CALLS_INSERT_RE = re.compile(
 # emit this literal.
 _BENCHMARK_RUNS_INSERT_RE = re.compile(
     r"INSERT\s+INTO\s+benchmark_runs\b",
+    flags=re.IGNORECASE,
+)
+
+# Story 9-7 AC-2 / AC-10: targeted scan for `INSERT INTO benchmark_scores`
+# AND `INSERT OR REPLACE INTO benchmark_scores` (the scorer uses upsert
+# semantics so the OR REPLACE branch must also be caught). Mirrors the
+# Story 9-6 `_BENCHMARK_RUNS_INSERT_RE` pattern; only
+# `benchmark/scorer_db.py` is allowed to emit either literal.
+_BENCHMARK_SCORES_INSERT_RE = re.compile(
+    r"INSERT(?:\s+OR\s+REPLACE)?\s+INTO\s+benchmark_scores\b",
     flags=re.IGNORECASE,
 )
 
@@ -685,6 +716,24 @@ def check_file(path: Path, repo_root: Path) -> list[str]:
                 )
             )
 
+        # Story 9-7 AC-2 / AC-10: `INSERT INTO benchmark_scores` (or
+        # `INSERT OR REPLACE INTO benchmark_scores`) outside
+        # `benchmark/scorer_db.py`. Same shape as the benchmark_runs check
+        # above; the upsert variant is covered by the regex.
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and _BENCHMARK_SCORES_INSERT_RE.search(node.value)
+            and rel not in _BENCHMARK_SCORES_INSERT_ALLOW
+        ):
+            violations.append(
+                _violation(
+                    getattr(node, "lineno", 0),
+                    "`INSERT (OR REPLACE) INTO benchmark_scores`",
+                    _BENCHMARK_SCORES_INSERT_ALLOW,
+                )
+            )
+
         # Story 3-4 AC-7: embedding-column writer monopoly. `UPDATE emails SET
         # embedding ...` or `INSERT INTO emails (...embedding...)` literals
         # outside `mailbot_api/ingest/embedding.py` (the sole writer) fail.
@@ -870,6 +919,21 @@ def check_file(path: Path, repo_root: Path) -> list[str]:
                         getattr(node, "lineno", 0),
                         "`INSERT INTO benchmark_runs` (in f-string)",
                         _BENCHMARK_RUNS_INSERT_ALLOW,
+                    )
+                )
+
+        # Story 9-7 AC-2: f-string-built `INSERT INTO benchmark_scores` (or
+        # `INSERT OR REPLACE INTO`) mirror of the benchmark_runs f-string
+        # walk above.
+        if isinstance(node, ast.JoinedStr) and rel not in _BENCHMARK_SCORES_INSERT_ALLOW:
+            literal_parts = [v.value for v in node.values if isinstance(v, ast.Constant) and isinstance(v.value, str)]
+            joined = " ".join(literal_parts)
+            if _BENCHMARK_SCORES_INSERT_RE.search(joined):
+                violations.append(
+                    _violation(
+                        getattr(node, "lineno", 0),
+                        "`INSERT (OR REPLACE) INTO benchmark_scores` (in f-string)",
+                        _BENCHMARK_SCORES_INSERT_ALLOW,
                     )
                 )
 

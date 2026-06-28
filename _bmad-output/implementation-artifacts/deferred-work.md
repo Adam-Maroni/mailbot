@@ -1,5 +1,11 @@
 # Deferred Work
 
+## Deferred from: code review of 9-7-scorer-objective-and-subjective-with-anchor-calibrated-auto-eval-and-cross-evaluator-agreement (2026-06-28)
+
+- CR-F4 (MEDIUM): Partial anchor calibration (< 20 anchors scored due to sustained dispatch failures) silently computes MAE over a reduced denominator. Add `_logger.warning("anchor_calibration_partial n_scored=%d n_expected=%d", len(auto_scores), len(anchors))` inside `_run_anchor_calibration` before the MAE return when `len(auto_scores) < len(anchors)`. [`benchmark/scoring/subjective.py:247-260`]
+- CR-F7 (LOW): `ScoreOutcomeLiteral` in `benchmark/schemas.py` includes `"scorer_error"` but no production code path emits this outcome (no per-pair exception handler writes a scorer_error row). Matches Story 9-6 CR-F2 dormant-ErrorCode pattern. Add a try/except around the per-pair scoring loop in `_run_async` that writes a `scorer_error` row with the exception message in `extra_json`; or document + lint-check alongside Story 9-6 carry-forward. [`benchmark/schemas.py:44`]
+- CR-F8 (LOW): AC-12 cache reuse contract ("second run produces FEWER adapter `.call()` invocations than the first") is not directly asserted by `test_scenario_5_unique_constraint_enforcement` (which only validates INSERT OR REPLACE row-count stability). Add a call-count assertion using `_ScriptedSubjectiveAdapter.call_log` comparing run-1 vs run-2 dispatch counts. Story 9-11 real-spend run will exercise cache hit rate organically. [`tests/integration/test_scorer.py:386-421`]
+
 ## Deferred from: code review of 9-6-benchmark-runner-and-benchmark-runs-table-and-cost-confirmation-gate-and-cohort-key (2026-06-28)
 
 - CR-F7 (LOW): AC-9 Test 6 (SIGINT simulation) not implemented — pre-review attributes omission to Windows SIGINT-in-asyncio brittleness; the SIGINT handler path in `_run_dispatch_loop` is manually code-reviewable; add a test targeting Linux CI or use `signal.raise_signal(signal.SIGINT)` in a subprocess asserting on row state post-exit. [`tests/integration/test_benchmark_runner.py`]

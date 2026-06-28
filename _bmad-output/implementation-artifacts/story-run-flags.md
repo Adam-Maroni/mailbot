@@ -440,3 +440,62 @@ Neither warrants a follow-up story. Corrected commands are recorded in `epic-6-r
 **Disposition:** Story 9-1-5 stays `done`. The CP-4 finding is filed as a follow-up doc improvement, not a defect. Full 15/15 walk-assertion PASS confirms the core F35 closure contract on the runtime surface that production exercises (Linux container). `#yolo` mode is now OFF. Run complete.
 
 
+
+
+---
+
+## Story 9-7 — 2026-06-28
+
+**Headline.** Story 9-7 (`scorer-objective-and-subjective-with-anchor-calibrated-auto-eval-and-cross-evaluator-agreement`) shipped via `/autonomous-story-run`: Epic 9 benchmark scorer surface — `benchmark/scorer.py` CLI + `benchmark/scorer_db.py` single-writer monopoly + `benchmark/agreement.py` pure-numpy Krippendorff α + `benchmark/scoring/{objective,subjective}.py` per-task scorers + `mailbot_api/prompts/anchor_calibrated_eval/v1.py` evaluator prompt + `router/policy.yaml` task entry + migration `025_benchmark_scores.sql` + boundary check extension. 13 new files + 6 modified, ~1762 production lines + ~1590 test lines, +61 net tests (1531 + 2 skipped + 3 deselected vs Story 9-6 close baseline 1470 + 2 + 3). All 4 quality gates green (ruff clean / mypy strict 143 source files / boundaries exit 0 / pytest 1531 passed in 208s).
+
+**Dev model:** claude-opus-4-7.
+**Review model:** claude-sonnet-4-6 (different from dev — Phase 1 contract honored).
+
+**Gate-verdict summary.**
+
+| Gate                                                  | Verdict                                                                 |
+| ----------------------------------------------------- | ----------------------------------------------------------------------- |
+| Step 2.3.5 — Pre-Review Self-Audit                    | PASS (5 sections + 11 Posture Audit sub-sections; 7 self-caught findings; 2 LOW FIX-NOW applied inline + 2 MEDIUM ESCALATED-TO-REVIEWER subsequently caught by CR) |
+| Step 2.4 — MANDATORY-CR (sonnet-4-6, criteria 1 + 6)  | PASS — 5/5 actionable Patches applied = **100% applied-rate**; 3 Defers filed (CR-F4 / CR-F7 / CR-F8 → deferred-work.md) |
+| Step 2.4.4 — Dev Agent Record Completeness            | PASS                                                                    |
+| Step 2.4.5 — UI-Scope Pre-Flight                      | N/A — no graphical frontend (PORTING.md)                                |
+| Step 2.4.6 — File-List-vs-git cross-check             | PASS (all 25 File List paths exist; all staged at 2.6)                  |
+| Step 2.4.7 — Middleware-Real-Bootstrap (MailBot-reframed) | PASS — `tests/integration/test_scorer.py` boots real `ask_router` with FakeAdapter at adapter boundary (Rule I preserved); DB-real on tmp_path SQLite |
+| Step 2.4.8 — Verbose-Row Truncation                   | PASS — sprint-status row collapsed to 1-2 sentence headline + pointer to story Completion Notes |
+| Step 2.5 — Dev-env verification                       | N/A — no `<dev-env-skill>` defined in this repo                         |
+
+**Files staged.** 27 paths via `git add` (no `git add -A`):
+- 13 new files: `mailbot_api/db/migrations/025_benchmark_scores.sql`, `mailbot_api/prompts/anchor_calibrated_eval/{__init__,v1}.py`, `benchmark/{agreement,scorer,scorer_db}.py`, `benchmark/scoring/{__init__,objective,subjective}.py`, `tests/{unit/benchmark/{test_agreement,test_objective,test_extraction,test_subjective,test_scorer_db},unit/prompts/test_anchor_calibrated_eval_v1,integration/test_migration_025_benchmark_scores,integration/test_scorer}.py`, `tests/fixtures/lint_violations/violates_benchmark_scores_insert_outside_scorer_db.py.fixture`, story file `.md` + pre-review `.md`
+- 6 modified: `router/policy.yaml`, `benchmark/{__init__,schemas}.py`, `scripts/check_boundaries.py`, `tests/unit/test_lint_boundaries.py`, `_bmad-output/implementation-artifacts/sprint-status.yaml`, `_bmad-output/implementation-artifacts/deferred-work.md`
+- 0 stray paths in stage; `.claude/settings.json` is the only modified-but-NOT-staged path (pre-existing env config drift, intentionally outside story scope per skill contract).
+
+**Flags raised.** Zero CRITICAL. Zero WARNING. The 3 Defers (CR-F4 / CR-F7 / CR-F8) are filed in `deferred-work.md` for cross-story tooling work (CR-F4 partial-calibration WARNING / CR-F7 dormant `ScoreOutcomeLiteral` per Story 9-6 CR-F2 pattern / CR-F8 unit-level cache-hit-rate assertion).
+
+**Architectural-impossibility-discharge bullet:** N/A this story (all 12 ACs directly implementable; precedent chain unchanged at 5 stories — 9-3 OQ-2 + 9-4 OQ-1 + 9-5 AC-15 + 9-6 N/A + 9-10 Path γ).
+
+**Permission-prompt summary.** Zero permission prompts during the entire run — envelope from Story 9-6 was sufficient for the surfaces touched (`.venv/Scripts/python.exe`, `rtk git *`, `Bash(grep *)`, `Bash(cat /tmp/...)`, `Bash(for p in ...; do test -e ...; done)`, `Edit(/.claude/skills/autonomous-story-run/**)`).
+
+**Reactivation order for the remaining Epic 9 benchmark tranche:** `/autonomous-story-run 9-8` (E2E canary joining runner→scorer→report on a 5-item corpus) → `/autonomous-story-run 9-9` (report renderer with Pareto frontier + DEMOTE/PROMOTE + n≥15 sample-size gate) → `/autonomous-story-run 9-11` (anchor stability audit — first real-spend cross-evaluator α baseline) → interactive Epic 9 retro.
+
+**Phase 3.5 manual-verification verdict:** pending Adam's response below.
+
+### Phase 3.5 Manual Verification — self-walked by Claude (2026-06-28)
+
+User delegated manual verification to the agent. All 12 ACs walked via live commands + targeted test invocations:
+
+| AC | Verdict | Evidence |
+|----|---------|----------|
+| AC-1 (migration schema) | PASS | `PRAGMA table_info(benchmark_scores)` returned 14 columns in spec order; `PRAGMA index_list` returned 3 named indexes + 1 SQLite auto-index for UNIQUE constraint |
+| AC-2 (writer monopoly) | PASS | `Grep INSERT (OR REPLACE)? INTO benchmark_scores` returned only `benchmark/scorer_db.py` (writer) + `scripts/check_boundaries.py` (regex) + test fixture + story docs; `check_boundaries.py` exit 0 |
+| AC-3 (classification) | PASS | Live scorer run: 4/5 correct → accuracy=0.8; scorer_model="objective:mechanical"; confusion_matrix + per_class in extra_json |
+| AC-4 (extraction) | PASS | Live scorer run: perfect match → f1_action_type=f1_summary_similarity=f1_deadline_match=1.0; per_action_type breakdown carries precision/recall/f1/support |
+| AC-5 (calibration warning) | PASS | `test_calibration_warning_fires_when_mae_above_threshold` + `test_scenario_3_calibration_warning_fires` both green |
+| AC-6 (policy + prompt) | PASS | Live policy load: model=claude-opus-4-7, prompt_version=v1, **lane=batch** (CR-F1 fix confirmed), cache_ttl=86400, sensitivity=any, max_tokens_out=256; `resolve_prompt` returns SubjectiveAutoEvalOutput |
+| AC-7 (cross-evaluator α) | PASS | 3 tests green incl. `test_scenario_4_cross_evaluator_alpha_path`; α row written; per-anchor delta in extra_json |
+| AC-8 (Krippendorff pure-numpy) | PASS | `grep ^import benchmark/agreement.py` shows only `numpy`; 11/11 edge-case tests green |
+| AC-9 (5 integration scenarios) | PASS | All 5 scenarios in `tests/integration/test_scorer.py` green in 3.01s |
+| AC-10 (boundary tests) | PASS | Positive (allowlisted scorer_db.py passes) + negative (rogue fixture triggers "INSERT (OR REPLACE) INTO benchmark_scores" violation) both green |
+| AC-11 (cost-gate CR-F3 fix) | PASS | `_estimate_subjective_cost` signature carries `anchors_block_chars: int \| None = None`; call-site at scorer.py:602 pre-renders the largest anchors block via `max(len(_build_block(a)) for a in anchors_by_task.values())` and passes it through |
+| AC-12 (cache TTL + upsert) | PASS | `test_record_benchmark_score_upsert_overwrites_on_unique_conflict` + `test_scenario_5_unique_constraint_enforcement` both green; policy carries `response_cache_ttl_seconds: 86400` (24h) |
+
+**Verdict: PASS — 12/12 ACs verified live.** Zero findings. Story 9-7 stays `done`. `#yolo` mode confirmed OFF.

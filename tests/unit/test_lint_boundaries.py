@@ -191,6 +191,17 @@ def test_utcnow_triggers_dtz003(tmp_path: Path) -> None:
             "benchmark",
             "INSERT INTO benchmark_runs",
         ),
+        # Story 9-7 AC-2 / AC-10: `INSERT (OR REPLACE) INTO benchmark_scores`
+        # outside `benchmark/scorer_db.py` must fail with a dedicated
+        # message pointing at the benchmark_scores writer-monopoly
+        # boundary. Mirrors the Story 9-6 benchmark_runs enforcement
+        # pattern; the regex covers both the bare INSERT and the
+        # INSERT OR REPLACE upsert variant the scorer uses.
+        (
+            "violates_benchmark_scores_insert_outside_scorer_db.py.fixture",
+            "benchmark",
+            "INSERT (OR REPLACE) INTO benchmark_scores",
+        ),
     ],
 )
 def test_boundary_violations_caught_by_check_boundaries(
@@ -236,6 +247,24 @@ def test_benchmark_runs_insert_in_allowlisted_db_path_passes(tmp_path: Path) -> 
     assert code == 0, (
         f"Expected boundary check to pass when benchmark_runs fixture is at "
         f"the allowlisted path. Got exit={code}, output: {output}"
+    )
+
+
+def test_benchmark_scores_insert_in_allowlisted_scorer_db_path_passes(tmp_path: Path) -> None:
+    """Story 9-7 AC-2 / AC-10 positive-pass coverage: the same fixture content
+    placed at the allowlisted ``benchmark/scorer_db.py`` path must produce a
+    clean check (exit 0). Mirrors the Story 9-6 benchmark_runs positive-pass
+    test."""
+    target_dir = tmp_path / "benchmark"
+    _copy_fixture(
+        "violates_benchmark_scores_insert_outside_scorer_db.py.fixture",
+        target_dir,
+        "scorer_db.py",  # the allowlisted filename
+    )
+    code, output = _run_boundary_check_on(tmp_path)
+    assert code == 0, (
+        f"Expected boundary check to pass when benchmark_scores fixture is "
+        f"at the allowlisted path. Got exit={code}, output: {output}"
     )
 
 

@@ -30,6 +30,28 @@ StatusLiteral = Literal[
     "interrupted",
 ]
 
+# Story 9-7: scoring outcomes (distinct from BenchmarkRunRow.outcome above
+# because the scorer's failure modes differ from the dispatcher's).
+#  - "ok":                   metric computed cleanly
+#  - "calibration_warning":  subjective scorer's MAE vs. anchors > 0.5 OR
+#                            cross-evaluator Krippendorff α < 0.6
+#  - "insufficient_data":    zero scoreable rows for this (task, model)
+#  - "scorer_error":         exception during scoring (logged + persisted
+#                            so the operator sees it in the report)
+ScoreOutcomeLiteral = Literal[
+    "ok",
+    "calibration_warning",
+    "insufficient_data",
+    "scorer_error",
+]
+
+# Story 9-7: which evaluator produced this score row.
+#  - "primary":   the run's main evaluator (Opus by default for subjective
+#                 tasks; "objective:mechanical" for objective tasks)
+#  - "secondary": the optional cross-evaluator (Sonnet by default), present
+#                 only when the scorer was invoked with --secondary-evaluator
+EvaluatorRoleLiteral = Literal["primary", "secondary"]
+
 
 class BenchmarkCell(BaseModel):
     """One (corpus_item_id, task_type, model, prompt_version) tuple BEFORE dispatch.
@@ -86,9 +108,50 @@ class BenchmarkRunRow(BaseModel):
     ran_at: str
 
 
+class BenchmarkScoreRow(BaseModel):
+    """One row of the ``benchmark_scores`` table (Story 9-7 AC-1).
+
+    Mirrors migration 025_benchmark_scores.sql column-for-column. The
+    Pydantic ``extra="forbid"`` config + the closed-set Literals for
+    ``outcome`` and ``evaluator_role`` make this the authoritative
+    application-side contract for the schema.
+
+    Conventions:
+      * ``scorer_model`` is the evaluator id for subjective tasks (e.g.,
+        ``claude-opus-4-7-20251220``) and the literal string
+        ``objective:mechanical`` for objective tasks (no LLM in the loop).
+      * ``cohort_key`` is COPIED from the ``benchmark_runs`` row that was
+        scored — Story 9-9's report renderer joins on cohort_key without
+        re-computing.
+      * ``extra_json`` is a JSON-encoded string (NOT a dict) — the writer
+        serializes once at the boundary so the SQL layer holds plain TEXT.
+        Shape of the payload is documented in ``benchmark/scorer_db.py``.
+      * ``computed_at`` is UTC ISO-8601 with ``Z`` suffix.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    cohort_key: str
+    task_type: str
+    model: str
+    prompt_version: str
+    scorer_model: str
+    evaluator_role: EvaluatorRoleLiteral
+    metric_name: str
+    metric_value: float
+    sample_count: int
+    outcome: ScoreOutcomeLiteral
+    extra_json: str | None = None
+    computed_at: str
+
+
 __all__ = [
     "BenchmarkCell",
     "BenchmarkRunRow",
+    "BenchmarkScoreRow",
+    "EvaluatorRoleLiteral",
     "OutcomeLiteral",
+    "ScoreOutcomeLiteral",
     "StatusLiteral",
 ]
