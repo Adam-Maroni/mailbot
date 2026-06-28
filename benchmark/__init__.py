@@ -59,6 +59,13 @@ from benchmark.scorer_db import (
     read_run_scores,
     record_benchmark_score,
 )
+from benchmark.stats import (
+    ParetoPoint,
+    bootstrap_ci,
+    compute_pareto_frontier,
+    wilson_score_interval,
+)
+from benchmark.verdict import VerdictLiteral, compute_verdict
 
 __all__ = [
     "BenchmarkCell",
@@ -66,9 +73,14 @@ __all__ = [
     "BenchmarkScoreRow",
     "EvaluatorRoleLiteral",
     "OutcomeLiteral",
+    "ParetoPoint",
     "ScoreOutcomeLiteral",
     "StatusLiteral",
+    "VerdictLiteral",
+    "bootstrap_ci",
     "compute_cohort_key",
+    "compute_pareto_frontier",
+    "compute_verdict",
     "encode_extra_json",
     "krippendorff_alpha_ordinal",
     "read_completed_cells",
@@ -78,4 +90,5 @@ __all__ = [
     "record_benchmark_run",
     "record_benchmark_score",
     "render_report",
+    "wilson_score_interval",
 ]

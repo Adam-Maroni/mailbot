@@ -2,6 +2,51 @@
 
 This file collects flags raised by `autonomous-story-run` runs. One block per invocation.
 
+## Story 9-9 — 2026-06-28
+
+**Headline:** Full report renderer shipped (upgrade of Story 9-8 stub). Wilson CIs (pure-numpy, no scipy) + bootstrap CIs (deterministic seed=42) + Pareto frontier (strict-weak dominance) + DEMOTE/PROMOTE verdict engine (5-value VerdictLiteral closed-set + Epic 7 thresholds + copy-pasteable `policy.yaml` snippets) + n≥15 sample-size gate + cohort_key primary slice (CR-F1 per-cohort sub-subsections) + Scorer calibration section (α verdict thresholds, ELIDED when no secondary rows) + Cross-cohort drift comparison (ELIDED when single cohort_key). CLI: `python -m benchmark.report --run-id <id> --db-path <path> --output-dir <path> [--thresholds-override <json>]` with exit codes 0/1/2.
+
+**Dev model:** claude-opus-4-7[1m]
+**Review model:** claude-sonnet-4-6
+
+**Review rounds run:** 1. Issues found: 6. Issues applied: 5 (CR-F1 HIGH + CR-F2 + CR-F3 + CR-F4 + CR-F5). Issues deferred: 1 (CR-F6 LOW Wilson-on-f1_macro, addressed via code-doc comment per pre-review §3 [S3] disposition). Actionable Patch apply-rate: **100%** (5/5).
+
+**Aggregated [deferred:*] items:**
+
+- CR-F6 LOW: Wilson CI applied to `f1_macro` (and `f1_extraction_*` derived metrics) is statistically approximate, not rigorous — these metrics are not binomial proportions. Mitigation in code: `_WILSON_METRICS` inline comment distinguishes proper-proportion members (accuracy / precision_macro / recall_macro / ok_rate) from derived-metric members; documents the future-story carry-forward to replace derived-metric CIs with bootstrap CIs. Source-code-resident not a separate ticket.
+- Pre-review §3 [S6]: `_z_for_confidence` in `benchmark/stats.py` (Acklam approximation for non-95% z-score) is dead code — only the 95% path is exercised. Defensive math kept for forward-compat; if a future story exercises non-95% confidence levels, add tests then.
+- Pre-review §3 [S1]: deferred-import of `_default_per_task_thresholds` inside `render_report` is a cosmetic pattern; could be hoisted to module-level. Acceptable as-is.
+
+**Gate verdicts:**
+
+| Gate | Verdict | Notes |
+|---|---|---|
+| 2.3.5 (pre-review self-audit) | PASS | 5 sections + 11 Posture Audit; 7 self-caught findings (2 ESCALATE TO REVIEWER → both caught by CR as CR-F1 + partial F4) |
+| 2.4.4 (Dev Agent Record completeness) | PASS | Agent Model Used + Debug Log + Completion Notes List + File List + Change Log all filled |
+| 2.4.5 (UI scope-cut) | N/A | MailBot has no graphical frontend per PORTING.md; Discord/CLI surfaces only |
+| 2.4.6 (File-List-vs-git) | PASS | All 11 listed files exist on disk (verified via `ls -la`); staging at Phase 2.6 covers all |
+| 2.4.7 (Middleware-Real-Bootstrap / Router-Real) | N/A | Pure-reader story; no new state-changing surfaces; renderer is READ-ONLY through `read_run_scores` + `read_run_runs` |
+| 2.4.8 (Verbose-row truncation) | PASS | sprint-status.yaml row truncated to 1-sentence headline + pointer to story Completion Notes |
+| 2.5 (dev-env verification) | N/A | No `<dev-env-skill>` configured for MailBot |
+
+**Permission-prompt summary:**
+
+- No permission log hook configured (`<permission-log>` not set up for this project).
+- Anecdotally: zero permission prompts during the entire run — the settings.json envelope covered all command shapes used (rtk git, .venv/Scripts/python.exe, ruff, mypy, ls, mkdir, etc.).
+
+**Source line / test counts:**
+
+- Production LOC added: ~810 (benchmark/stats.py ~213 + benchmark/verdict.py ~128 + benchmark/report.py ~470 net new)
+- Test LOC added: ~750 across 60 tests
+- mypy source-file delta: +2 (146 vs Story 9-8 baseline 144 — `benchmark/stats.py` + `benchmark/verdict.py`)
+- pytest delta: +60 net tests (1601 vs Story 9-8 baseline 1541, 2 skipped + 3 deselected unchanged)
+
+**Files staged this run:** 16 (the 11 from File List + sprint-status.yaml + story-run-flags.md + 3 UAT-evidence files in `_bmad-output/implementation-artifacts/9-9-uat-evidence/`).
+
+**Phase 3.5 manual-verification verdict:** PASS — 11/11 ACs verified live via agent-side walk script `_bmad-output/implementation-artifacts/9-9-uat-evidence/walk_script.py` exercising both single-cohort and multi-cohort surfaces end-to-end (in-process `render_report` + subprocess `python -m benchmark.report` for CLI exit codes). 18/18 sub-checkpoints PASS (CP-1 section ordering + CP-2 path-traversal guard + CP-3 INSUFFICIENT DATA literal in cell+verdict + CP-4 Pareto INSUFFICIENT POINTS + CP-5 Wilson CI rendering + CP-6 latency/cost bootstrap CI + outcome≠ok excluded count + CP-7 Pareto on_frontier yes/no values + CP-8 DEMOTE/PROMOTE closed-set + yaml snippet + CP-9a single-cohort omits #### cohort_key + drift + CP-9b multi-cohort per-cohort sub-subsections + drift + post-CR-F5 disclaimer + CP-10a Scorer calibration uncertain α=0.72 + per-anchor breakdown + CP-10b Scorer calibration absent when no secondary rows + CP-11a/b/c/d/e/f CLI exit codes 0/1/2 + stdout/stderr semantics). Rendered single-cohort + multi-cohort report bodies persisted alongside walk_script.py for archaeology. Zero findings; no follow-up tickets.
+
+---
+
 ## Story 6-14 — 2026-06-05
 
 **Headline:** F21 closure shipped — `summary_short` SYSTEM patched with JSON-output instruction (prompt-side drift fix; the lone ingest-prompt missing the canonical "Reply with valid JSON" instruction every sibling carried). 4 regression tests added (3 `_FakeAdapter` router-level + 1 `httpx.MockTransport` → real `AnthropicAdapter` end-to-end for AC-3 literal). MANDATORY-CR pass with 3/5 patches applied + 2 defers. All 4 gates green at 1086+2+2-deselected (+4 net vs Story 6-13 baseline 1082).
