@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/adam-maroni/mailbot/evals/schemas/anchor_baseline.schema.json",
+  "title": "AnchorBaseline",
+  "description": "Story 9-11: cross-evaluator anchor stability baseline. Persisted at evals/anchor_baselines/v{N}.json by benchmark.anchor_stability_audit. Re-used by benchmark.anchor_baselines.compare_against_current for Epic-10+ drift detection.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "baseline_date",
+    "primary_evaluator",
+    "secondary_evaluator",
+    "anchors_version",
+    "per_anchor_scores",
+    "krippendorff_alpha",
+    "verdict"
+  ],
+  "properties": {
+    "baseline_date": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      "description": "ISO-8601 date (YYYY-MM-DD) the audit was run."
+    },
+    "primary_evaluator": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Model id used for the primary evaluator dispatch (typically Opus)."
+    },
+    "secondary_evaluator": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Model id used for the cross-evaluator dispatch (typically Sonnet or DeepSeek-V3 via OpenRouter)."
+    },
+    "anchors_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Anchors corpus version (mirrors evals/anchors/VERSION file content)."
+    },
+    "per_anchor_scores": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Per-anchor primary + secondary scores. Sorted by anchor_id for diff-friendliness.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["anchor_id", "task", "primary_score", "secondary_score", "delta"],
+        "properties": {
+          "anchor_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "task": {
+            "type": "string",
+            "enum": ["summary_short", "draft_reply"]
+          },
+          "primary_score": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
+          "secondary_score": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
+          "delta": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4,
+            "description": "abs(primary_score - secondary_score); always non-negative for diff-friendliness."
+          }
+        }
+      }
+    },
+    "krippendorff_alpha": {
+      "type": "number",
+      "minimum": -1.0,
+      "maximum": 1.0,
+      "description": "Ordinal-δ² Krippendorff α across primary + secondary on the 1-5 scale."
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["trusted", "uncertain", "untrusted"],
+      "description": "α ≥ 0.8 → trusted; 0.6 ≤ α < 0.8 → uncertain; α < 0.6 → untrusted (BLOCKS Epic 9 done-flip)."
+    }
+  }
+}

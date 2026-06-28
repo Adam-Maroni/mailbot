@@ -87,3 +87,11 @@ evals/anchors/*.jsonl
 # raw_body during labeling, and prefill-output captures may carry real model
 # responses). Worksheets are scratch state; no .example carve-out.
 evals/_labeling/
+
+# Story 9-11: evals/anchor_baselines/*.json carry per-anchor model scores
+# produced by the cross-evaluator audit. These are operator-state (frozen
+# baselines + failed-calibration artifacts). The .gitkeep + .example
+# siblings ARE tracked so the directory exists and a discoverable template
+# lives in-tree.
+evals/anchor_baselines/*.json
+!evals/anchor_baselines/*.example

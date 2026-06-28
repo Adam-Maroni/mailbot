@@ -37,6 +37,14 @@ Story 9-7:
 from __future__ import annotations
 
 from benchmark.agreement import krippendorff_alpha_ordinal
+from benchmark.anchor_baselines import (
+    BaselineComparison,
+    BaselineSnapshot,
+    PerAnchorDiff,
+    PerAnchorScore,
+    compare_against_current,
+    load_baseline,
+)
 from benchmark.cohort import compute_cohort_key
 from benchmark.db import (
     read_completed_cells,
@@ -68,21 +76,27 @@ from benchmark.stats import (
 from benchmark.verdict import VerdictLiteral, compute_verdict
 
 __all__ = [
+    "BaselineComparison",
+    "BaselineSnapshot",
     "BenchmarkCell",
     "BenchmarkRunRow",
     "BenchmarkScoreRow",
     "EvaluatorRoleLiteral",
     "OutcomeLiteral",
     "ParetoPoint",
+    "PerAnchorDiff",
+    "PerAnchorScore",
     "ScoreOutcomeLiteral",
     "StatusLiteral",
     "VerdictLiteral",
     "bootstrap_ci",
+    "compare_against_current",
     "compute_cohort_key",
     "compute_pareto_frontier",
     "compute_verdict",
     "encode_extra_json",
     "krippendorff_alpha_ordinal",
+    "load_baseline",
     "read_completed_cells",
     "read_run_grid",
     "read_run_runs",

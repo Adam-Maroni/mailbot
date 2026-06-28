@@ -64,6 +64,13 @@ _OS_ENVIRON_ALLOW = frozenset(
         # BENCHMARK_COST_MOCK=1 as the env-var carrier for Story 9-8 — same
         # CLI shape and contract as the runner above.
         "benchmark/scorer.py",
+        # Story 9-11: benchmark/anchor_stability_audit.py is a CLI entry
+        # (python -m benchmark.anchor_stability_audit) that legitimately
+        # reads MAILBOT_DB_PATH at startup AND sets BENCHMARK_COST_MOCK=1
+        # for the adapter layer — same CLI contract as the runner + scorer
+        # above. Produces no DB rows (writes baseline JSON file only) so
+        # no new _*_INSERT_ALLOW allowlist is needed.
+        "benchmark/anchor_stability_audit.py",
     }
 )
 _RAW_SQL_ALLOW = frozenset(

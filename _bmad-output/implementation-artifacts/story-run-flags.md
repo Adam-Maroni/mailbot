@@ -2,6 +2,62 @@
 
 This file collects flags raised by `autonomous-story-run` runs. One block per invocation.
 
+## Story 9-11 — 2026-06-28 16:55
+
+**Headline:** Anchor stability audit one-shot CLI (`python -m benchmark.anchor_stability_audit`) + baseline persistence (`evals/anchor_baselines/v1.json` + JSON Schema draft 2020-12) + drift helper (`benchmark.compare_against_current`) shipped. Krippendorff α gates Epic 9 done-flip clause #9 (α<0.6 → blocks until reconciliation OR Adam retro-signs the OR-branch).
+
+**Dev model:** claude-opus-4-7
+**Review model:** claude-sonnet-4-6
+
+**Review rounds + applied rate:** 1 round. 5 findings: 4 Patches (CR-F1 HIGH zero-pairs guard / CR-F2 MEDIUM docstring / CR-F3 MEDIUM cost-gate exit 1 / CR-F4 LOW real cost-gate test) + 1 Defer (CR-F5 LOW α=-1.0 sentinel ambiguity → Epic 10+ schema v2). 4/4 actionable Patches applied = **100% applied-rate** (well above CR cadence v2 ≥70% threshold).
+
+**Deferred items aggregated from Completion Notes:**
+
+- CR-F5 LOW: α=-1.0 sentinel (computation error) indistinguishable from legitimate "perfect systematic disagreement" (α=-1.0) in persisted baseline file — no `outcome`/`audit_error` discriminator field. Carry-forward to Epic 10+ schema v2.
+
+**Gate verdicts:**
+
+- 2.3.5 (pre-review self-audit) → PASS (5 sections + 11 Posture Audit sub-sections; 8 self-caught findings all ACCEPT-WITH-RATIONALE)
+- 2.4.4 (Dev Agent Record completeness) → PASS (Agent Model + 11 Completion Notes + 11-entry File List + Change Log)
+- 2.4.5 (UI-scope) → N/A — no graphical frontend
+- 2.4.6 (File-List-vs-git) → PASS (all 12 staged files match File List entries)
+- 2.4.7 (Middleware-Real-Bootstrap → Router-real reframing) → PASS (CLI dispatches through real `ask_router` with FakeAdapter at adapter boundary; Router precondition + sensitivity + lane semaphore + Story 2-7 response cache + audit write all exercised end-to-end per Rule I)
+- 2.4.8 (Verbose-row truncation) → PASS (sprint-status row truncated to 1-2 sentence headline + pointer to story Completion Notes)
+
+**Step 2.5 dev-env verification:** N/A — no dev-env-skill configured for MailBot CLI surface (no graphical frontend; new module is invokable as `python -m benchmark.anchor_stability_audit ...` and was exercised end-to-end through 18 unit tests + 9 integration tests).
+
+**4 quality gates at done-flip:** ruff exit 0 / mypy --strict 148 source files (+2 vs Story 9-9 baseline 146: `benchmark/anchor_baselines.py` + `benchmark/anchor_stability_audit.py`) / boundary check exit 0 / pytest 1628 passed + 2 skipped + 3 deselected (+27 net tests vs Story 9-9 close baseline 1601+2+3: 18 unit + 9 integration).
+
+**Permission-prompt summary:** No permission log configured — prompt count unknown. Subjective observation: zero prompts during the run (every command shape was within the existing `.claude/settings.json` envelope).
+
+## Story 9-11 Manual Verification — 2026-06-28 17:30
+
+**Verdict:** PASS WITH FINDINGS (1 finding caught + fixed in-walk)
+
+**11/11 ACs verified live** against real production anchors (40 anchors: 20 summary_short + 20 draft_reply) via FakeAdapter at the adapter boundary + full Router stack (precondition + sensitivity + lane semaphore + Story 2-7 response cache + audit write):
+
+- **AC-1 PASS** — `python -m benchmark.anchor_stability_audit --help` enumerates all 9 flags; happy-path run dispatched exactly 40 primary + 40 secondary adapter calls (20 anchors × 2 tasks × 2 evaluators).
+- **AC-2 PASS** — `audit._run_anchor_calibration is subjective._run_anchor_calibration: True` (identity check); `_dispatch_eval` source contains all 6 required `ask_router` contract elements (task_type=anchor_calibrated_eval / force_model / force=True / caller_origin=benchmark-scorer / email_id=None).
+- **AC-3 PASS** — End-to-end run computed `alpha=1.0000` on identical-scoring fixtures; verdict trusted matched `_classify_alpha` lookup.
+- **AC-4 PASS** — Baseline payload validated against `evals/schemas/anchor_baseline.schema.json` via `jsonschema.validate`; all 7 required fields present + 40 sorted-by-id per_anchor_scores + anchors_version=v1.
+- **AC-5 PASS** — `_classify_alpha(1.0) == "trusted"` matched persisted verdict; parametrized unit tests verified all 8 boundary rows (1.0/0.8/0.7999/0.6/0.5999/0.0/-0.5/-1.0).
+- **AC-6 PASS** — Untrusted walk (primary=5, secondary=1 → alpha=-0.975) exited 2, wrote FAILED-CALIBRATION sibling, did NOT write canonical baseline, stderr emitted per-anchor disagreement table sorted by abs(delta) desc.
+- **AC-7 PASS** — 2nd run with identical input issued 0 NEW adapter calls (cumulative count unchanged at 40 primary + 40 secondary); Story 2-7 response cache (TTL 86400s on anchor_calibrated_eval) honored end-to-end.
+- **AC-8 PASS** — `from benchmark import compare_against_current` succeeds; zero-drift round-trip on freshly-written baseline returns `drift_detected=False`, `alpha_delta=0.0`, `verdict_changed=False`.
+- **AC-9 PASS** — `per_anchor_scores` list IS sorted ascending by anchor_id in the persisted file (verified: `ids == sorted(ids)`).
+- **AC-10 PASS** — `benchmark/anchor_stability_audit.py` IS in `_OS_ENVIRON_ALLOW`; source contains no `INSERT INTO benchmark_runs` / `INSERT INTO benchmark_scores` / `INSERT OR REPLACE INTO benchmark` strings (audit writes JSON file only); `python scripts/check_boundaries.py` exits 0.
+- **AC-11 PASS** — Pre-review artifact has all 5 mandatory sections; story file Review Findings section has 4 [Patch] + 1 [Defer]; all 4 CR-F1..CR-F4 marked `[x]` (applied); applied-rate 4/4 = 100% (well above CR cadence v2 ≥70%).
+
+**Walk-discovered defect (fixed in-walk):**
+
+- **WALK-F1 LOW (Windows operator-UX)** — `python -m benchmark.anchor_stability_audit --help` crashed with `UnicodeEncodeError: 'charmap' codec can't encode character 'α'` on Windows cp1252 console because argparse `description=` + `help=` strings contained the Greek `α` character. Lurking risk: `print(f"VERDICT=... α=...")` paths would have crashed the same way on the canonical-success + zero-pairs + untrusted exit paths if Adam runs the CLI in a plain `cmd.exe` / PowerShell console without `PYTHONIOENCODING=utf-8`. Fix: replaced `α` → `alpha` in 6 user-facing strings (argparse description + 1 help= + 1 SystemExit + 3 print() calls). Source-code comments + module docstring keep `α` (never reach console). Re-verified `--help` clean on raw cp1252; 27 targeted tests + full 1628-test suite re-green; no regressions. Story-file File List unchanged (single-file edit to already-listed file).
+
+**Final 4 quality gates after walk-fix:** ruff exit 0 / mypy --strict 148 source files (+2 vs Story 9-9 baseline) / boundary check exit 0 / pytest 1628 passed + 2 skipped + 3 deselected (+27 net tests vs Story 9-9 close baseline 1601+2+3).
+
+**Manual verification artifact:** verbose walk transcripts not persisted (commands run inline via Bash tool; output above captures all gate verdicts).
+
+**Recommendation:** Story 9-11 stays `done`. The walk-fix is shipped on top. No follow-up story needed for WALK-F1 — single-character rename, fully contained. Epic 9 done-flip path now ready for Adam to invoke the audit against real Anthropic API to produce the production `evals/anchor_baselines/v1.json` (clauses 9 + 10).
+
 ## Story 9-9 — 2026-06-28
 
 **Headline:** Full report renderer shipped (upgrade of Story 9-8 stub). Wilson CIs (pure-numpy, no scipy) + bootstrap CIs (deterministic seed=42) + Pareto frontier (strict-weak dominance) + DEMOTE/PROMOTE verdict engine (5-value VerdictLiteral closed-set + Epic 7 thresholds + copy-pasteable `policy.yaml` snippets) + n≥15 sample-size gate + cohort_key primary slice (CR-F1 per-cohort sub-subsections) + Scorer calibration section (α verdict thresholds, ELIDED when no secondary rows) + Cross-cohort drift comparison (ELIDED when single cohort_key). CLI: `python -m benchmark.report --run-id <id> --db-path <path> --output-dir <path> [--thresholds-override <json>]` with exit codes 0/1/2.

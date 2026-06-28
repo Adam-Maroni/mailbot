@@ -1,0 +1,2 @@
+# Track the directory; gitignore the *.json baselines themselves.
+# See .gitignore for the operator-state carve-out.
