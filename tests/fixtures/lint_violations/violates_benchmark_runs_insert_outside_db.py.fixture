@@ -1,0 +1,11 @@
+"""Fixture: contains `INSERT INTO benchmark_runs` outside the benchmark/db.py allowlist.
+
+Must trigger Story 9-6 AC-2 boundary check. Only ``benchmark/db.py`` is allowed
+to emit this literal — any other file fails the check with a dedicated message
+pointing at the benchmark_runs writer-monopoly boundary.
+"""
+
+BENCHMARK_RUNS_INSERT_ROGUE = (
+    "INSERT INTO benchmark_runs (run_id, corpus_item_id, task_type, model, prompt_version) "
+    "VALUES (?, ?, ?, ?, ?)"
+)

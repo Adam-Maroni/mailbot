@@ -182,6 +182,15 @@ def test_utcnow_triggers_dtz003(tmp_path: Path) -> None:
             "mailbot_api/verbs",
             "indirect bypass",
         ),
+        # Story 9-6 AC-2 / AC-10: `INSERT INTO benchmark_runs` outside
+        # `benchmark/db.py` must fail with a dedicated message pointing at
+        # the benchmark_runs writer-monopoly boundary. Mirrors the Story 2-1
+        # `INSERT INTO router_calls` enforcement pattern.
+        (
+            "violates_benchmark_runs_insert_outside_db.py.fixture",
+            "benchmark",
+            "INSERT INTO benchmark_runs",
+        ),
     ],
 )
 def test_boundary_violations_caught_by_check_boundaries(
@@ -210,6 +219,23 @@ def test_router_calls_insert_in_allowlisted_audit_path_passes(tmp_path: Path) ->
     code, output = _run_boundary_check_on(tmp_path)
     assert code == 0, (
         f"Expected boundary check to pass when fixture is at the allowlisted path. Got exit={code}, output: {output}"
+    )
+
+
+def test_benchmark_runs_insert_in_allowlisted_db_path_passes(tmp_path: Path) -> None:
+    """Story 9-6 AC-2 positive-pass coverage: the same fixture content placed
+    at the allowlisted ``benchmark/db.py`` path must produce a clean check
+    (exit 0). Mirrors the Story 2-1 router_calls positive-pass test."""
+    target_dir = tmp_path / "benchmark"
+    _copy_fixture(
+        "violates_benchmark_runs_insert_outside_db.py.fixture",
+        target_dir,
+        "db.py",  # the allowlisted filename
+    )
+    code, output = _run_boundary_check_on(tmp_path)
+    assert code == 0, (
+        f"Expected boundary check to pass when benchmark_runs fixture is at "
+        f"the allowlisted path. Got exit={code}, output: {output}"
     )
 
 

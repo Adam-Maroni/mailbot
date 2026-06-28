@@ -145,3 +145,149 @@ When Epic 9 eventually retrospectives:
 No `<permission-log>` hook is installed on this project (PORTING.md confirms). Mid-loop permission-prompt count is therefore unknown by automated count. From qualitative observation during Run 1: zero permission prompts encountered during the entire Story 9-1 sequence (all Bash commands stayed inside `.claude/settings.json` envelope — pytest, ruff, mypy, git ls-files, git add, git status, python via venv path, rtk-prefixed commands per global RTK Golden Rule).
 
 **Envelope health: clean for the surfaces touched in this run.**
+
+---
+
+## Run 3 — 2026-06-27 — benchmark tranche kickoff (`/autonomous-epic-run epic 9`)
+
+**Trigger:** Adam invoked `/autonomous-epic-run epic 9` 2026-06-27. Phase 0.4 surfaced 4 of 5 remaining stories blocked on A5 (cohort_key Adam-decision) + A6 (~$11-14 real-Anthropic spend). Adam picked option (a) "authorize both and proceed."
+
+### A5 authorization — cohort_key 4-tuple locked
+
+**Adam-decision 2026-06-27:** lock cohort_key to the epics.md § Epic 9 Detail spec line 3072 default 4-tuple:
+
+```text
+cohort_key = (prompt_v, scorer_model, anchors_v, router_policy_v)
+```
+
+No amendment. This becomes the migration's frozen column shape for Story 9-6. Changing it later requires a migration revision.
+
+### A6 authorization — real-Anthropic spend cap ($14 hard ceiling)
+
+**Adam-decision 2026-06-27:** authorize $14 total spend across the benchmark tranche, split per-line-item:
+
+| Line item | Story | Estimate |
+| --- | --- | --- |
+| Cost-cap unit test | 9-6 | $0 |
+| Haiku-vs-Opus on `draft_reply` | 9-7 | ~$5 |
+| Cross-evaluator on 20 anchors (Krippendorff alpha) | 9-7 | ~$1-3 |
+| Full 100-item corpus walk on production routing | 9-8 | ~$4-5 |
+| Anchor-drift baseline persistence | 9-11 | ~$1 |
+
+**Enforcement (Adam-decision 2026-06-27 — Q1=a):** per-line-item halt-and-surface. When a story's cumulative real-Anthropic spend approaches its line item, the next dispatch that would cross the line halts the run and surfaces the spend snapshot to Adam for explicit Y/N continuation. Never silently exceed a line item.
+
+### Q2 — Krippendorff α fallback (Adam-decision 2026-06-27)
+
+**Adam-decision 2026-06-27 — Q2=a:** if the cross-evaluator agreement coefficient comes back below the done-flip clause 9 threshold (α < 0.6), halt the run and surface the α value to Adam. Do NOT auto-file a stub recalibration story; do NOT treat α as advisory. The benchmark numbers downstream of the agreement gate are unreliable if α < 0.6, and the gate exists precisely to force the disagreement into Adam's attention before any DEMOTE/PROMOTE verdict ships.
+
+### Story 9-5 LLM-recommended corpus propagation (acknowledged)
+
+The benchmark tranche consumes the Story 9-5 corpus built under the 2026-06-27 AC-15 amendment (LLM-recommended labels, not Adam-authored). Per the tranche retro § "Story 9-5 AC-15 amendment 2026-06-27": Story 9-7 measures pipeline-LLM-vs-labeler-LLM agreement, not pipeline-LLM-vs-Adam-judgment. Story 9-9 DEMOTE/PROMOTE verdicts will reflect LLM consensus. Re-anchoring procedure documented in `docs/eval-corpus.md § 9`.
+
+### Done-flip gate (11 clauses) — reactivated
+
+All 11 clauses from sprint-status.yaml lines 232-244 fire at end of run:
+
+1. Stories 9-1..9-11 status=done — pending Run 3
+2. 9-8 E2E canary produces valid `report.json` — pending 9-8
+3. `/model` one-shot live-verified (audit shows `slash_command:one_shot:adam`) — deferred to Phase 3.5
+4. `/model` persistent live-verified — deferred to Phase 3.5
+5. Sensitivity gate regression (`/model qwen --once` on confidential email refused) — deferred to Phase 3.5
+6. Benchmark cost-cap test passes — covered by 9-6 unit test
+7. Full 100-item corpus live walk — A6 authorized
+8. Haiku-vs-Opus on `draft_reply` — A6 authorized
+9. Krippendorff α reported (BLOCKS if α < 0.6) — Q2 enforcement above
+10. Anchor-drift baseline persisted to `evals/anchor_baselines/v1.json` — covered by 9-11
+11. `policy.yaml` v0 → v1 bump (benchmark-driven routing change OR Adam-signed retro entry) — if no routing change warranted, surface for Adam retro-entry sign-off; do NOT auto-bump
+
+### Models
+
+- Dev: `claude-opus-4-7` (this session)
+- Reviewer: `claude-sonnet-4-6` per dev-vs-review different-model invariant
+
+### `#yolo` mode
+
+Activated for the per-story sub-workflows (create-story, dev-story, code-review) during the main loop. Deactivated at Phase 3 close per Phase 1.5 contract. Does NOT propagate to the retrospective or to Phase 3.5 manual verification.
+
+### Phase 0.2 orphan-scan mitigation (Adam-decision 2026-06-27)
+
+**Found at Phase 0.2:** Epic 7's `7-5` / `7-6` / `7-7` are `backlog` and sit at sprint-status.yaml lines 207-209 — lexically before Epic 9's `9-6` / `9-7` / `9-8` / `9-9` / `9-11` (lines 251-256). `bmad:bmm:workflows:create-story` with no arg scans top-to-bottom and would pick `7-5` instead of `9-6`.
+
+**Why technically a false positive:** Epic 7 is sequenced AFTER Epic 9 per the 2026-06-07 party-mode roundtable scope cleave (sprint-status.yaml lines 197-205). The 7-5/7-6/7-7 backlog state is correct — they're waiting on Epic 9 outputs.
+
+**Mitigation (Adam-decision 2026-06-27, option a):** pass explicit `story_path` to every `create-story` invocation in the Run 3 loop. Order: `9-6` → `9-7` → `9-8` → `9-9` → `9-11`. Sidesteps the top-down scan; no sprint-status reordering needed.
+
+**Carry-forward for Epic 9 full retro:** Epic-7-dependent-block lexical-vs-architectural mismatch is a process learning. Consider either (i) reordering sprint-status.yaml when an epic is scope-cleaved to depend on a later epic, or (ii) extending Phase 0.2 spec to recognize the architectural-sequencing carve-out shape directly.
+
+### Run 3 scope-cleave (Adam-decision 2026-06-27, options a then x)
+
+**Mid-Phase-2 scope-cleave** before entering the create-story loop. Original Run 3 scope: 5 stories (9-6, 9-7, 9-8, 9-9, 9-11). Adam-decision sequence:
+
+1. **First cleave (option a):** 9-6 + 9-8 + 9-9 this run; 9-7 + 9-11 deferred. Reasoning: 9-7 + 9-11 are research-shaped (anchor calibration, cross-evaluator alpha verdict) with real-Anthropic spend; benefit from focused single-story passes.
+2. **Second cleave (option x):** further narrowed to **9-6 only** this run; 9-8 + 9-9 also deferred. Reasoning: 9-6 alone is a heavy MANDATORY-CR story (migration 024 + new benchmark/ package + cost gate + cohort_key + ~500-800 LOC + +20-40 net tests). Combined with Phase 0 token-spend on Adam-decision surfaces, the residual context budget cannot reliably carry 3 heavy stories. Single-story focused passes for 9-8 + 9-9 preserve coherence.
+
+**Final Run 3 scope: 9-6 only.**
+
+| Story | This run? | Reason |
+| --- | --- | --- |
+| 9-6 (runner + migration + cost gate + cohort_key) | Yes | Mechanical infrastructure; $0 dev-time spend; no Anthropic dispatch |
+| 9-7 (scorer + cross-evaluator Krippendorff alpha) | **Deferred** to dedicated /autonomous-story-run | Research-shaped; real-spend (~$5 Haiku-vs-Opus + ~$1-3 cross-evaluator) |
+| 9-8 (E2E canary corpus → runner → scorer → report) | **Deferred** to dedicated /autonomous-story-run | Pairs naturally with 9-7 real-Anthropic dispatch for httpx.MockTransport fixture recording |
+| 9-9 (report renderer + Pareto + DEMOTE/PROMOTE + CIs + sample-size gate) | **Deferred** to dedicated /autonomous-story-run | Pure compute; cleanest with 9-7 + 9-8 outputs already on disk |
+| 9-11 (anchor stability audit + alpha verdict) | **Deferred** to dedicated /autonomous-story-run | One-shot research-shaped measurement; alpha verdict can halt entire run |
+
+**Epic 9 done-flip:** stays gated after this run on Stories 9-7 + 9-8 + 9-9 + 9-11 plus all 11 clauses of the done-flip gate (sprint-status lines 232-244). Epic 9 status remains `in-progress` after Run 3 closes.
+
+**Reactivation guidance:** /autonomous-story-run 9-7 → /autonomous-story-run 9-8 → /autonomous-story-run 9-9 → /autonomous-story-run 9-11 → Adam invokes full Epic 9 retrospective.
+
+### Run 3 close (2026-06-28)
+
+**Final scope shipped:** Story 9-6 only (per scope-cleave option x above).
+
+#### Per-story summary table
+
+| Story | Status | Tests delta | Review rounds | Issues found | Issues applied | Applied-rate | CR cadence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 9-6 | done | +20 net (1450 → 1470) | 1 | 7 (6 Patch + 1 Defer) | 6 actionable Patches | 100% (6/6) | MANDATORY-CR (sonnet-4-6, §5.12 criterion 1 + 6 fire) |
+
+#### Aggregated `[deferred:*]` items
+
+- **CR-F7 LOW Defer (Story 9-6):** AC-9 Test 6 (SIGINT simulation) not implemented — Windows SIGINT-in-asyncio brittleness; revisit on Linux CI follow-up. Manual code review of `_run_dispatch_loop` covers the path. Carry-forward to next Epic 9 full retro.
+- **Pre-review §3 MEDIUM ACCEPT WITH RATIONALE (Story 9-6):** `read_completed_cells` set-membership loses status information — `--resume` skips ANY-status cells, no flag to re-run aborted ones. Operator-recoverable via manual SQL. Carry-forward to deferred-work.md for a future "re-run aborted cells" flag.
+- **Pre-review §3 MEDIUM ACCEPT WITH RATIONALE (Story 9-6):** SIGINT race window between `record_benchmark_run` and next iteration. Worst case: one cell marked `completed` instead of `interrupted`. Doesn't break resume semantics. No action.
+
+#### Biggest CR catch this run
+
+**CR-F1 HIGH** caught a dead test: the dev pass's Test 4 (`test_runner_aborts_on_monthly_budget_exceeded`) used a non-existent `BudgetGuard.month_spent_usd` attribute (correct name is `this_month_spend_usd`) AND mapped to the never-emitted `MONTHLY_BUDGET_EXCEEDED` error code. The conditional `if exit_code == 2:` masked the failure. The dev-pass's pre-review §1 verdict was MATCH, missing the dead-test pattern. The CR-reviewer's parallel-adversarial-layer caught it on first pass. Patch consolidated CR-F1+F4 into a single real test exercising the production `DEGRADED_MODE_BLOCKED` path via `_degraded_mode_active=True` + `force_model="claude-opus-4-7"`.
+
+#### Architectural-impossibility discharges (precedent chain — none new this run)
+
+Story 9-6 introduced no architectural-impossibility discharges. Precedent chain remains at 4 stories (9-3 OQ-2 + 9-4 OQ-1 + 9-5 AC-15 amendment + 9-10 OQ-1 Path γ).
+
+#### Phase 3.5 manual verification gate
+
+**DOES NOT FIRE this run.** Epic 9 stays `in-progress` per the Run 3 scope-cleave (9-7 + 9-8 + 9-9 + 9-11 deferred). Phase 3.5 is end-of-epic-scoped per autonomous-epic-run cadence, not end-of-tranche-scoped. Will fire on the eventual Epic 9 done-flip after Stories 9-7 + 9-8 + 9-9 + 9-11 ship.
+
+#### UX advisory
+
+**N/A** — project has no graphical frontend per PORTING.md.
+
+#### Self-grading scorecard
+
+- ☑ **A1** — UI scope check passed (N/A per PORTING.md, applied uniformly)
+- ☑ **A2** — end-of-epic dev-env verification N/A per PORTING.md
+- ☑ **A4** — this `<flags-file>` (epic-9-run-flags.md) updated with all `[deferred:*]` items + per-story summary
+- ☑ **A5** — issues-found-vs-applied tracked: Story 9-6 6/6 actionable Patches applied = 100% (well above ≥70% threshold)
+- ☑ **A7** — UX advisory N/A per PORTING.md
+- ☑ **B1** — File-List-vs-git gate (Step 2.4.6) PASSED after staging (17 files; story-scoped; no scope creep beyond pyproject.toml self-caught in §2)
+- ☐ **B2** — Phase 3.5 manual-verification gate — **DOES NOT FIRE** (Epic 9 stays in-progress)
+
+#### Recommendations for next retrospective (Epic 9 full retro)
+
+When the benchmark tranche (9-7 + 9-8 + 9-9 + 9-11) ships and Epic 9 reaches done-flip, the full Epic 9 retro should consolidate this Run 3 with the benchmark-tranche findings. Items to consolidate:
+
+1. **AC-7 amendment pattern** (Story 9-6 `email_id=None` + `force=True`) — both are amendments discovered at integration-test time, not at design time. Worth documenting as a recurring pattern for benchmark-shaped stories that dispatch against synthetic data vs production data.
+2. **CR-F1 dead-test catch** — the pattern where a test passes because the test asserts on a typo'd attribute path that doesn't trigger the actual code path. Suggests a pre-review §3 self-audit check: "for every test asserting on a guard's mutated state, paste the attribute path's `Grep` verification."
+3. **CR-F2 dormant-code-path pattern** — `MONTHLY_BUDGET_EXCEEDED` defined in errors.py but never emitted by production router. Worth a future tooling story: lint check for unused `ErrorCode` enum members against `grep "ErrorCode\.X"` in production code.
+4. **Per-line-item halt-and-surface (Q1=a)** — not exercised this run (Story 9-6 line-item budget = $0). The mechanism will first fire in Story 9-7's Haiku-vs-Opus walk; should evaluate effectiveness then.
+5. **Krippendorff α halt-and-surface (Q2=a)** — won't fire until Story 9-11. Document evaluation criteria upfront.

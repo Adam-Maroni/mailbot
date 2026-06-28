@@ -50,7 +50,17 @@ from pathlib import Path
 _OLLAMA_ALLOW = frozenset({"mailbot_api/router/models.py"})
 _ANTHROPIC_ALLOW = frozenset({"mailbot_api/router/models.py"})
 _SQLITE_ALLOW = frozenset({"mailbot_api/db/connection.py", "mailbot_api/db/migrations_runner.py"})
-_OS_ENVIRON_ALLOW = frozenset({"mailbot_api/config.py"})
+_OS_ENVIRON_ALLOW = frozenset(
+    {
+        "mailbot_api/config.py",
+        # Story 9-6: benchmark/runner.py is a CLI entry (python -m benchmark.runner)
+        # that legitimately reads MAILBOT_DB_PATH at startup (same pattern as
+        # mailbot_api/ingest/pipeline.py's CLI path uses via get_secret_optional)
+        # AND sets BENCHMARK_COST_MOCK=1 as a runtime contract with Story 9-8's
+        # adapter layer (env-var carrier for the --cost-mock flag).
+        "benchmark/runner.py",
+    }
+)
 _RAW_SQL_ALLOW = frozenset(
     {
         "mailbot_api/db/queries.py",
@@ -68,6 +78,10 @@ _RAW_SQL_ALLOW = frozenset(
         # for documentation. Adding to _RAW_SQL_ALLOW is consistent with
         # embedding.py co-owning the SQL contract for that column family.
         "mailbot_api/ingest/embedding.py",
+        # Story 9-6: benchmark/db.py is the sole writer of benchmark_runs (per
+        # the new _BENCHMARK_RUNS_INSERT_ALLOW check) and co-owns the SQL
+        # contract — same pattern as audit.py + embedding.py above.
+        "benchmark/db.py",
     }
 )
 # Story 2-1 AC-6: `INSERT INTO router_calls` may only appear in the audit
@@ -78,6 +92,14 @@ _ROUTER_CALLS_INSERT_ALLOW = frozenset(
         "mailbot_api/observability/audit.py",
         "mailbot_api/db/queries.py",
         "mailbot_api/db/migrations_runner.py",
+    }
+)
+# Story 9-6 AC-2 / AC-10: `INSERT INTO benchmark_runs` may only appear in
+# `benchmark/db.py` (the single writer per Rule C, same pattern as Story 2-1's
+# router_calls monopoly). The migration file is .sql and not AST-scanned.
+_BENCHMARK_RUNS_INSERT_ALLOW = frozenset(
+    {
+        "benchmark/db.py",
     }
 )
 # Story 2-2 AC-12: `yaml.safe_load` / `yaml.load` may only appear in the
@@ -287,6 +309,15 @@ _RAW_SQL_RE = re.compile(
 # for it to pass cleanly.
 _ROUTER_CALLS_INSERT_RE = re.compile(
     r"INSERT\s+INTO\s+router_calls\b",
+    flags=re.IGNORECASE,
+)
+
+# Story 9-6 AC-2: targeted scan for the literal `INSERT INTO benchmark_runs`
+# (case-insensitive, whitespace-flexible). Mirrors the Story 2-1
+# `_ROUTER_CALLS_INSERT_RE` pattern; only `benchmark/db.py` is allowed to
+# emit this literal.
+_BENCHMARK_RUNS_INSERT_RE = re.compile(
+    r"INSERT\s+INTO\s+benchmark_runs\b",
     flags=re.IGNORECASE,
 )
 
@@ -638,6 +669,22 @@ def check_file(path: Path, repo_root: Path) -> list[str]:
                 )
             )
 
+        # Story 9-6 AC-2 / AC-10: `INSERT INTO benchmark_runs` outside
+        # `benchmark/db.py`. Same shape as the router_calls check above.
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and _BENCHMARK_RUNS_INSERT_RE.search(node.value)
+            and rel not in _BENCHMARK_RUNS_INSERT_ALLOW
+        ):
+            violations.append(
+                _violation(
+                    getattr(node, "lineno", 0),
+                    "`INSERT INTO benchmark_runs`",
+                    _BENCHMARK_RUNS_INSERT_ALLOW,
+                )
+            )
+
         # Story 3-4 AC-7: embedding-column writer monopoly. `UPDATE emails SET
         # embedding ...` or `INSERT INTO emails (...embedding...)` literals
         # outside `mailbot_api/ingest/embedding.py` (the sole writer) fail.
@@ -812,14 +859,30 @@ def check_file(path: Path, repo_root: Path) -> list[str]:
                     )
                 )
 
+        # Story 9-6 AC-2: f-string-built `INSERT INTO benchmark_runs` mirror
+        # of the router_calls f-string walk above.
+        if isinstance(node, ast.JoinedStr) and rel not in _BENCHMARK_RUNS_INSERT_ALLOW:
+            literal_parts = [v.value for v in node.values if isinstance(v, ast.Constant) and isinstance(v.value, str)]
+            joined = " ".join(literal_parts)
+            if _BENCHMARK_RUNS_INSERT_RE.search(joined):
+                violations.append(
+                    _violation(
+                        getattr(node, "lineno", 0),
+                        "`INSERT INTO benchmark_runs` (in f-string)",
+                        _BENCHMARK_RUNS_INSERT_ALLOW,
+                    )
+                )
+
     return violations
 
 
 def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
 
-    # Scan mailbot_api/ only (production code). Tests get explicit fixture-based linting.
-    target_dirs = [repo_root / "mailbot_api"]
+    # Scan mailbot_api/ (production code) + benchmark/ (Story 9-6 — extends
+    # scan surface so the benchmark_runs writer-monopoly check fires on the
+    # benchmark package). Tests get explicit fixture-based linting.
+    target_dirs = [repo_root / "mailbot_api", repo_root / "benchmark"]
 
     all_violations: list[str] = []
     for target in target_dirs:

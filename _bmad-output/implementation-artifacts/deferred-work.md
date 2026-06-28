@@ -1,5 +1,16 @@
 # Deferred Work
 
+## Deferred from: code review of 9-6-benchmark-runner-and-benchmark-runs-table-and-cost-confirmation-gate-and-cohort-key (2026-06-28)
+
+- CR-F7 (LOW): AC-9 Test 6 (SIGINT simulation) not implemented — pre-review attributes omission to Windows SIGINT-in-asyncio brittleness; the SIGINT handler path in `_run_dispatch_loop` is manually code-reviewable; add a test targeting Linux CI or use `signal.raise_signal(signal.SIGINT)` in a subprocess asserting on row state post-exit. [`tests/integration/test_benchmark_runner.py`]
+- Pre-review §3 MEDIUM ACCEPT WITH RATIONALE (Story 9-6): `read_completed_cells` set-membership returns cells with ANY status (`completed` / `aborted_cost_cap` / `interrupted`). An operator who wants to RE-RUN aborted cells after the monthly cap rolls over has no flag — must run `DELETE FROM benchmark_runs WHERE run_id = ? AND status != 'completed'` then `--resume`. Add a `--retry-aborted` flag (or `--include-statuses completed,interrupted` allow-list) to `benchmark.runner` in a future story. [`benchmark/db.py:read_completed_cells` + `benchmark/runner.py:_run_async`]
+- CR-F2-related (Story 9-6): `MONTHLY_BUDGET_EXCEEDED` + `BUDGET_EXCEEDED` are defined in `mailbot_api/router/errors.py` but never emitted anywhere in production code (only `DEGRADED_MODE_BLOCKED` fires when the monthly cap is hit). Future tooling story: lint check that every `ErrorCode` enum member is emitted at least once in production code, OR remove the dormant codes. Documented in `benchmark/runner.py:_map_outcome` + `_is_cap_blocking` docstrings as forward-compat retention. [`mailbot_api/router/errors.py:51,54`]
+
+## Deferred from: code review of 9-1-5-f35-watchfiles-thrash-on-runtime-delete-detect-and-stop (2026-06-26)
+
+- CR-F5 (LOW): `test_baseline_edit_after_delete_resumes_policy_reloaded` asserts exactly `len(reloaded_events) == 1` — some CI filesystem backends deliver two watchfiles fires per write, which would cause spurious failure; existing Story 9-1 tests use `>= 1` for this reason. Pre-existing risk profile of real-FS integration tests. [`tests/integration/test_policy_overrides_delete_at_runtime.py:233`]
+- CR-F6 (LOW): `test_recreating_override_at_runtime_does_not_auto_pickup` asserts `len(swap_events) == 0` inside a 2-second hold window but does not recheck after `stop_event.set()` — late-arriving events between assertion and teardown are invisible. Not a production defect; test-coverage blind-spot. Pre-existing risk profile of real-FS integration tests. [`tests/integration/test_policy_overrides_delete_at_runtime.py:294-303`]
+
 ## Deferred from: code review of 6-12-anthropic-temperature-deprecated-on-opus-4-7-f19-closure (2026-06-05)
 
 - Model gate string literal vs prefix match [mailbot_api/router/models.py:559,660] — `self.model_id != "claude-opus-4-7"` is exact-literal; a future Anthropic date-suffixed variant (e.g., `claude-opus-4-7-20261001`) with the same no-temperature contract would miss the gate. Kept as exact literal for precision (over-broad prefix risks gating future variants that may re-accept temperature). Revisit if Anthropic ships a date-suffixed Opus 4.7 variant.

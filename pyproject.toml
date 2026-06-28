@@ -65,6 +65,10 @@ ignore = ["S101", "S104"]
 [tool.ruff.lint.per-file-ignores]
 # Scripts may print; bandit's hardcoded-IP/binding checks don't apply.
 "scripts/**/*.py" = ["T201", "T203"]
+# Story 9-6: benchmark/runner.py is CLI-shaped (entry: `python -m benchmark.runner`)
+# and legitimately prints run_id / cost-gate breakdown / SIGINT resume hints to
+# stdout for Adam's terminal. Same T201/T203 exemption as scripts/.
+"benchmark/**/*.py" = ["T201", "T203"]
 # Tests may use bandit-flagged patterns (assertions, fixture passwords, etc.).
 # E501 line-length is relaxed for test fixture data (verdict-table dicts etc.).
 "tests/**/*.py" = ["S", "T20", "E501"]
