@@ -1,5 +1,11 @@
 # Deferred Work
 
+## Deferred from: code review of 9-8-e2e-join-5-item-canary-corpus-runner-scorer-report (2026-06-28)
+
+- CR-F5 (LOW): Test 1 asserts `len(scores) > 0` but not the expected score-row count — a scorer that emits a single aggregate row would pass; add assertion for expected count (2 models × N metrics per objective task). Pre-existing weak-assertion pattern from `test_scorer.py`. [`tests/integration/test_benchmark_e2e_canary.py:266`]
+- CR-F6 (LOW): Latent collision in DISTINCT concatenation query in Test 2 — `corpus_item_id || ':' || task_type || ':' || model || ':' || prompt_version` assumes no field contains `:`; safe for canary IDs today but fragile for future corpora. Carry-forward to corpus validation tooling or use a parameterized GROUP BY instead. [`tests/integration/test_benchmark_e2e_canary.py:381-389`]
+- CR-F7 (LOW): `asyncio.run(read_run_scores(...))` in `render_report` will raise `RuntimeError` if called from a running event loop (e.g., FastAPI route or async CLI in Story 9.9); add an `async def arender_report(...)` variant alongside the sync form per the two-name-pair Python pattern. [`benchmark/report.py:145`]
+
 ## Deferred from: code review of 9-7-scorer-objective-and-subjective-with-anchor-calibrated-auto-eval-and-cross-evaluator-agreement (2026-06-28)
 
 - CR-F4 (MEDIUM): Partial anchor calibration (< 20 anchors scored due to sustained dispatch failures) silently computes MAE over a reduced denominator. Add `_logger.warning("anchor_calibration_partial n_scored=%d n_expected=%d", len(auto_scores), len(anchors))` inside `_run_anchor_calibration` before the MAE return when `len(auto_scores) < len(anchors)`. [`benchmark/scoring/subjective.py:247-260`]

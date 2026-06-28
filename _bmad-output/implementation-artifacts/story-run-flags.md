@@ -499,3 +499,57 @@ User delegated manual verification to the agent. All 12 ACs walked via live comm
 | AC-12 (cache TTL + upsert) | PASS | `test_record_benchmark_score_upsert_overwrites_on_unique_conflict` + `test_scenario_5_unique_constraint_enforcement` both green; policy carries `response_cache_ttl_seconds: 86400` (24h) |
 
 **Verdict: PASS — 12/12 ACs verified live.** Zero findings. Story 9-7 stays `done`. `#yolo` mode confirmed OFF.
+
+
+---
+
+## Story 9-8 - 2026-06-28
+
+**Headline:** E2E canary join (runner -> scorer -> report stub) shipped. New benchmark/report.py minimal renderer stub (Story 9.9 upgrade target) + 10-test integration suite. 4/4 actionable CR Patches applied = 100%. 4 gates green at 1541+2-skipped+3-deselected (+10 net tests).
+
+**Dev model:** claude-opus-4-7 (Opus 4.7, 1M context)
+**Review model:** claude-sonnet-4-6
+
+**Review cycles run:** 1 round. 7 findings total = 4 Patch + 3 Defer. 4/4 actionable Patches applied = 100% applied-rate (above cadence v2 >=70% threshold).
+
+**Aggregated [deferred:*] items** (carried into _bmad-output/implementation-artifacts/deferred-work.md):
+
+- **CR-F5 (LOW)** - Test 1 weak-assertion len(scores) > 0; add expected-count assertion. Pre-existing pattern from test_scorer.py.
+- **CR-F6 (LOW)** - Colon-delimiter collision in DISTINCT concatenation; safe for canary today, fragile for future corpora. Carry to corpus-validation tooling.
+- **CR-F7 (LOW)** - asyncio.run(read_run_scores(...)) inside render_report will raise from async caller. Carry as async def arender_report(...) two-name-pair if Story 9.9 wires renderer into FastAPI/async CLI.
+
+Plus story-Completion-Notes carry-forwards:
+
+- **[deferred: Story 9.9]** - Wilson CIs, cohort-keyed per-task tables, cross-cohort drift section, DEMOTE/PROMOTE verdict logic, Pareto frontier algorithm, structured report.json output.
+- **[deferred: 9.8.5 if needed]** - full-grid E2E (5x3x2=30 cells per original AC text). Current scope 5x1x2=10 (objective-only).
+
+**Gate verdicts:**
+
+| Gate | Verdict |
+|---|---|
+| 2.3.5 (pre-review self-audit) | PASS - 5 sections + 12 Posture sub-sections; section 5.12 verdict MANDATORY-CR (criterion 1 + 6 fire); 6/6 section 3 findings dispositioned |
+| 2.4.4 (Dev Agent Record completeness) | PASS - Agent Model Used filled, >=1 Completion Note per AC, File List complete, story Status: done |
+| 2.4.5 (UI scope) | N/A - MailBot has no graphical frontend |
+| 2.4.6 (File-List-vs-git) | PASS - all 7 File List paths exist in git output |
+| 2.4.7 (Middleware-Real-Bootstrap, Router-real reframing) | PASS - E2E tests use real register_adapter + real runner_main + real scorer_main + real SQLite; only adapter faked at registry boundary per Rule I |
+| 2.4.8 (Verbose-row truncation) | PASS-ACCEPTED - sprint-status row verbose (matches Story 9-5/9-6/9-7 precedent); detail in Completion Notes |
+| 2.5 (dev-env verification) | N/A - no dev-env-skill mapped; integration tests exercise real Router + real SQLite via pytest -q |
+
+**Files staged (count):** 8 files (benchmark/report.py NEW, benchmark/__init__.py MODIFIED, benchmark/reports/.gitignore NEW, tests/integration/test_benchmark_e2e_canary.py NEW, 9-8 story file NEW, 9-8 pre-review NEW, sprint-status.yaml MODIFIED, deferred-work.md MODIFIED, plus story-run-flags.md MODIFIED = 9 actually).
+
+Excluded from staging per selective-staging contract: .claude/settings.json (Adam local envelope), all .claude/skills/ and .claude/hooks/ (pre-existing untracked), .autonomous-run-active.json (transient).
+
+**Permission prompts:** Zero permission prompts during the run. No permission-log configured for this project - count from observation only.
+
+**Disposition note (path b):** Phase 0 surfaced AC-vs-dep-graph mismatch (9-8 ACs reference report renderer = Story 9.9 backlog, but epics.md:3089 dep-table lists only 9.7). Adam authorized path b - minimal renderer stub satisfies empty-state AC; Story 9.9 inherits the public surface as its upgrade target.
+
+**Scope amendments at dev-time (both documented in story file):**
+
+1. Test 1 dropped summary_short task - subjective scorer is fail-loud on missing anchors; covered by test_scorer.py::test_scenario_2. Scope 5x1x2=10 (not 5x2x2=20).
+2. Test 2 switched from "adapter raises" to --max-items 3 partial-state - Router AR-PAT-4 catch-all (router.py:887 + :1763) converts adapter Exception to outcome=provider_error rows. Used official partial-state pattern instead.
+
+**Architectural-impossibility-discharge bullet:** N/A this story (all 7 ACs directly implementable; precedent chain unchanged at 5 stories - 9-3 OQ-2 + 9-4 OQ-1 + 9-5 AC-15 + 9-6 N/A + 9-10 Path gamma).
+
+**Run-mode:** /autonomous-story-run 9-8 - single-story scope; Epic 9 stays in-progress (remaining backlog: 9-9 + 9-11). No epic-done flip, no retro.
+
+**Biggest CR catch:** CR-F1 + CR-F2 BENCHMARK_COST_MOCK env-var lifecycle gap. Runner sets the env-var via direct os.environ mutation (not monkeypatch), so it persists across tests inside the same pytest process. The _clean_state fixture cloned from Story 9-6/9-7 didn't reset env-vars (those stories don't pass --cost-mock in happy-path, so gap was dormant). CR-F3 path-traversal guard on run_id was also real - locked in with 8-row parametrized regression.

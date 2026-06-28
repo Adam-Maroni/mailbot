@@ -43,6 +43,7 @@ from benchmark.db import (
     read_run_grid,
     record_benchmark_run,
 )
+from benchmark.report import render_report
 from benchmark.schemas import (
     BenchmarkCell,
     BenchmarkRunRow,
@@ -76,4 +77,5 @@ __all__ = [
     "read_run_scores",
     "record_benchmark_run",
     "record_benchmark_score",
+    "render_report",
 ]
