@@ -1,5 +1,13 @@
 # Deferred Work
 
+## Deferred from: code review of 9-11-anchor-stability-audit-one-shot-cross-evaluator-calibration (2026-06-28)
+
+- CR-F5 (LOW): α=-1.0 sentinel value (set when `krippendorff_alpha_ordinal` raises `ValueError` due to too-few-pairable-observations) is indistinguishable from a legitimate α=-1.0 (perfect systematic disagreement) in the persisted baseline file. No `outcome` or `audit_error` field in `evals/schemas/anchor_baseline.schema.json` to discriminate the two cases. A forensic reader of a `v1-FAILED-CALIBRATION.json` file cannot determine whether α=-1.0 means "evaluators always disagreed completely" or "computation failed for insufficient data". Carry-forward to Epic 10+ schema v2: add an optional `audit_error: string | null` field that the CLI populates when the α falls back to the -1.0 sentinel path. [`benchmark/anchor_stability_audit.py:326-332`, `evals/schemas/anchor_baseline.schema.json`]
+
+## Deferred from: code review of 9-9-report-renderer-pareto-frontier-and-demote-promote-with-confidence-intervals-and-sample-size-gate (2026-06-28)
+
+- CR-F6 (LOW): Wilson CI applied to `f1_macro` which is not a binomial proportion. `f1_macro` is in `_WILSON_METRICS` alongside genuinely proportion-shaped metrics (accuracy, precision_macro, recall_macro). The CI formula synthesizes a fictitious trial count via `round(f1_macro * sample_count)`, producing bounds that look plausible but have no valid frequentist interpretation. Pre-review §3 [S3] accepted with rationale (future-story carry-forward). Add an inline comment at `_WILSON_METRICS` in `benchmark/report.py` distinguishing proportion-shaped members from derived-metric members, and document that CI on derived metrics is approximate. [`benchmark/report.py:73-84`]
+
 ## Deferred from: code review of 9-8-e2e-join-5-item-canary-corpus-runner-scorer-report (2026-06-28)
 
 - CR-F5 (LOW): Test 1 asserts `len(scores) > 0` but not the expected score-row count — a scorer that emits a single aggregate row would pass; add assertion for expected count (2 models × N metrics per objective task). Pre-existing weak-assertion pattern from `test_scorer.py`. [`tests/integration/test_benchmark_e2e_canary.py:266`]

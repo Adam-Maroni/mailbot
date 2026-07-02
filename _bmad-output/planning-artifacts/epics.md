@@ -3416,3 +3416,300 @@ So that we have a defensible number for "are our subjective scores trustworthy" 
 **Given** this is a one-shot measurement story (not recurring infrastructure)
 **When** CR cadence is evaluated per the 6 criteria
 **Then** criteria 6 (load-bearing — the baseline file becomes the reference for all future drift detection) fires → CR escalates to MANDATORY-CR but with reduced scope (sonnet-4-6 reviewer, focused on baseline file schema + verdict thresholds + reconciliation flow; the cross-evaluator dispatch path itself is already CR'd in Story 9.7)
+
+---
+
+## Epic 9.5 Detail — Live Validation & `policy.yaml` v0→v1 Bump
+
+**Created 2026-06-29 by Epic 9 full retrospective scope cleave (Adam-decided Option α).** Epic 9 closed at L2 (code-complete + self-verified) on 2026-06-29 with 4 of 11 done-flip clauses validated. The other 7 clauses — `/model` live walks (3, 4, 5), real-spend benchmark walks (7, 8, 9), and the load-bearing `policy.yaml` v0→v1 bump (11) — cleave into Epic 9.5 rather than being silently absorbed. One NEW AC absorbs Hermes Discord runtime slash-command registration debt that surfaced as 3 architectural-impossibility discharges across Epic 9 stories 9-3 / 9-4 / 9-10.
+
+**Epic identity:** the L3 (live-validated) tranche of Epic 9. Epic 9 built a measurement instrument and a manual-override knob; Epic 9.5 points the instrument at reality and turns the knob on a live Discord session. The 11th done-flip clause from Epic 9 (`policy.yaml` v0→v1 with evidence-or-no-change verdict) is the load-bearing moment when Epic 9's investment is proven — when at least one Opus-vs-Haiku hypothesis becomes a measured verdict cited to a real `benchmark_runs.run_id`, OR Adam signs off in writing that no change is warranted with the evidence citation.
+
+**Origin retro:** [`epic-9-retro-2026-06-29.md`](../implementation-artifacts/epic-9-retro-2026-06-29.md) § 4 (provisional AC seed) + § 3 (D1/D2/D3 decision triplet: Option A close + N.5-epic + Discord-registration-inside-9.5).
+
+**Pattern reference:** N.5-epic policy established in Epic 6.5 retro B3 (2026-06-06, memory: `project_epic_6_scope_cleave.md`). Epic 9.5 fits cleanly — the cleaved scope is L3 validation work that could not fire at story-close (autonomous-story-run Phase 3.5 is end-of-epic-scoped) and could not fire at tranche-close (same reason).
+
+**Sequencing:**
+- BEFORE CP-1 final ship gate (CP-1 is the final ship gate across all dev phases — Adam-decided 2026-06-04, memory: `project_cp1_final_ship_gate.md`)
+- Can parallel Epic 7 (Production Calibration) — Epic 7 needs Epic 9's machinery (already shipped), NOT Epic 9.5's live walks
+- AC-9 (Hermes Discord runtime registration) MUST ship before AC-1/2/3 (the `/model` live walks depend on Discord-callable slash commands existing)
+- AC-4/5/6/7 (real-spend walks) can fire independently of AC-9 — they invoke the benchmark runner CLI directly, not via Discord
+
+**Spend authorization:** ~$11-14 real Anthropic budget carries forward from Epic 9 tranche retro A6 (memory-of-record: the budget was authorized in spirit during Epic 9 but the spend itself didn't happen because Phase 3.5 walks didn't fire). Breakdown matches Epic 9 spec line 3068:
+- AC-4 (full 100-item corpus walk): ~$4-5
+- AC-5 (Haiku-vs-Opus on draft_reply): ~$5
+- AC-6 (cross-evaluator α on 20 anchors): ~$1-3
+- AC-7 (anchor-drift baseline real-write): ~$1
+
+**FRs covered:** FR-3.3 (manual override surface — completes Epic 9's code-complete shipment by validating it works against live Hermes), FR-6.6 (evidence layer — first real Opus-vs-Haiku verdict converts policy.yaml from hypothesis-annotated to evidence-cited), FR-8.1..FR-8.4 (benchmark instrument actually used)
+**NFRs:** NFR-PRIV-2 (sensitivity gate verified under live conditions, not just unit tests), NFR-PERF-1 (real Haiku/Opus latency on 100-item corpus, not synthetic)
+**AR-\*:** AR-MODEL-OVERRIDE (Epic 9 contract validated under real Discord roundtrip), AR-COHORT-KEY (4-tuple validated under real benchmark run — does it actually distinguish meaningful cohorts?), AR-ANALYTICS-1 (Krippendorff α on real evaluator output — does the pipeline cross α≥0.6 threshold?)
+
+**Epic 9.5 Story List:**
+
+| # | Story | Dep-on | +tests | MANDATORY-CR | Real-spend? |
+| --- | --- | --- | --- | --- | --- |
+| 9.5.1 | Hermes Discord Developer Portal API integration — runtime slash-command registration for `/model` family | — | +6 | high | No |
+| 9.5.2 | `/model` live walks bundle — one-shot (AC-1), persistent (AC-2), sensitivity-gate regression (AC-3) | 9.5.1 | walk-only | n/a (walk story) | No |
+| 9.5.3 | Real-spend benchmark walks bundle — corpus walk (AC-4), Haiku-vs-Opus (AC-5), anchor-drift baseline real-write (AC-7) | — (uses Epic 9 machinery directly) | walk-only | medium (verdict-rendering review) | **~$10-11** |
+| 9.5.4 | Cross-evaluator anchor calibration — Krippendorff α on 20 anchors (AC-6), BLOCKS-IF-α<0.6 | — (uses Story 9-11 CLI directly) | walk-only | medium | **~$1-3** |
+| 9.5.5 | `policy.yaml` v0→v1 bump (AC-8) — evidence-cited routing change OR signed no-change verdict | 9.5.3 (needs Haiku-vs-Opus verdict) | +3 | high (load-bearing closure) | No |
+
+**Total: 5 stories, ~9 net-new tests (most of Epic 9.5 is walk-only — measurement runs against existing code, not new code).**
+
+**Done-flip gate (Epic 9.5):**
+
+1. Stories 9.5.1 through 9.5.5 status=done in sprint-status.yaml
+2. AC-1 (`/model qwen --once` live walk) — audit log shows `model_chosen_reason="slash_command:one_shot:adam"`, response returned, session-flag cleared after dispatch — verified in live Discord session
+3. AC-2 (`/model <task> <model>` live walk) — `policy.user-overrides.yaml` written with shallow-leaf merge intact (shipped `policy.yaml` byte-identical), next chat picks the overridden model, audit log shows `slash_command:persistent:adam`
+4. AC-3 (sensitivity gate regression) — `/model qwen --once` on confidential email → refused with `sensitivity_gate:refused`, no qwen dispatch, no body leak
+5. AC-4 (full 100-item corpus walk) — produces a real `benchmark_runs.run_id` row with `status=completed`, scores written to `benchmark_scores`, report renders successfully against the run
+6. AC-5 (Haiku-vs-Opus on draft_reply) — produces first real DEMOTE/PROMOTE data point on the highest-cost task; verdict captured for AC-8
+7. AC-6 (cross-evaluator α on 20 anchors) — Krippendorff α **≥0.6** OR Adam-signed accept-with-rationale in Epic 9.5 retro per Story 9-11 AC-7 OR-branch precedent
+8. AC-7 (anchor-drift baseline real-write) — `evals/anchor_baselines/v1.json` exists with real evaluator scores (NOT `v1-FAILED-CALIBRATION.json`), validates against `evals/schemas/anchor_baseline.schema.json`
+9. AC-8 (`policy.yaml` v0→v1 bump) — EITHER (a) at least one routing decision changed based on AC-5's verdict, cited to the specific `benchmark_runs.run_id`, OR (b) Adam-signed retro entry stating "policy.yaml reviewed against benchmark output, no changes warranted, here's why" with the benchmark output cited
+10. AC-9 (Hermes Discord runtime registration) — `/model` is invocable from a real Discord chat session, not just via MCP-prompt invocation
+
+**The 9th clause (AC-8) is the load-bearing one** — same posture as Epic 9 done-flip clause #11, restated under Epic 9.5 ownership. Without it, Epic 9.5 closes at "live walks performed"; with it, Epic 9.5 closes at "evidence informed the routing policy."
+
+**Adam-decision gates documented at Epic 9.5 creation (no decision required to start):**
+- D2 (this epic exists, in lieu of folding into Epic 7 or CP-1) — Adam-decided 2026-06-29
+- D3 (Discord registration inside 9.5 as AC-9 vs. standalone epic) — Adam-decided 2026-06-29
+- A6 carry-forward spend ($11-14) — authorized in spirit at Epic 9 tranche retro 2026-06-26; per-walk Adam-confirmation gate inherited from Story 9-6's $5 cost-gate pattern (unchanged)
+
+**Open questions Epic 9.5 story-level dev passes will resolve:**
+- OQ-1 (Story 9.5.1): does Hermes register slash commands at startup (one-shot) or per-guild dynamically? Does the `/model` family register as a single slash with subcommands or three separate slash entries?
+- OQ-2 (Story 9.5.1): testing surface for Discord Portal API integration — mock Discord API + manual walk for the real Portal handshake, OR something more rigorous?
+- OQ-3 (Story 9.5.4): if α<0.6, what's the reconciliation path — adjust anchor labels, adjust evaluator prompts, or accept-with-rationale per Story 9-11 AC-7 OR-branch?
+
+**Story-key naming convention (Adam-decided 2026-07-02):** Epic 9.5 stories use **dot notation** — `9.5.1`, `9.5.2`, `9.5.3`, `9.5.4`, `9.5.5` — for sprint-status keys AND filenames (e.g., `9.5.1-hermes-discord-portal-slash-registration.md`). NOT hyphen notation `9-5-*` — this would visually collide with the existing `9-1-5-f35-watchfiles-thrash-on-runtime-delete-detect-and-stop` story key (Epic 9 story 1.5, F35 follow-up shipped 2026-06-26).
+
+---
+
+### Story 9.5.1: Hermes Discord Developer Portal API integration — runtime slash-command registration for `/model` family
+
+**Created 2026-06-29 by Epic 9.5 cleave (D3).** This story owns the previously-unowned architectural debt that surfaced as 3 architectural-impossibility discharges across Epic 9 stories 9-3 (AC-4 scope-reduced), 9-4 (AC-4 same shape), and 9-10 (entire original story Path γ reframed). The `/model` family ships from Epic 9 as MCP-dispatchable-via-prompt + SKILL.md documented; runtime Discord registration is the missing piece that converts MCP-dispatchable to actually-Discord-callable.
+
+As Adam,
+I want Hermes to register the `/model` slash-command family with the Discord Developer Portal at runtime startup so that I can type `/model qwen` directly into Discord chat and have it dispatch through Hermes to mailbot-api's `set_model_oneshot` MCP verb,
+So that Epic 9's `/model` user-facing surface ships at L3 (live-validated, invocable from a real Discord session) instead of L2 (code-complete, MCP-dispatchable-via-prompt only), unblocking the 3 `/model` live walks in Story 9.5.2.
+
+**Acceptance Criteria:**
+
+**Given** Hermes currently has no Discord slash-command registration code
+**When** the registration mechanism is implemented
+**Then** Hermes ships a registration handler that calls the Discord Developer Portal API (`POST /applications/{application.id}/commands` or `POST /applications/{application.id}/guilds/{guild.id}/commands` depending on OQ-1 resolution) at startup
+**And** the registered slash commands cover the `/model` family per the surface shipped in Epic 9 Stories 9-3 / 9-4:
+  - `/model <model>` — one-shot dispatch (e.g., `/model qwen`)
+  - `/model <task> <model>` — persistent override (e.g., `/model draft_reply opus`)
+  - `/model` (no args) — inspect current policy
+**And** the registration is idempotent — re-running Hermes startup against an already-registered application does NOT create duplicates (Discord API deduplicates by command name + application_id)
+
+**Given** Discord slash commands have a typed-parameter contract
+**When** the slash registration payload is constructed
+**Then** the payload uses the Discord application command structure with `options` for arguments — `model` parameter is `STRING` with `choices` populated from the Epic 9 known model set (`qwen`, `haiku`, `opus`), `task` parameter is `STRING` with `choices` populated from `policy.yaml`'s known task names
+**And** the dispatch path from Discord webhook → Hermes → mailbot-api MCP verb preserves the existing Epic 9 contract: Discord `/model qwen` interaction triggers `set_model_oneshot(model="qwen")` MCP verb call, audit log captures `model_chosen_reason="slash_command:one_shot:adam"` (unchanged from Story 9-3's contract)
+
+**Given** Hermes already authenticates with Discord via bot token
+**When** the Developer Portal API call is made
+**Then** the API call uses the same bot token as Hermes's existing Discord authentication (no new credential capture required)
+**And** the bot token's required OAuth2 scopes are documented (`applications.commands` for slash registration) — if the current Hermes bot token lacks the scope, Story 9.5.1 includes the runbook update to re-mint with the additional scope
+
+**Given** OQ-1 (startup-vs-dynamic registration) needs Adam-decision before dev pass
+**When** the story is planned
+**Then** the story file Open Questions block captures the trade-off:
+  - Option (a) — register at startup, once per Hermes deploy: simpler, matches Discord's recommended pattern for stable command sets
+  - Option (b) — register dynamically when first invoked: more complex, useful only if command set varies per-guild
+**And** Adam-decision at story kickoff resolves the OQ before dev work begins
+
+**Given** OQ-2 (testing surface) needs the story to define a verifiable test strategy for what is fundamentally an external-API integration
+**When** tests are written
+**Then** at minimum: (1) a unit test on the registration-payload builder — given the known model + task set, produces the correct Discord application command JSON, (2) an integration test on the webhook handler — given a synthetic Discord interaction payload for `/model qwen`, dispatches to the correct MCP verb with the correct args, audit row matches Epic 9 contract, (3) a manual walk against the real Discord Developer Portal at Story 9.5.2 walk time (this is what Story 9.5.2 IS) — the Portal handshake is not unit-testable in CI
+
+**Given** the registration is a Hermes-side change, not a mailbot-api change
+**When** the implementation lands
+**Then** the code lives in the Hermes repository per the existing mailbot-api ↔ Hermes split (mailbot-api ships the MCP verbs; Hermes is the user-facing surface)
+**And** mailbot-api's `policy.yaml`, `mcp_server.py`, and the Epic 9 `/model` verbs are UNCHANGED by this story — the contract pin shipped in Stories 9-1/9-2/9-3/9-4 is preserved byte-identical
+
+**Given** this is a new architectural surface (Discord Portal API integration is a from-scratch pattern in this codebase)
+**When** CR cadence is evaluated per the 6 criteria
+**Then** criterion 1 (new architectural surface — Discord Developer Portal API client) fires → **MANDATORY-CR per §5.12**
+
+---
+
+### Story 9.5.2: `/model` live walks bundle — one-shot + persistent + sensitivity-gate regression
+
+**Created 2026-06-29 by Epic 9.5 cleave.** Walk story (Phase-3.5-shaped, not implementation-shaped) bundling the 3 L3-validation walks for the `/model` family. Bundled because each walk is a 10-15 minute live Hermes session against the same surface; running them as 3 separate stories would triple the orchestration overhead with no scope benefit.
+
+As Adam,
+I want to perform the 3 `/model` live walks against a running Hermes deployment with real Discord chat invocation (post Story 9.5.1), capturing audit-log evidence and `policy.user-overrides.yaml` filesystem evidence,
+So that Epic 9 done-flip clauses 3, 4, 5 close at L3 (live-validated) instead of L2 (code-complete) — converting "the code passes its own tests" to "Adam typed `/model qwen` into Discord and the right thing happened."
+
+**Acceptance Criteria:**
+
+**Given** Story 9.5.1 has shipped and `/model` is Discord-callable
+**When** AC-1 walk fires (Epic 9 done-flip clause 3)
+**Then** Adam types `/model qwen` into a Hermes-connected Discord channel for a non-sensitive prompt
+**And** the response returns successfully (qwen-generated text)
+**And** `router_calls` audit row for the dispatch contains `model_chosen_reason="slash_command:one_shot:adam"` (per Story 9-2's `ModelChosenReason.OVERRIDE_SLASH_ONE_SHOT` enum value)
+**And** the session-flag is cleared after dispatch (next chat without `/model` reverts to policy.yaml default — verified by a second prompt in the same channel)
+**And** walk evidence is captured: screenshot of Discord exchange + `router_calls` row dump + Adam-signed verdict in `_bmad-output/implementation-artifacts/9-5-2-walk-evidence.md`
+
+**Given** Story 9.5.1 has shipped
+**When** AC-2 walk fires (Epic 9 done-flip clause 4)
+**Then** Adam types `/model draft_reply opus` into Discord
+**And** `router/policy.user-overrides.yaml` is written atomically (tempfile + fsync + os.replace per Story 9-4 pattern) with the `draft_reply.model=opus` shallow-leaf override
+**And** the shipped `router/policy.yaml` is byte-identical post-override (the user-overrides companion file is the only mutation)
+**And** the next chat that triggers `draft_reply` (e.g., Adam asks Hermes to draft an email response) dispatches via opus, not haiku — verified by `router_calls` row with `model_chosen_reason="slash_command:persistent:adam"` and `model_used="claude-opus-4-7"`
+**And** walk evidence captured per AC-1 pattern (screenshot + audit dump + filesystem dump of `policy.user-overrides.yaml`)
+
+**Given** Story 9.5.1 has shipped
+**When** AC-3 walk fires (Epic 9 done-flip clause 5 — privacy regression)
+**Then** Adam types `/model qwen --once` against a confidential email (one classified as `sensitivity=confidential` by the existing ingest pipeline; reuse an existing confidential row from the live mailbox, NOT a synthetic one)
+**And** the dispatch is REFUSED with `router_calls` row containing `model_chosen_reason="sensitivity_gate:refused"` (per Story 9-2's `ModelChosenReason.SENSITIVITY_GATE_REFUSED`)
+**And** NO qwen API call fires (verified by absence of corresponding `router_calls` row with `model_used="qwen"`)
+**And** NO email body content leaks to Discord (verified by examining the Discord response — it should be the standard refusal message, not the email body)
+**And** walk evidence captured per AC-1 pattern + explicit notation that NFR-PRIV-2 is verified under live conditions
+
+**Given** all 3 walks are sequenced in one session
+**When** the walks complete
+**Then** the bundle walk evidence file `9-5-2-walk-evidence.md` is committed with Adam-signed verdicts for all 3 ACs
+**And** `epic-9-5-run-flags.md` is created (if not already present) and the 3 clauses are flipped to RESOLVED with citation to the walk evidence
+
+**Given** this is a walk story, not an implementation story
+**When** CR cadence is evaluated per the 6 criteria
+**Then** zero criteria fire → CR skipped per cadence binding (walks produce no code; the underlying production code was CR'd in Epic 9 Stories 9-3 / 9-4)
+
+---
+
+### Story 9.5.3: Real-spend benchmark walks bundle — corpus walk + Haiku-vs-Opus + anchor-drift baseline
+
+**Created 2026-06-29 by Epic 9.5 cleave.** Walk story bundling the 3 benchmark-runner-driven L3 walks that consume Epic 9 done-flip clauses 7, 8, and 10 (real baseline write). Bundled because all 3 are CLI invocations of `benchmark.runner` against the same corpus (`evals/email_corpus_v1.jsonl` shipped by Story 9-5), differing only in (model, task) cells and cost gates.
+
+As Adam,
+I want to execute the 3 benchmark runner CLI invocations that consume ~$10-11 of real Anthropic budget — full 100-item corpus walk, Haiku-vs-Opus on `draft_reply`, and the real anchor-drift baseline JSON write — capturing the resulting `benchmark_runs` rows + `benchmark_scores` rows + persisted artifact files,
+So that Epic 9 done-flip clauses 7, 8, and 10 close at L3, AND the `benchmark_runs.run_id` from clause 8 becomes the citation source for Story 9.5.5's `policy.yaml` v0→v1 bump.
+
+**Acceptance Criteria:**
+
+**Given** Epic 9 Story 9-5's corpus (`evals/email_corpus_v1.jsonl`, 113 production-sampled items) is the input
+**When** AC-4 walk fires (Epic 9 done-flip clause 7 — full corpus walk on production routing)
+**Then** Adam runs `python -m benchmark.runner --corpus evals/email_corpus_v1.jsonl --tasks all --models policy-default --yes` (the `--yes` bypasses Story 9-6's $5 confirmation gate after Adam pre-flight cost-checks the estimate)
+**And** the runner completes with a `benchmark_runs` row containing `status=completed` (NOT `aborted_cost_cap` or `interrupted`)
+**And** the run produces N×T `benchmark_scores` rows where N = corpus items, T = number of tasks evaluated per Story 9-7's scorer dispatch
+**And** the run's actual cost is recorded in `benchmark_runs.actual_cost_usd` and falls within the pre-flight estimate ±20% (sanity check on cost estimation accuracy — divergence beyond 20% would flag a Story 9-6 estimation bug)
+**And** walk evidence: `benchmark_runs.run_id` recorded, cost recorded, count of completed cells recorded, in `9-5-3-walk-evidence.md`
+
+**Given** AC-4 has completed
+**When** AC-5 walk fires (Epic 9 done-flip clause 8 — Haiku-vs-Opus on draft_reply)
+**Then** Adam runs `python -m benchmark.runner --corpus evals/email_corpus_v1.jsonl --tasks draft_reply --models claude-haiku-4-5,claude-opus-4-7 --yes`
+**And** the runner dispatches 100×2 = 200 cells (excluding any sensitivity-gate-refused items per existing Epic 9 Story 9-6 carve-out — those cells are recorded with `outcome=sensitivity_blocked` not `outcome=completed`)
+**And** the scorer (Story 9-7) produces `benchmark_scores` rows for both models on `draft_reply`
+**And** Story 9-9's report renderer (`python -m benchmark.report --run-id <run_id>`) produces the rendered markdown with at least one of: DEMOTE-valid / PROMOTE-needed / DEMOTE-invalid / hold-steady / INSUFFICIENT_DATA verdict for the `(draft_reply, haiku-vs-opus)` cell
+**And** the verdict + the source `benchmark_runs.run_id` are captured in `9-5-3-walk-evidence.md` for Story 9.5.5 citation
+
+**Given** Story 9-11's anchor stability audit CLI exists
+**When** AC-7 walk fires (Epic 9 done-flip clause 10 — real baseline write)
+**Then** Adam runs `python -m benchmark.anchor_stability_audit --anchors-dir evals/anchors/ --scorer-model claude-opus-4-7 --yes` (NOTE: AC-6 / Krippendorff α walk is Story 9.5.4 — this clause is the baseline-write-only path which uses the primary evaluator only, not cross-evaluator)
+**And** the CLI writes `evals/anchor_baselines/v1.json` (NOT `v1-FAILED-CALIBRATION.json`) with the real evaluator scores
+**And** the baseline file validates against `evals/schemas/anchor_baseline.schema.json`
+**And** the file is committed to the repo (per Story 9-11's contract — baseline IS canonical, drift-detection reads from it; `v1.json` is gitignored ONLY if the FAILED-CALIBRATION suffix is present)
+**And** walk evidence captures the file contents + the schema-validation result
+
+**Given** all 3 walks consume real Anthropic budget
+**When** the walks complete
+**Then** the cumulative spend is recorded in `9-5-3-walk-evidence.md` against the ~$10-11 pre-flight estimate
+**And** Story 9-6's $30 monthly cap counter (via `BudgetGuard.this_month_spend_usd`) is verified to be below the cap post-walk (sanity check — if the corpus walk alone pushes us above $30, that's a runner cost-estimation bug)
+
+**Given** this is a walk story whose underlying code was CR'd in Epic 9
+**When** CR cadence is evaluated per the 6 criteria
+**Then** only criterion 6 (load-bearing — the verdict from AC-5 feeds Story 9.5.5's policy bump) fires → MANDATORY-CR with REDUCED SCOPE: sonnet-4-6 reviews the report-rendered verdict for sample-size + CI-overlap + cohort_key handling (i.e., does the renderer's DEMOTE/PROMOTE conclusion hold up under adversarial reading?), not the underlying scorer or runner code
+
+---
+
+### Story 9.5.4: Cross-evaluator anchor calibration — Krippendorff α on 20 anchors
+
+**Created 2026-06-29 by Epic 9.5 cleave.** Walk story for Epic 9 done-flip clause 9 — the BLOCKS-IF-α<0.6 calibration check. Split from Story 9.5.3 because this walk has a distinct verdict-driven branching path: α≥0.6 closes cleanly, α<0.6 either reconciles or accepts-with-rationale per Story 9-11 AC-7 OR-branch.
+
+As Adam,
+I want to execute the cross-evaluator Krippendorff α audit on 20 anchors using two reasonable secondary evaluators (per Story 9-11's CLI contract), and either confirm α≥0.6 (eval pipeline is not single-point-of-failure) OR document the α<0.6 reconciliation path,
+So that Epic 9.5 closes with explicit evidence that the benchmark's evaluator dispatch is trustworthy — OR explicit accept-with-rationale that the evaluator pipeline has known limitations for v1.
+
+**Acceptance Criteria:**
+
+**Given** Story 9-11's anchor stability audit CLI exists with `--secondary-evaluator` opt-in path
+**When** AC-6 walk fires (Epic 9 done-flip clause 9)
+**Then** Adam runs `python -m benchmark.anchor_stability_audit --anchors-dir evals/anchors/ --scorer-model claude-opus-4-7 --secondary-evaluator claude-haiku-4-5 --yes`
+**And** the CLI computes Krippendorff α (ordinal δ²) per Story 9-7's `agreement.py` pure-numpy implementation
+**And** the α verdict is captured in the audit output
+
+**Given** α ≥ 0.6
+**When** the verdict is captured
+**Then** the audit completes successfully, writes the baseline file with cross-evaluator section populated (`benchmark_scores` rows with `evaluator_role=secondary` for the 20 anchors), and the walk evidence records α value + verdict = trusted-or-uncertain (per Story 9-9's renderer classification: α≥0.8 trusted, 0.6≤α<0.8 uncertain)
+
+**Given** α < 0.6
+**When** the verdict is captured (the BLOCKING path)
+**Then** the audit writes to `evals/anchor_baselines/v1-FAILED-CALIBRATION.json` (per Story 9-11 AC-7) and exits non-zero
+**And** Epic 9.5 done-flip pauses until ONE of the following resolves:
+  - Reconciliation: anchor labels or evaluator prompts adjusted, audit re-runs, α≥0.6 verified (this may be a multi-day investigation per Story 9-11 AC-7 docstring)
+  - Accept-with-rationale: Adam-signed entry in `epic-9-5-retro-{date}.md` stating `"we accept α=<value> for v1 because <documented reason>; the eval pipeline is single-evaluator-trusted for the v1 release; α≥0.6 is a v2 done-flip gate"`
+**And** the chosen path is recorded in `9-5-4-walk-evidence.md` with full rationale
+
+**Given** this walk consumes ~$1-3 of real Anthropic budget
+**When** the walk completes
+**Then** the actual spend is recorded against the ~$1-3 pre-flight estimate in `9-5-4-walk-evidence.md`
+**And** Story 9-7's response cache (24h TTL keyed by anchor_id + scorer_model + evaluator_model) is verified to have NOT re-burned budget on any anchor that was already scored within the 24h window (per Story 9-11 AC's cache reuse contract)
+
+**Given** the verdict gates Story 9.5.5
+**When** the walk completes
+**Then** Story 9.5.5's `policy.yaml` v0→v1 bump can proceed ONLY IF AC-6 closed at α≥0.6 OR accept-with-rationale (because v0→v1 bumping on the back of an untrustworthy evaluator pipeline would compound the L3 gap rather than close it)
+
+**Given** this is a walk story with a known-blocking-path
+**When** CR cadence is evaluated per the 6 criteria
+**Then** criterion 6 (load-bearing — α verdict gates Story 9.5.5) fires → MANDATORY-CR with REDUCED SCOPE: sonnet-4-6 reviews the α computation result against Story 9-7's `agreement.py` invariants (clamping to [-1,1], unpairable-units handling, the ValueError → α=-1.0 sentinel path per CR-F1 from Story 9-11 review) — i.e., is the α value we just computed actually the α we intended to compute?
+
+---
+
+### Story 9.5.5: `policy.yaml` v0→v1 bump — evidence-cited change OR signed no-change verdict
+
+**Created 2026-06-29 by Epic 9.5 cleave.** The load-bearing closure story for Epic 9.5 (and by extension, the load-bearing closure for Epic 9 itself per the original Epic 9 done-flip clause #11). This story converts the benchmark's first real DEMOTE/PROMOTE verdict from "captured in walk evidence" to "applied to production routing policy, OR explicitly rejected with documented rationale."
+
+As Adam,
+I want the `router/policy.yaml` `version` field bumped from `v0` to `v1` with either (a) at least one routing decision changed cited to the `benchmark_runs.run_id` from Story 9.5.3 AC-5, OR (b) an Adam-signed retro entry stating the verdict was reviewed and no change was warranted with the benchmark output cited,
+So that Epic 9's purpose — *the router defends its choices with evidence* — is fulfilled, and Epic 9.5 (and Epic 9 by extension) closes at "the tool informed the system" rather than "the tool was built."
+
+**Acceptance Criteria:**
+
+**Given** Story 9.5.3 AC-5's Haiku-vs-Opus verdict is captured in walk evidence
+**When** the policy.yaml change is evaluated
+**Then** Adam reads the rendered report from `python -m benchmark.report --run-id <ac-5-run-id>` and reviews the verdict for `(draft_reply, haiku-vs-opus)`:
+  - If `PROMOTE-needed` (Haiku is sufficient → demote draft_reply from Opus to Haiku) → policy.yaml updated, draft_reply.model changed from `claude-opus-4-7` to `claude-haiku-4-5`
+  - If `DEMOTE-invalid` (Opus is materially better → keep Opus) → policy.yaml unchanged in this cell
+  - If `hold-steady` or `INSUFFICIENT_DATA` → policy.yaml unchanged, verdict captured as no-change rationale
+  - If `DEMOTE-valid` (current model is already cheaper alternative) → already at cheaper alternative; policy.yaml unchanged in this cell
+
+**Given** the change path (verdict implies routing change)
+**When** policy.yaml is edited
+**Then** `router/policy.yaml`'s `version` field bumps from `v0` to `v1`
+**And** the changed task block contains a `# v1: changed from claude-opus-4-7 to claude-haiku-4-5 per benchmark_runs.run_id=<id> verdict=PROMOTE-needed on 2026-XX-XX` comment (or analogous for whichever direction)
+**And** the DEMOTION HYPOTHESIS comment above the changed cell is updated from hypothesis-shaped to evidence-shaped: `# EVIDENCE: benchmark_runs.run_id=<id> shows ...` (replacing the prior `# DEMOTION HYPOTHESIS:` annotation)
+**And** the existing Story 9-1 watchfiles hot-reload picks up the policy.yaml change without restart (verified by running a test prompt post-edit and observing the new model in audit log)
+
+**Given** the no-change path (verdict implies no routing change)
+**When** the no-change verdict is documented
+**Then** `router/policy.yaml`'s `version` field STILL bumps from `v0` to `v1` (the version bump signals "this policy has been benchmark-reviewed" regardless of whether the review resulted in change)
+**And** the DEMOTION HYPOTHESIS comments on Opus tasks are NOT removed but ARE augmented with `# v1-review (date): benchmark_runs.run_id=<id> verdict=<verdict>; hypothesis retained because <reason>` lines
+**And** an Adam-signed retro entry exists in `epic-9-5-retro-{date}.md` stating: `"policy.yaml v0→v1 reviewed against benchmark_runs.run_id=<id> output (full report at <path>). No routing changes warranted because <specific reason citing report sections>. Hypothesis annotations retained for v2 re-review."`
+
+**Given** the v0→v1 bump touches the load-bearing config
+**When** the change is tested
+**Then** a new regression test `tests/integration/test_policy_v1_loads_cleanly.py` verifies: (1) `load_policy()` succeeds on the new v1 file, (2) the version field is correctly read as `"v1"` (cohort_key composition depends on this per Story 9-6's `router_policy_version` 4-tuple component), (3) any user-overrides from Story 9-4 still merge cleanly via shallow-leaf semantics on top of v1
+
+**Given** the cohort_key 4-tuple's `router_policy_version` component will now change from `v0` to `v1`
+**When** new benchmark runs fire post-v1
+**Then** Story 9-6's `benchmark_runs.cohort_key` for new runs uses the v1 component (verified by running a single corpus item through `benchmark.runner` post-v1 and inspecting the resulting `cohort_key` SHA-256)
+**And** historical v0 runs remain queryable (the cohort_key change does NOT invalidate prior rows — Story 9-9's cross-cohort drift section handles this naturally)
+
+**Given** this is the load-bearing closure story for Epic 9.5 + Epic 9
+**When** CR cadence is evaluated per the 6 criteria
+**Then** criterion 6 (load-bearing — this story converts hypothesis to evidence on the production routing policy) fires → **MANDATORY-CR per §5.12** with FULL scope under sonnet-4-6 (not reduced-scope) — the policy.yaml edit is reviewed for: correct evidence citation, correct version field bump, no accidental non-cited mutations, hypothesis annotations correctly augmented (not silently removed), and regression test correctness
