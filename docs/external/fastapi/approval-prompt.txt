@@ -1,0 +1,35 @@
+You said "Just go ahead, I trust your judgment" — appreciated, and I've done
+the judgment work without pinging you for every step (picked the canonical
+URL https://fastapi.tiangolo.com/, derived the output path docs/external/fastapi/,
+dropped foreign-locale mirrors and release-notes, and scored 138 pages). But
+this last check isn't a trust question; it's the one moment the Firecrawl
+spend becomes irreversible. Five seconds of your eyes here prevents a re-run
+if I misread the site shape.
+
+Mapped 138 URLs · Scored · Selected top 100 (S:12, A:38, B:36, C:14)
+Full grading: docs/external/fastapi/PAGE-GRADING.md
+Output target: docs/external/fastapi/pages/
+
+Tier S (top entries):
+  [98] / — FastAPI (landing)
+  [97] /tutorial/ — Tutorial - User Guide
+  [96] /tutorial/first-steps/ — First Steps
+  [94] /learn/ — Learn
+  [92] /features/ — Features
+  [91] /python-types/ — Python Types Intro
+  [89] /async/ — Concurrency and async / await
+  [87] /tutorial/path-params/ — Path Parameters
+  [86] /tutorial/query-params/ — Query Parameters
+  [85] /tutorial/body/ — Request Body
+  [83] /virtual-environments/ — Virtual Environments
+  [82] /environment-variables/ — Environment Variables
+
+Excluded (Tier D, 28 pages): auto-generated reference subpages (request,
+websockets, background, parameters, uploadfile, exceptions, status, middleware,
+openapi/*, response, staticfiles, templating, testclient), community/meta
+pages (about, help-fastapi, contributing, management, management-tasks,
+external-links, resources, fastapi-people), marketing/history pages
+(benchmarks, project-generation, alternatives, history-design-future,
+newsletter). Release-notes already dropped at normalization stage.
+
+Approve as-is, edit the list, or abort? (approve / edit / abort)

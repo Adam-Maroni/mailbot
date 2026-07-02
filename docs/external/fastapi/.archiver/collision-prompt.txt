@@ -1,0 +1,15 @@
+Output directory docs/external/fastapi/ already exists with prior content:
+  - SITE-MAP.md (40 pages, archived 2025-12-01)
+  - 40 markdown files under pages/
+
+New map found 124 URLs:
+  84 new (not yet archived)
+  40 already-archived (collide with existing files)
+  40 stale (archived >30 days ago — may be outdated)
+
+How to proceed?
+  [merge]     Keep existing files. Download only the 84 new URLs.
+  [refresh]   Keep existing structure. Re-download the 40 stale + 84 new (overwrites stale only).
+  [overwrite] Delete the existing archive. Run the full workflow from scratch.
+  [rename]    Write to a sibling dir like docs/external/fastapi-2026-05-31/. Existing archive untouched.
+  [abort]     Stop now. Change nothing on disk.
