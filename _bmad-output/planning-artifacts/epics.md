@@ -3478,62 +3478,76 @@ So that we have a defensible number for "are our subjective scores trustworthy" 
 - A6 carry-forward spend ($11-14) — authorized in spirit at Epic 9 tranche retro 2026-06-26; per-walk Adam-confirmation gate inherited from Story 9-6's $5 cost-gate pattern (unchanged)
 
 **Open questions Epic 9.5 story-level dev passes will resolve:**
-- OQ-1 (Story 9.5.1): does Hermes register slash commands at startup (one-shot) or per-guild dynamically? Does the `/model` family register as a single slash with subcommands or three separate slash entries?
-- OQ-2 (Story 9.5.1): testing surface for Discord Portal API integration — mock Discord API + manual walk for the real Portal handshake, OR something more rigorous?
+- ~~OQ-1 (Story 9.5.1): does Hermes register slash commands at startup (one-shot) or per-guild dynamically? Does the `/model` family register as a single slash with subcommands or three separate slash entries?~~ — **RESOLVED 2026-07-03 by Story 9.5.1 Path γ reframe.** First-half (startup-vs-dynamic) DISSOLVED — registration is out-of-band one-shot CLI (`scripts/register_discord_commands.py --apply`), not tied to any process startup. Second-half (single-slash-with-subcommands vs three-separate) RESOLVED to single top-level `/model` with three subcommands (`set` / `persist` / `inspect`). See epics.md § "Story 9.5.1" ACs.
+- ~~OQ-2 (Story 9.5.1): testing surface for Discord Portal API integration — mock Discord API + manual walk for the real Portal handshake, OR something more rigorous?~~ — **RESOLVED 2026-07-03 by Story 9.5.1 Path γ reframe.** Testing surface: 2 unit tests (payload builder + response parser) + 1 subprocess integration on `--dry-run` (asserts zero network calls). No CI integration on `--apply` — the real Portal handshake is subsumed into Story 9.5.2's first walk. See epics.md § "Story 9.5.1" ACs.
 - OQ-3 (Story 9.5.4): if α<0.6, what's the reconciliation path — adjust anchor labels, adjust evaluator prompts, or accept-with-rationale per Story 9-11 AC-7 OR-branch?
 
 **Story-key naming convention (Adam-decided 2026-07-02):** Epic 9.5 stories use **dot notation** — `9.5.1`, `9.5.2`, `9.5.3`, `9.5.4`, `9.5.5` — for sprint-status keys AND filenames (e.g., `9.5.1-hermes-discord-portal-slash-registration.md`). NOT hyphen notation `9-5-*` — this would visually collide with the existing `9-1-5-f35-watchfiles-thrash-on-runtime-delete-detect-and-stop` story key (Epic 9 story 1.5, F35 follow-up shipped 2026-06-26).
 
 ---
 
-### Story 9.5.1: Hermes Discord Developer Portal API integration — runtime slash-command registration for `/model` family
+### Story 9.5.1: Discord slash-command registration — one-shot Portal API script + runbook (Path γ discharge)
 
-**Created 2026-06-29 by Epic 9.5 cleave (D3).** This story owns the previously-unowned architectural debt that surfaced as 3 architectural-impossibility discharges across Epic 9 stories 9-3 (AC-4 scope-reduced), 9-4 (AC-4 same shape), and 9-10 (entire original story Path γ reframed). The `/model` family ships from Epic 9 as MCP-dispatchable-via-prompt + SKILL.md documented; runtime Discord registration is the missing piece that converts MCP-dispatchable to actually-Discord-callable.
+**Created 2026-06-29 by Epic 9.5 cleave (D3); reframed 2026-07-03 (Adam-decided) — original scope was cross-repo (add runtime registration code to a Hermes fork), which conflicted with the "keep upstream `nousresearch/hermes-agent` unmodified for KVM portability" deployment constraint that surfaced during `/autonomous-story-run 9.5.1` Run 1 halt.** This is the third Path γ reframe in the Epic 9 arc (after Story 9-3 AC-4, Story 9-4 AC-4, Story 9-10 whole story) — same pattern: original scope was architecturally impossible for the actual deployment model, reframed to an in-repo artifact that carries the same information. The `/model` family registration ships from MailBot as a one-shot CLI script that hits Discord's Portal API directly; Hermes remains a stock container that routes incoming interactions to MailBot's MCP verbs unchanged.
 
 As Adam,
-I want Hermes to register the `/model` slash-command family with the Discord Developer Portal at runtime startup so that I can type `/model qwen` directly into Discord chat and have it dispatch through Hermes to mailbot-api's `set_model_oneshot` MCP verb,
-So that Epic 9's `/model` user-facing surface ships at L3 (live-validated, invocable from a real Discord session) instead of L2 (code-complete, MCP-dispatchable-via-prompt only), unblocking the 3 `/model` live walks in Story 9.5.2.
+I want a one-shot CLI script in this repo that reads `router/policy.yaml`'s task list and registers the `/model` slash-command family with the Discord Developer Portal (POST `/applications/{app_id}/commands`), plus a runbook documenting the bot-token OAuth scope requirements and the run procedure,
+So that Epic 9's `/model` user-facing surface ships at L3 (live-invocable from a real Discord session) via a one-time out-of-band registration step, WITHOUT modifying Hermes source, and WITHOUT tying MailBot deployments to a Hermes fork — the Discord commands persist server-side once registered, and stock upstream Hermes routes their interactions to MailBot's MCP verbs unchanged.
 
 **Acceptance Criteria:**
 
-**Given** Hermes currently has no Discord slash-command registration code
-**When** the registration mechanism is implemented
-**Then** Hermes ships a registration handler that calls the Discord Developer Portal API (`POST /applications/{application.id}/commands` or `POST /applications/{application.id}/guilds/{guild.id}/commands` depending on OQ-1 resolution) at startup
-**And** the registered slash commands cover the `/model` family per the surface shipped in Epic 9 Stories 9-3 / 9-4:
-  - `/model <model>` — one-shot dispatch (e.g., `/model qwen`)
-  - `/model <task> <model>` — persistent override (e.g., `/model draft_reply opus`)
-  - `/model` (no args) — inspect current policy
-**And** the registration is idempotent — re-running Hermes startup against an already-registered application does NOT create duplicates (Discord API deduplicates by command name + application_id)
+**Given** the reframe replaces runtime Hermes registration with a MailBot-side one-shot script
+**When** the script is implemented
+**Then** `scripts/register_discord_commands.py` is added to this repo, exposing:
+  - `--dry-run` — reads `router/policy.yaml`, builds the Discord Portal command payload, prints it to stdout as pretty JSON, exits 0 without any network call
+  - `--apply` — reads the payload, reads `DISCORD_BOT_TOKEN` and `DISCORD_APPLICATION_ID` from environment, calls `POST https://discord.com/api/v10/applications/{app_id}/commands` for each command in the payload, exits 0 on 200/201, exits non-zero + prints the Discord error response on 4xx/5xx
+  - `--delete-all` — enumerates currently-registered application commands via `GET /applications/{app_id}/commands`, deletes each via `DELETE /applications/{app_id}/commands/{command_id}`, useful for iterating during setup
+**And** all three modes are idempotent — re-running `--apply` against an already-registered application does NOT create duplicates (Discord Portal deduplicates by command `name` within an application scope)
 
-**Given** Discord slash commands have a typed-parameter contract
-**When** the slash registration payload is constructed
-**Then** the payload uses the Discord application command structure with `options` for arguments — `model` parameter is `STRING` with `choices` populated from the Epic 9 known model set (`qwen`, `haiku`, `opus`), `task` parameter is `STRING` with `choices` populated from `policy.yaml`'s known task names
-**And** the dispatch path from Discord webhook → Hermes → mailbot-api MCP verb preserves the existing Epic 9 contract: Discord `/model qwen` interaction triggers `set_model_oneshot(model="qwen")` MCP verb call, audit log captures `model_chosen_reason="slash_command:one_shot:adam"` (unchanged from Story 9-3's contract)
+**Given** the `/model` family per Epic 9 Stories 9-3 / 9-4 has three invocation shapes (one-shot / persistent / inspect)
+**When** the payload builder constructs Discord application command JSON
+**Then** the payload registers a **single top-level `/model` slash-command with three subcommands** (Adam-decided at reframe 2026-07-03: resolves OQ-1 second-half — single-slash-with-subcommands, NOT three separate top-level slashes; matches Discord's UX convention for command families):
+  - `/model set` — subcommand for one-shot dispatch; required `model` STRING option with `choices` populated from the Epic 9 known model set (`qwen`, `haiku`, `opus`); dispatches to `set_model_oneshot(model=...)` MCP verb
+  - `/model persist` — subcommand for persistent override; required `task` STRING option with `choices` populated from `router/policy.yaml`'s `tasks:` keys (17 tasks as of policy v0), required `model` STRING option same as above; dispatches to `set_model_persistent(task=..., model=...)` MCP verb
+  - `/model inspect` — subcommand with no options; dispatches to `inspect_model_policy()` MCP verb
+**And** each subcommand's `description` field is human-readable (e.g., "Override the model for the current one-shot dispatch")
 
-**Given** Hermes already authenticates with Discord via bot token
-**When** the Developer Portal API call is made
-**Then** the API call uses the same bot token as Hermes's existing Discord authentication (no new credential capture required)
-**And** the bot token's required OAuth2 scopes are documented (`applications.commands` for slash registration) — if the current Hermes bot token lacks the scope, Story 9.5.1 includes the runbook update to re-mint with the additional scope
+**Given** OQ-1 first-half (startup-vs-dynamic registration) is dissolved by the reframe
+**When** the registration model is chosen
+**Then** registration is **one-shot, out-of-band, not tied to any process startup** — Adam runs `python scripts/register_discord_commands.py --apply` once per Discord application (typically once ever, plus once per `policy.yaml` schema change that adds/removes a task). Neither Hermes nor MailBot registers at startup. Discord persists the registration server-side.
 
-**Given** OQ-1 (startup-vs-dynamic registration) needs Adam-decision before dev pass
-**When** the story is planned
-**Then** the story file Open Questions block captures the trade-off:
-  - Option (a) — register at startup, once per Hermes deploy: simpler, matches Discord's recommended pattern for stable command sets
-  - Option (b) — register dynamically when first invoked: more complex, useful only if command set varies per-guild
-**And** Adam-decision at story kickoff resolves the OQ before dev work begins
-
-**Given** OQ-2 (testing surface) needs the story to define a verifiable test strategy for what is fundamentally an external-API integration
+**Given** OQ-2 (testing surface for external-API integration) is resolved by the reframe
 **When** tests are written
-**Then** at minimum: (1) a unit test on the registration-payload builder — given the known model + task set, produces the correct Discord application command JSON, (2) an integration test on the webhook handler — given a synthetic Discord interaction payload for `/model qwen`, dispatches to the correct MCP verb with the correct args, audit row matches Epic 9 contract, (3) a manual walk against the real Discord Developer Portal at Story 9.5.2 walk time (this is what Story 9.5.2 IS) — the Portal handshake is not unit-testable in CI
+**Then** the testing surface is:
+  - **Unit test on the payload builder** — given a mock `policy.yaml` with a known task set, `build_command_payload()` produces the exact Discord application command JSON structure (three subcommands, correct option types, correct choices, correct dispatch metadata). Frozen-fixture assertion — no network.
+  - **Unit test on the response parser** — given a mock Discord 200 response with a `command_id`, `parse_registration_response()` returns success + captures the command_id for logging. Given a mock 4xx (e.g., `50035 Invalid Form Body`), returns failure with the Discord error code + message.
+  - **Integration test on `--dry-run`** — invokes the CLI via subprocess, asserts stdout is valid JSON matching the payload-builder unit-test fixture, asserts exit code 0, asserts zero network calls (mocked `httpx.Client` fails the test if `.post` or `.get` fires).
+  - **NO integration test on `--apply`** — the real Discord Portal handshake is out-of-scope for CI; Story 9.5.2 walk covers it (Adam runs `--apply` once manually, verifies the commands appear in Discord).
 
-**Given** the registration is a Hermes-side change, not a mailbot-api change
+**Given** the bot-token scope requirement
+**When** the runbook is authored
+**Then** `docs/runbooks/discord-slash-registration.md` is added covering:
+  - OAuth2 scope requirement: `applications.commands` (in addition to `bot` for the Gateway connection Hermes already uses). If the current Hermes bot token lacks the scope, the runbook documents the re-mint procedure via the Discord Developer Portal UI.
+  - Environment variable setup: `DISCORD_BOT_TOKEN` and `DISCORD_APPLICATION_ID` (application ID is publicly visible in the Portal; token is secret and must never enter chat per memory `feedback_oauth_token_handling.md`).
+  - Run procedure: `--dry-run` first (inspect the payload), then `--apply` (register), then verify in the Discord client (the `/model` command should appear in the slash autocomplete within ~1 minute globally).
+  - Idempotency + iteration: how to `--delete-all` and re-`--apply` if the payload needs adjustment.
+  - What Hermes does NOT do: this runbook explicitly disclaims Hermes-side registration — the interaction routing happens via Hermes's existing Gateway → MCP dispatch, which requires no source changes.
+
+**Given** the registration produces server-side state (Discord persists the commands until deleted)
+**When** the script exits successfully
+**Then** it prints a summary to stdout: which command IDs were registered/updated, which were unchanged (deduplication path), and a one-line reminder that verification happens in the Discord client, not in this script.
+
+**Given** the reframe keeps mailbot-api's `/model` verbs and `router/policy.yaml` unchanged
 **When** the implementation lands
-**Then** the code lives in the Hermes repository per the existing mailbot-api ↔ Hermes split (mailbot-api ships the MCP verbs; Hermes is the user-facing surface)
-**And** mailbot-api's `policy.yaml`, `mcp_server.py`, and the Epic 9 `/model` verbs are UNCHANGED by this story — the contract pin shipped in Stories 9-1/9-2/9-3/9-4 is preserved byte-identical
+**Then** mailbot-api's `mcp_server.py`, `router/policy.py`, and `router/policy.yaml` are UNCHANGED by this story — the contract pin shipped in Stories 9-1/9-2/9-3/9-4 is preserved byte-identical. New files only: `scripts/register_discord_commands.py`, tests co-located per existing convention (dev pass picks exact path), `docs/runbooks/discord-slash-registration.md`.
 
-**Given** this is a new architectural surface (Discord Portal API integration is a from-scratch pattern in this codebase)
+**Given** this is a new architectural surface (Discord Portal API client + payload-builder module — first in this codebase)
 **When** CR cadence is evaluated per the 6 criteria
-**Then** criterion 1 (new architectural surface — Discord Developer Portal API client) fires → **MANDATORY-CR per §5.12**
+**Then** criterion 1 (new architectural surface — Discord Portal API client) fires → **MANDATORY-CR per §5.12**. Review focus: payload builder correctness against Discord's application command schema, idempotency guarantees, secret-handling hygiene (no token logging), error-response propagation.
+
+**Given** Story 9.5.2 (the live walks bundle) explicitly depends on 9.5.1 shipping
+**When** 9.5.1's `--apply` mode has been run once against Adam's real Discord application
+**Then** the `/model` commands appear in Adam's Discord client autocomplete, and Story 9.5.2's three walks can proceed — 9.5.1's L3 verification is subsumed into the very first step of 9.5.2 (typing `/model` and seeing the autocomplete populate).
 
 ---
 

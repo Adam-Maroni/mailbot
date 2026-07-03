@@ -82,3 +82,37 @@ Envelope was sufficient for the surfaces touched (Read of settings.json + sprint
 2. **Consider marking Epic 9.5 stories with `RUN-MODE BINDING: NOT compatible with /autonomous-epic-run`** in sprint-status.yaml for 9.5.2/9.5.3/9.5.4 (matching the Story 9-5 precedent). This makes the incompatibility visible without needing to re-derive it at every future autonomous-run invocation. 9.5.5 stays autonomous-safe (dep-locked but implementable).
 
 3. **The Phase 0.2 sidestep pattern is now used twice** (Epic 9 Run 3 for Story 9-6, and this run for Epic 9.5). Worth codifying in SKILL.md as a first-class carve-out rather than an every-run ad-hoc Adam-decision — likely as: "if the target epic's `epic-N` row appears strictly after backlog stories from earlier epics that are architecturally-downstream (per epics.md sequencing header), sidestep via explicit story_path rather than halt."
+
+---
+
+## /autonomous-story-run 9.5.1 Run 1 — 2026-07-02 — HALTED at Phase 0.4 blocker scan
+
+**Invocation:** `/autonomous-story-run 9.5.1` (user typed `9.5-1`; interpreted as `9.5.1` per the dot-notation naming convention Adam-decided 2026-07-02, sprint-status.yaml line 259).
+**Dev-model:** claude-opus-4-7 (this session)
+**Review-model (would-have-been):** claude-sonnet-4-6
+**Outcome:** HALT before Phase 1 — Phase 0.4 gating rule fired (same blocker as Run 1 above at epic scope).
+**Time-to-halt:** ~3 min (permission-envelope pre-flight + sprint-status lookup + epics.md read + workspace scan + prior-halt cross-reference).
+
+### Restated blocker (same as Run 1 § "Blocker 1")
+
+Story 9.5.1 requires source-code changes in the Hermes repository, which is **not present in the workspace** (`c:\Users\Adam\Desktop\GitWorkspace\` sibling scan returned identical result to Run 1 — no `hermes/` sibling). Per epics.md § "Story 9.5.1" ACs line 3529-3532, mailbot-api's `policy.yaml`, `mcp_server.py`, and the Epic 9 `/model` verbs must remain byte-identical — meaning there is no in-repo surface this dev pass could legitimately touch.
+
+### Why re-halt was warranted (not a mistake to re-invoke)
+
+The Run 1 halt entry did not update `sprint-status.yaml` line 260 with `RUN-MODE BINDING: NOT compatible with /autonomous-story-run` — recommendation §2 above proposed but did not execute the change. So a fresh `/autonomous-story-run 9.5.1` invocation had no in-file marker to short-circuit against and had to re-derive the blocker.
+
+### Recommendation upgrade (execute now, not just propose)
+
+The Epic 9.5 retrospective (`epic-9-5-retrospective: optional` in sprint-status.yaml line 265) will fire *after* the epic done-flips — and cannot back-mark story rows for future autonomous invocations. The right time to add the `RUN-MODE BINDING:` markers is now, at Adam's discretion. Suggested edits:
+
+- Line 260 (`9.5.1`): append `**RUN-MODE BINDING: NOT compatible with /autonomous-story-run — cross-repo (Hermes source outside MailBot workspace); Adam-only-access; see epic-9-5-run-flags.md.**`
+- Line 261 (`9.5.2`): append `**RUN-MODE BINDING: NOT compatible with /autonomous-story-run — Adam-hands-on walk story (types /model in real Discord); see epic-9-5-run-flags.md.**`
+- Line 262 (`9.5.3`): append `**RUN-MODE BINDING: NOT compatible with /autonomous-story-run — Adam-hands-on real-spend CLI walks (~$10-11 Anthropic); see epic-9-5-run-flags.md.**`
+- Line 263 (`9.5.4`): append `**RUN-MODE BINDING: NOT compatible with /autonomous-story-run — Adam-hands-on real-spend CLI walk (~$1-3) + branch-decision on α outcome; see epic-9-5-run-flags.md.**`
+- Line 264 (`9.5.5`): leave unchanged — autonomous-safe once 9.5.3/9.5.4 verdicts land.
+
+Adam decides whether to apply. This run flags but does not mutate sprint-status.yaml (no dev-pass work performed).
+
+### Zero permission prompts occurred during pre-flight (Run 2)
+
+Same envelope coverage as Run 1. Read of settings.json + sprint-status.yaml + PORTING.md + epics.md + prior epic-9-5-run-flags.md, Grep, Glob, `rtk ls`, and this Edit. No mid-run permission-prompt drift to record.

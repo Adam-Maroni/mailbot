@@ -1,0 +1,141 @@
+[
+  {
+    "name": "model",
+    "type": 1,
+    "description": "MailBot Router /model family - one-shot / persistent / inspect",
+    "options": [
+      {
+        "name": "set",
+        "description": "Override the model for the current one-shot dispatch",
+        "type": 1,
+        "options": [
+          {
+            "name": "model",
+            "description": "Model short-form (qwen | haiku | opus)",
+            "type": 3,
+            "required": true,
+            "choices": [
+              {
+                "name": "qwen",
+                "value": "qwen"
+              },
+              {
+                "name": "haiku",
+                "value": "haiku"
+              },
+              {
+                "name": "opus",
+                "value": "opus"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "persist",
+        "description": "Persist a model override for a specific task in policy.user-overrides.yaml",
+        "type": 1,
+        "options": [
+          {
+            "name": "task",
+            "description": "Router task name (see router/policy.yaml)",
+            "type": 3,
+            "required": true,
+            "choices": [
+              {
+                "name": "action_extraction",
+                "value": "action_extraction"
+              },
+              {
+                "name": "anchor_calibrated_eval",
+                "value": "anchor_calibrated_eval"
+              },
+              {
+                "name": "coarse_class",
+                "value": "coarse_class"
+              },
+              {
+                "name": "daily_digest_intro",
+                "value": "daily_digest_intro"
+              },
+              {
+                "name": "draft_reply",
+                "value": "draft_reply"
+              },
+              {
+                "name": "fine_class",
+                "value": "fine_class"
+              },
+              {
+                "name": "hermes_aux",
+                "value": "hermes_aux"
+              },
+              {
+                "name": "importance_scoring",
+                "value": "importance_scoring"
+              },
+              {
+                "name": "intent_parsing_chat",
+                "value": "intent_parsing_chat"
+              },
+              {
+                "name": "multi_turn_refinement",
+                "value": "multi_turn_refinement"
+              },
+              {
+                "name": "reference_resolution",
+                "value": "reference_resolution"
+              },
+              {
+                "name": "sender_reputation_summary",
+                "value": "sender_reputation_summary"
+              },
+              {
+                "name": "sensitivity_class",
+                "value": "sensitivity_class"
+              },
+              {
+                "name": "summary_short",
+                "value": "summary_short"
+              },
+              {
+                "name": "thread_continuity",
+                "value": "thread_continuity"
+              },
+              {
+                "name": "tone_style_mirror",
+                "value": "tone_style_mirror"
+              }
+            ]
+          },
+          {
+            "name": "model",
+            "description": "Model short-form (qwen | haiku | opus)",
+            "type": 3,
+            "required": true,
+            "choices": [
+              {
+                "name": "qwen",
+                "value": "qwen"
+              },
+              {
+                "name": "haiku",
+                "value": "haiku"
+              },
+              {
+                "name": "opus",
+                "value": "opus"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "inspect",
+        "description": "Show the current effective /model policy (base + user overrides)",
+        "type": 1,
+        "options": []
+      }
+    ]
+  }
+]
