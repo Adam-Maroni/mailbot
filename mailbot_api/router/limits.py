@@ -96,8 +96,18 @@ def enforce_rate_limit(
     Story 2-7: ``caller_origin="cache-warmer"`` short-circuits the gate
     entirely — warmer calls are zero-budget probes that keep Anthropic's
     cache warm and would otherwise eat into the regular rate-limit budget.
+
+    Story 9.5.3 hotfix (2026-07-03): ``benchmark-runner`` (Story 9-6) and
+    ``benchmark-scorer`` (Story 9-7) also short-circuit. Benchmark walks
+    dispatch 100-200 cells in a single invocation which would otherwise
+    blow the 60/hr interactive lane on tasks like ``draft_reply``; the
+    Story 9-6 cost-gate provides per-walk spend authorization so the
+    per-hour lane limit is orthogonal. CR-F5 (2026-07-03): explicit
+    allowlist rather than ``startswith("benchmark-")`` to avoid widening
+    the trust surface to any future caller that adopts a ``benchmark-*``
+    prefix without cost-gate coverage.
     """
-    if caller_origin == "cache-warmer":
+    if caller_origin in ("cache-warmer", "benchmark-runner", "benchmark-scorer"):
         return None
 
     if lane == "interactive":

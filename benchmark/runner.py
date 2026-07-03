@@ -145,15 +145,66 @@ def _format_cost_breakdown(
     return "\n".join(lines)
 
 
-def _build_content(item: CorpusItem) -> dict[str, str]:
-    """Build the ``content`` dict for ``ask_router`` per existing pipeline shape."""
+# Tasks whose prompt USER_TEMPLATE consumes the ingest 3-tuple shape
+# ``{subject, sender, body_preview}``. Kept explicit so an unknown
+# ``task_type`` raises rather than silently defaulting (CR-F4/F6, 2026-07-03).
+_INGEST_SHAPE_TASKS: frozenset[str] = frozenset(
+    {
+        "coarse_class",
+        "sensitivity_class",
+        "fine_class",
+        "summary_short",
+        "importance_scoring",
+        "action_extraction",
+    }
+)
+
+
+def _build_content(item: CorpusItem, task_type: str = "") -> dict[str, str]:
+    """Build the ``content`` dict for ``ask_router`` per existing pipeline shape.
+
+    Story 9.5.3 hotfix (2026-07-03): most tasks share the
+    ``{subject, sender, body_preview}`` shape used by the ingest pipeline,
+    but ``draft_reply`` (Story 5-3) uses ``{source_email, thread_context,
+    tone_signals}``. Without task-shape adaptation, draft_reply dispatches
+    fail with ``prompt render failed: KeyError: 'source_email'``. The
+    benchmark corpus doesn't carry real thread context or tone data, so
+    those are stubbed with defender-tone-neutral placeholders.
+
+    CR-F4/F6 (2026-07-03): unknown ``task_type`` values raise
+    ``NotImplementedError`` rather than silently returning the ingest
+    shape. Tasks the ``_build_grid`` helper opts in (notably
+    ``reference_resolution`` via ``labels.reference_resolution_slice``,
+    and any future task the CLI accepts) have their own USER_TEMPLATE
+    fields and need explicit branches here. Adding a task to
+    ``--tasks`` without also adding a branch is a walk-time defect
+    that this raise surfaces at cell-dispatch rather than at prompt
+    render.
+    """
     # The body_preview is the full anonymized raw_body; per Story 9-5 the corpus
     # raw_body is already anonymized and bounded.
-    return {
-        "subject": item.raw_subject,
-        "sender": "<benchmark-sender>",
-        "body_preview": item.raw_body,
-    }
+    if task_type == "draft_reply":
+        source_email = (
+            f"Subject: {item.raw_subject}\n"
+            f"From: <benchmark-sender>\n\n"
+            f"{item.raw_body}"
+        )
+        return {
+            "source_email": source_email,
+            "thread_context": "(no thread context — benchmark corpus item)",
+            "tone_signals": "(no tone signals — benchmark corpus item, first-contact treatment)",
+        }
+    if task_type == "" or task_type in _INGEST_SHAPE_TASKS:
+        return {
+            "subject": item.raw_subject,
+            "sender": "<benchmark-sender>",
+            "body_preview": item.raw_body,
+        }
+    raise NotImplementedError(
+        f"_build_content: task_type={task_type!r} has no content-shape "
+        f"adapter — add an explicit branch before benchmarking this task. "
+        f"Known task types: draft_reply + {sorted(_INGEST_SHAPE_TASKS)!r}."
+    )
 
 
 def _map_outcome(result_ok: bool, error_code_value: str | None) -> OutcomeLiteral:
@@ -272,7 +323,7 @@ async def _dispatch_cell(
     # gate at AC-5 is the runner's per-batch protection against runaway cost.
     result = await ask_router(
         task_type=cell.task_type,
-        content=_build_content(item),
+        content=_build_content(item, task_type=cell.task_type),
         db_path=db_path,
         force_model=cell.model,
         force=True,

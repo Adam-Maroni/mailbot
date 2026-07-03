@@ -76,6 +76,43 @@ _STRICTER_PROMPT_PREFIX = (
     "Reply only with valid JSON matching this schema: {schema_dump}\n\n"
 )
 
+# Story 9.5.3 hotfix (2026-07-03): Anthropic Claude Haiku 4-5 and Opus 4-7
+# wrap JSON payloads in ```json ... ``` markdown fences despite prompt
+# instructions to reply with bare JSON. Discovered during Story 9.5.3 walk
+# when 100% of Anthropic-served structured-output tasks (summary_short,
+# importance_scoring, action_extraction, draft_reply) failed with
+# outcome='schema_failed' in production audit rows spanning 3 days.
+# The fix strips the fence before pydantic parses so both fenced and bare
+# JSON succeed. Applies at the two live model_validate_json sites
+# (first-attempt parse, retry-leg parse). The cached-result parse site is
+# not wrapped because cache writes always re-serialize via
+# ``parsed.model_dump_json()`` at ``_maybe_cache_result``, so cached rows
+# are guaranteed fence-free at read time.
+#
+# CR-F1/F2 (2026-07-03): pattern is anchored to the outermost fence pair
+# but uses ``re.search`` (not ``fullmatch``) so trailing/leading model
+# prose ("Here you go: ```json {...}``` Note: ...") is tolerated. The
+# language tag matches ``\w*`` so ``jsonlines``, ``javascript``, and
+# uppercase variants all strip cleanly.
+_CODE_FENCE_RE = re.compile(
+    r"```\w*\s*\n?(.*?)\n?\s*```",
+    re.DOTALL,
+)
+
+
+def _strip_code_fence(text: str) -> str:
+    """Strip a markdown code fence surrounding the JSON payload if present.
+
+    Handles ```json ... ```, ``` ... ```, arbitrary language tags
+    (``jsonlines``, ``javascript``, ``JSON``, etc.), and leading/trailing
+    model prose around the fence. Returns text unchanged if no fence
+    pattern matches. When multiple fences are present, the first one is
+    used (CR-F1: model-emitted example fences after the answer must not
+    swallow the payload).
+    """
+    match = _CODE_FENCE_RE.search(text)
+    return match.group(1) if match else text
+
 # Story 3-3 AC-5: API-bound model detection for the precondition layer.
 # Matches the Anthropic model id prefix family (haiku / opus / sonnet variants).
 # Local-only models (Qwen `qwen2.5:*`, `nomic-embed-text`) do NOT match — they
@@ -781,7 +818,9 @@ async def _dispatch_with_failure_chain(
 
         # Try schema validation.
         try:
-            parsed = prompt.output_schema.model_validate_json(response.text)
+            parsed = prompt.output_schema.model_validate_json(
+                _strip_code_fence(response.text)
+            )
             outcome = "ok"
             result = RouterResult(
                 ok=True,
@@ -838,7 +877,9 @@ async def _dispatch_with_failure_chain(
                 retry_response.cached_tokens_in,
             )
             try:
-                parsed = prompt.output_schema.model_validate_json(retry_response.text)
+                parsed = prompt.output_schema.model_validate_json(
+                    _strip_code_fence(retry_response.text)
+                )
                 outcome = "retry_recovered"
                 result = RouterResult(
                     ok=True,

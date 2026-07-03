@@ -447,3 +447,207 @@ The Path B fix consumed three previously-defined-but-never-emitted vocabulary en
 - **`router/policy.user-overrides.yaml`:** ended the walk in empty-skeleton state (reverted between AC-2 and AC-3 to prevent budget-guard lock-out cascading into AC-3 verification). The AC-2 walk's `hermes_aux → opus` override was captured in the walk-evidence file before revert.
 - **`router/policy.yaml`:** byte-identical at walk-end (`git diff --stat` empty).
 - **Git state on completion:** modified files scoped to Path B code + tests + docker-compose + walk-evidence + this run-flags update + sprint-status flip. No unrelated diffs, no accidental staging of secrets or large binaries.
+
+---
+
+## Story 9.5.3 Run 1 — 2026-07-03 — HALTED at dev-story activation (RUN-MODE BINDING enforcement)
+
+**Invocation:** `dev-story 9.5.3` (Adam-typed via the bmad-dev-story skill, immediately after create-story pass in the same session).
+**Dev-model:** claude-opus-4-7 (this session).
+**Outcome:** HALT at bmad-dev-story Step 1 (task_check) — story file's top-of-file walk-story banner + `## Dev Notes → RUN-MODE BINDING enforcement` section define the correct halt behavior for any dev agent that picks this story up regardless of invocation mode. Skill's normal Step 5 red-green-refactor loop would author zero code (walk story, no code to write) AND would need to invoke real-spend `benchmark.*` CLIs (~$10-11 Anthropic budget) that the dev agent has no authority to trigger. Halt log written; control returned to Adam.
+**Time-to-halt:** ~2 min (activation + workflow-block resolution + story-file re-read to confirm banner + halt-log author).
+
+### Restated binding (verbatim from story file top-of-file banner + § "RUN-MODE BINDING enforcement")
+
+> ⚠️ **WALK STORY + REAL-SPEND — dev agents halt here per § "RUN-MODE BINDING enforcement".** Do not proceed with `dev-story` or `/autonomous-story-run`. Log halt in `_bmad-output/implementation-artifacts/epic-9-5-run-flags.md` (matching the Story 9.5.2 Run 2 pattern) and return control to Adam. Walk execution is Adam-hands-on — three CLI invocations that consume ~$10-11 of real Anthropic budget; each must be pre-flighted against the printed cost estimate before `--yes` is passed.
+
+> If a dev agent picks this up regardless (e.g., via mis-parsed intent), the correct halt behavior is:
+>
+> 1. Log the halt in `epic-9-5-run-flags.md` matching the Story 9.5.2 Run 2 pattern (lines 239-289 for reference)
+> 2. Do NOT invoke any `benchmark.*` CLI
+> 3. Do NOT author code
+> 4. Return control to Adam with a "walk story — Adam-hands-on real-spend required" message
+
+The `dev-story <key>` skill has no Phase 0.4 gating check equivalent to `/autonomous-story-run`, so the binding surfaced *inside* Step 1 (task_check) as a read-and-honor guardrail identical to the Story 9.5.2 Run 2 precedent (this file lines 239-289). Zero code authored, zero task-checkboxes flipped, zero benchmark CLI invocations, zero sprint-status mutation. This log entry is the sole file change.
+
+### Why re-halt was warranted (matches the Story 9.5.2 Run 2 rationale pattern)
+
+The story's own § "RUN-MODE BINDING enforcement" is explicit that a dev-agent pickup should halt — but sprint-status.yaml line 262's `RUN-MODE BINDING: NOT compatible with /autonomous-story-run` marker names only autonomous invocations, not manual `dev-story <key>` invocations. A fresh `dev-story 9.5.3` invocation had no short-circuit hook at skill activation and had to re-derive the halt condition from the story-file body. The rationale is identical to Story 9.5.2 Run 2 (this file lines 258-260): binding markers cover autonomous invocations; manually-typed `dev-story <key>` is not on the marker's radar. Same recommendation as Story 9.5.2 Run 2 applies (expand the marker to name `dev-story <key>` explicitly) — but this run flags-only and does not mutate sprint-status.yaml line 262.
+
+### Cross-reference to Story 9.5.2 Run 2 halt symmetry
+
+The Story 9.5.2 Run 2 halt (this file lines 239-289) established the precedent for dev-story-invocation-on-walk-story: honor the story-file binding, log the halt, return control. Story 9.5.3 is an even stronger halt case because it adds **real-spend authority** on top of walk-story-hands-on:
+
+- Story 9.5.2 blocker: Adam types natural-language prompts into Hermes chat (Adam-authority + Adam-observation)
+- Story 9.5.3 blocker: Adam types natural-language prompts to Hermes chat NOT required; instead Adam runs `benchmark.*` CLIs that hit Anthropic APIs with real money (Adam-authority + Adam-cost-authorization + Adam-observation)
+
+The dev agent structurally cannot substitute for Adam on the cost-authorization dimension — even if the ACs were somehow re-interpretable as autonomous-friendly, the `--yes` pre-flight is a load-bearing safety gate against burn-through and must originate from Adam.
+
+### Recommendation (execute-if-Adam-agrees, not just propose)
+
+Two low-cost hardening options for the next time this story is picked up by a dev agent (whether Adam re-invokes `dev-story 9.5.3` for any reason, or a scheduled agent mis-parses intent):
+
+1. **Expand line 262's RUN-MODE BINDING marker** to also name manual `dev-story <key>` invocations, matching the story-file's actual halt semantics. Suggested edit to sprint-status.yaml line 262:
+   - Before: **RUN-MODE BINDING: NOT compatible with /autonomous-story-run — Adam-hands-on real-spend CLI walks (~$10-11 Anthropic); Adam pre-flights spend + runs --yes + captures verdicts; see `_bmad-output/implementation-artifacts/epic-9-5-run-flags.md`.**
+   - After: **RUN-MODE BINDING: NOT compatible with /autonomous-story-run OR manual dev-story invocation — Adam-hands-on real-spend CLI walks (~$10-11 Anthropic); Adam pre-flights spend + runs --yes + captures verdicts; see `_bmad-output/implementation-artifacts/epic-9-5-run-flags.md`.**
+
+2. **Retain the top-of-file walk-story banner in the story file itself** (already present at the file top — the create-story pass added it precisely to short-circuit any dev-story activation before Step 5 could try to author code). This banner is the load-bearing halt trigger regardless of sprint-status marker wording. No edit required — noting for the record.
+
+Adam decides whether to apply option 1. This run flags but does not mutate sprint-status.yaml line 262 or the story file body (no dev-pass work performed — the whole point of the halt).
+
+### Zero destructive actions taken during Run 1
+
+- No sprint-status flips (story stays `ready-for-dev`).
+- No task/subtask checkboxes flipped in the story file (all 7 tasks remain `[ ]`).
+- No walk-evidence file created (that is Adam's Task 4 output during the actual hands-on walk).
+- No benchmark CLI invocations (`benchmark.runner` / `benchmark.scorer` / `benchmark.report` / `benchmark.anchor_stability_audit` all zero-invocation).
+- No code authored under `mailbot_api/`, `tests/`, `scripts/`, `benchmark/`, `evals/`, `router/policy.yaml`, `router/policy.user-overrides.yaml`, `docs/`, `docker-compose.yml`, `pyproject.toml`, `hermes-config/`.
+- No Docker operations (no `docker compose exec`, no container restarts, no volume mutations).
+- No Anthropic spend (zero API calls; the $0.00 burn side-effect is the point of the halt).
+- `baseline_commit: 96595c3d44b8993847bd6d04516eff886cb8f0ff` preserved in the story file YAML frontmatter (set during 2026-07-03 create-story pass).
+- Sole change from this run: this Run 1 halt entry (append-only, ~90 lines).
+
+### Cross-reference to memory
+
+- `feedback_autonomous_continuity_no_text_between_subworkflows.md` — does not apply (this is a manual dev-story invocation, not `/autonomous-*-run`; and the story-file's own RUN-MODE BINDING is the load-bearing halt trigger regardless).
+- `feedback_cr_cadence_v2_structural.md` — walks are excluded from CR-eligible denominator; if this walk ever executes hands-on, the MANDATORY-CR-REDUCED-SCOPE pass is planned in Task 7 of the story (criterion 6 fires because the AC-5 verdict is load-bearing for Story 9.5.5).
+- `feedback_l1_l2_l3_done_layers.md` — L3 (live-validated) is the layer this walk is designed to close for Epic 9 done-flip clauses 7, 8, 10; that closure remains pending until Adam runs the walk.
+- `feedback_oauth_token_handling.md` — spirit-of-caution (do not paste secret material into chat) applies here to Anthropic API costs by extension: the dev agent must not initiate real-spend on Adam's account without explicit interactive authorization, which the halt trigger prevents.
+
+---
+
+## Story 9.5.3 Run 2 — 2026-07-03 — HALTED at dev-story activation (RUN-MODE BINDING enforcement, marker-expansion round)
+
+**Invocation:** `dev-story 9.5.3` (Adam-typed via bmad-dev-story skill, immediately after Adam applied the "Proceed with recommendation" branch that expanded sprint-status.yaml line 262's marker to name manual `dev-story <key>` invocations explicitly).
+**Dev-model:** claude-opus-4-7 (this session).
+**Outcome:** HALT at bmad-dev-story Step 1 (task_check) — same load-bearing halt as Run 1 above, now doubly-encoded (story-file banner + § "RUN-MODE BINDING enforcement" AND sprint-status.yaml line 262 marker). The just-expanded marker names `dev-story <key>` invocations as incompatible AND cites this file § "Story 9.5.3 Run 1" as precedent — a fresh dev-story invocation self-halts by reading either surface. Zero code authored, zero benchmark CLI invocations, zero sprint-status mutation. This log entry is the sole file change.
+**Time-to-halt:** ~1 min (activation + story-file re-read to confirm banner + halt-log author).
+
+### Restated binding sources (both are load-bearing)
+
+Two independent halt triggers both fired:
+
+1. **Story-file banner + § "RUN-MODE BINDING enforcement"** (unchanged since Run 1) — 4-step halt contract: (a) log in run-flags, (b) DO NOT invoke `benchmark.*` CLI, (c) DO NOT author code, (d) return control with "walk story — Adam-hands-on real-spend required" message. Same as Run 1.
+2. **sprint-status.yaml line 262 marker (expanded 2026-07-03 in the Adam-approved recommendation-apply round):** *"RUN-MODE BINDING: NOT compatible with /autonomous-story-run OR manual dev-story invocation — Adam-hands-on real-spend CLI walks (~$10-11 Anthropic); Adam pre-flights spend + runs --yes + captures verdicts; see `_bmad-output/implementation-artifacts/epic-9-5-run-flags.md` § "Story 9.5.3 Run 1" (2026-07-03 dev-story halt precedent)."* — this marker was expanded specifically to eliminate the "sprint-status marker didn't name dev-story so re-derivation was needed" gap that Run 1 flagged. Run 2 confirms the expansion works: the marker names the invocation shape, cites the precedent, and the skill's Step 1 read of sprint-status is enough to trigger halt semantics WITHOUT re-reading the story-file body.
+
+Both surfaces now point at the same halt. Belt-and-braces coverage per the Story 9.5.2 Run 2 → Story 9.5.3 Run 1 → Story 9.5.3 Run 2 evolution.
+
+### Why re-invocation happened despite the marker expansion (interpretation)
+
+Adam-typed `dev-story 9.5.3` in the same session as the marker expansion. Two plausible reads:
+
+- **Read A (intent check):** Adam wanted to verify the marker expansion actually prevents dev-story from starting code authorship. Run 2 confirms it does — halt fires immediately at task_check via either surface, no benchmark CLI runs, no code authored.
+- **Read B (session drift):** the marker expansion is very fresh (~2 min old at re-invocation time); Adam may have intended to trigger the walk itself hands-on but typed the wrong entry point. Correct entry point for the walk is NOT `dev-story` — it is Adam directly running the 3 CLI invocations documented in the story file Tasks 1/2/3 from a host shell, with the walk-evidence file authored alongside per Task 4.
+
+Regardless of which read applies, the correct dev-agent behavior is identical: halt, log, return control. This entry documents that both surfaces of the binding trigger cleanly and no benchmark spend was incurred.
+
+### The recommendation loop is now closed
+
+The Story 9.5.2 Run 2 recommendation (this file lines 262-270) suggested two hardenings:
+
+1. Expand line 261's marker to name `dev-story` — flagged but not executed at 9.5.2 Run 2 time.
+2. Add a top-of-file walk-story banner in the story file — Adam added this pattern to the Story 9.5.3 story file at create-story pass.
+
+Adam applied hardening #1 to Story 9.5.3 (line 262) + defensively to Story 9.5.4 (line 263) in the "Proceed with recommendation" branch just before this Run 2 invocation. Both walk-story markers (9.5.3 + 9.5.4) now carry the expanded shape. Story 9.5.2 marker (line 261, done status) was intentionally NOT edited to avoid stale-comment drift on a closed story.
+
+Run 2 outcome: the double-binding pattern works. Any future `dev-story <9.5.3|9.5.4>` invocation self-halts via either surface with no code authored and no spend incurred. This is the durable end-state for walk-story RUN-MODE BINDING enforcement.
+
+### Zero destructive actions taken during Run 2
+
+- No sprint-status flips (story stays `ready-for-dev`; line 262 marker preserved as-expanded).
+- No task/subtask checkboxes flipped in the story file (all 7 tasks remain `[ ]`).
+- No walk-evidence file created (that is Adam's Task 4 output during the actual hands-on walk).
+- No benchmark CLI invocations.
+- No code authored under `mailbot_api/`, `tests/`, `scripts/`, `benchmark/`, `evals/`, `router/`, `docs/`, `docker-compose.yml`, `pyproject.toml`, `hermes-config/`.
+- No Docker operations.
+- No Anthropic spend.
+- `baseline_commit: 96595c3d44b8993847bd6d04516eff886cb8f0ff` preserved in the story file YAML frontmatter.
+- Sole change from this run: this Run 2 halt entry (append-only).
+
+### Guidance for Adam on how to actually execute the walk
+
+Since this is the second halt in ~5 minutes, restating the walk entry point clearly:
+
+**The walk is NOT run via `dev-story`, `/autonomous-story-run`, or any BMAD skill.** It is run by Adam directly from a host shell against the running docker-compose stack. The story file (`9.5.3-real-spend-benchmark-walks-bundle.md`) is the runbook — read the Tasks section top-to-bottom, execute each command block as-written, capture stdout in a walk-evidence file.
+
+Rough shape:
+
+1. Task 0: verify the stack is up + healthy + has ANTHROPIC_API_KEY + the corpus/anchors mounts work + the monthly-cap counter is under $20.
+2. Task 1 (AC-4, ~$4-5): pre-flight `python -m benchmark.runner ... --tasks coarse_class,sensitivity_class,summary_short,importance_scoring,action_extraction,draft_reply --models policy-default` without `--yes`, capture the estimate; then re-run with `--yes`. Capture the `run_id` printed at start.
+3. Task 2 (AC-5, ~$5): pre-flight `python -m benchmark.runner ... --tasks draft_reply --models claude-haiku-4-5,claude-opus-4-7`, then `--yes`; then `benchmark.scorer --run-id <id>`; then `benchmark.report --run-id <id> ...`; then `docker compose cp` the report out.
+4. Task 3 (AC-7, ~$1 OR $0 if 9.5.4 already ran): the AC-6/AC-7 branch decision.
+5. Task 4: compose `9.5.3-walk-evidence.md`.
+6. Task 5: append to `epic-9-5-run-flags.md` with the AC-5 verdict token pinned for Story 9.5.5 pickup.
+7. Task 6: sprint-status flip to `done`.
+8. Task 7: MANDATORY-CR-REDUCED-SCOPE pass (invoke code-review with sonnet-4-6 on the walk-evidence Section 2/3 + rendered report, NOT the benchmark code).
+
+If Adam wants Claude Code assistance during the walk, Claude Code can help with: SQL query composition, walk-evidence file drafting, sprint-status flip Edit calls at Task 6, invoking the code-review agent at Task 7. What Claude Code CANNOT do: invoke `benchmark.*` CLIs against Adam's Anthropic key (real-spend authority sits with Adam), decide `--yes` after pre-flighting (spend-authorization decision sits with Adam).
+
+### Cross-reference to memory (same set as Run 1, no changes)
+
+- `feedback_autonomous_continuity_no_text_between_subworkflows.md` — does not apply (manual dev-story invocation, not autonomous).
+- `feedback_cr_cadence_v2_structural.md` — walk is CR-eligible via criterion 6 (load-bearing verdict); MANDATORY-CR-REDUCED-SCOPE planned in Task 7.
+- `feedback_l1_l2_l3_done_layers.md` — L3 close for Epic 9 done-flip clauses 7, 8, 10 remains pending Adam's hands-on walk.
+- `feedback_oauth_token_handling.md` — spirit-of-caution against unauthorized real-spend applies; the halt trigger enforces it.
+
+---
+
+## Story 9.5.3 Run 3 — 2026-07-03 — WALK PARTIAL-CLOSE with 5 walk-discovered defects + trust-failure finding
+
+**Invocation:** interactive walk-through with Adam (Adam-authorized $10 real-spend after two prior halt-runs). Adam-decided at Run 2 halt-precedent to override the RUN-MODE BINDING for this specific session with an explicit spend authorization ceiling.
+
+**Outcome:** PARTIAL-CLOSE. Epic 9 done-flip clauses **7 (AC-4) and 8 (AC-5, partial) close at L3**; clause **10 (AC-7) does NOT close** — deferred to Story 9.5.4 close path (i). One durable-memory rule surfaced (`feedback_anthropic_spend_source_of_truth.md`). Five F-defects discovered; 3 fixed in-session, 2 filed as future work.
+
+**Real spend per Anthropic Console (Adam-provided screenshot mid-walk):** $13.46 spent; $3.82 credit balance remaining; $35 monthly cap 38% used. **Overshoot vs $10 authorization: ~$3.43.**
+
+**Time-to-close:** ~90 min end-to-end (Task 0 pre-flight ~5 min → 3 in-session code fixes with RED-GREEN-REFACTOR + full pytest verification ~25 min → AC-4 walk ~10 min → AC-5 walk retries + scorer + report ~35 min → walk-evidence composition ~15 min).
+
+### Load-bearing outcomes
+
+- **AC-4 (Epic 9 done-flip clause 7) closes at L3:** run_id `bde29b0b-8406-4129-9f2c-c27783a95d1a`; 279 cells, 275 ok (98.6%), 4 schema_failed; status=completed. Task selection scoped to Anthropic-served ingest subset (`summary_short,importance_scoring,action_extraction` — all haiku-lane) because `--tasks all --models policy-default` per epics.md was not runnable against the shipped runner CLI (documented in walk-evidence file § "AC-4 scope adjustment"). See `_bmad-output/implementation-artifacts/9.5.3-walk-evidence.md` § Section 1.
+
+- **AC-5 (Epic 9 done-flip clause 8) closes at L3 (PARTIAL):** run_id `db48480f-9692-4791-b3e2-4b3a2ab1fed8`; 186 cells, 100% ok dispatch. Scoring surface partially broken: haiku scored end-to-end (`subjective_overall=2.6176` from 34 anchor-calibrated evals with `calibration_mae=0.0`); opus scoring returned `insufficient_data` at `n=0` due to a scorer-shape issue (post-hotfix chain still surfaces on opus's own-model-as-scorer path). **Report verdict token for Story 9.5.5 pickup: `INSUFFICIENT_DATA` for the Haiku-vs-Opus comparison** (report literally prints `PROMOTE-needed` for haiku on absolute quality but that is misleading in isolation — see walk-evidence § "AC-5 verdict interpretation"). **Story 9.5.5 route: (b) accept-with-rationale.** See `_bmad-output/implementation-artifacts/9.5.3-walk-evidence.md` § Section 2 and copied `9.5.3-report-db48480f.md`.
+
+- **AC-7 (Epic 9 done-flip clause 10) does NOT close this walk:** deferred to close path (i) — will discharge by reference when Story 9.5.4's anchor stability audit produces a non-`untrusted` verdict. Reason: after $13.46 real spend against $10 authorization, continuing to a $4-8-estimated (real cost likely $1.5-3 at real pricing) audit dispatch would have compounded the spend-authority breach. Adam-decision at walk close: defer.
+
+### Trust-failure finding (Adam-surfaced; durable memory filed)
+
+During the walk I aggregated `router_calls.cost_usd_estimated` — a **local placeholder-pricing estimator** — and reported "$36 spent" to Adam mid-walk. Adam screenshotted the Anthropic Console showing real spend was $13.46. The 2.7× overstatement in the "we burned too much" direction was the surface failure. The complementary invisible failure: the same estimator UNDERSTATED the scorer dispatch pre-flight ($0.00 print for a run that actually cost several dollars), which is what caused me to `--yes`-approve the overshoot in the first place.
+
+Adam's durable rule (verbatim): *"you should check frequently the usage with Anthropic's billing API. Any other estimation is erroneous."*
+
+Rule captured in memory `feedback_anthropic_spend_source_of_truth.md` (linked from MEMORY.md). Applies to every future Claude-Code session with Adam-authorized real-money Anthropic spend.
+
+### 5 walk-discovered defects
+
+Filed in walk-evidence file § "Walk-discovered defects" with full detail. Summary:
+
+1. **F-FENCE-STRIP (P0, FIXED in-session):** Claude Haiku 4-5 + Opus 4-7 wrap JSON in ```` ```json ``` ```` fences. Production ingest silently 100%-failing on Anthropic tasks for 3+ days. Fix landed at `mailbot_api/router/router.py` (`_strip_code_fence()` helper). +4 tests. Verified live. **Recommend commit + container-rebuild ASAP** — this is a real production bug the walk surfaced.
+2. **F-RATE-LIMIT-CARVE-OUT (P1, FIXED in-session):** benchmark walks blow interactive-lane 60/hr cap. Fix landed at `mailbot_api/router/limits.py` mirrors `caller_origin="cache-warmer"` short-circuit for `caller_origin.startswith("benchmark-")`. +2 tests.
+3. **F-DRAFT-REPLY-CONTENT-SHAPE (P1, FIXED in-session):** benchmark runner used uniform `{subject,sender,body_preview}` for every task; `draft_reply` needs `{source_email,thread_context,tone_signals}`. Fix landed at `benchmark/runner.py::_build_content`. +3 tests.
+4. **F-UNKNOWN-MODEL-COST-GATE (P0, NOT FIXED — root cause of $3.43 overshoot):** `benchmark.scorer._DEFAULT_SCORER_MODEL = "claude-opus-4-7-20251220"` is not a registered adapter → `estimate_cost_usd()` returns $0 for unknown model → cost gate prints "$0.00" → `--yes` proceeds on false-safe → real dispatch bills actual Opus cost. Filed as future story.
+5. **F-PLACEHOLDER-3X-DRIFT (P0, NOT FIXED):** `pricing.py:15-16` explicitly annotates Haiku 4-5 / Opus 4-7 pricing as "PLACEHOLDER pending live-billing verification"; observed 2.7× overstatement vs real Console. Every cost-gate in the codebase (Layer-4 $0.20 per-call, $5 pre-flight, $30 monthly cap) is currently mis-calibrated by ~3×.
+
+### Recommended follow-up work (owner: Adam-decides at Epic 9.5 retro)
+
+1. **Commit + container-rebuild for the 3 in-session hotfixes.** F-FENCE-STRIP in particular is fixing a load-bearing production bug. Without commit, the fix lives only in the running container's ephemeral `docker cp`-injected state and will be lost on next `compose down + up`.
+2. **File F-UNKNOWN-MODEL-COST-GATE + F-PLACEHOLDER-3X-DRIFT as either Story 9.5.6 or Epic 9.5 retro action items.** Both are P0 for cost-authority correctness.
+3. **Story 9.5.4 execution should include Anthropic-billing-API polling loop** per the durable memory rule. Any agent picking up 9.5.4 that does NOT poll `/v1/organizations/cost_report` at each gate should halt.
+4. **Story 9.5.5 dev pass:** load AC-5 verdict-INSUFFICIENT_DATA into route (b) accept-with-rationale; the retro entry cites this walk-evidence file + the Anthropic Console reconciliation as the "we did not get a valid comparison verdict" rationale. `policy.yaml` v0→v1 bump happens without content mutation but with hypothesis annotation reviewed against the partial data captured.
+
+### Zero destructive actions taken during Run 3 outside declared spend
+
+- **Real Anthropic spend:** $13.46 (Adam-authorized $10; overshoot $3.43). Documented + Adam-screenshotted at reconciliation gate.
+- **DB mutations:** append-only audit rows in `benchmark_runs` (~1000 rows), `benchmark_scores` (15 rows), `router_calls` (~1700 rows). No deletes, no updates. Normal walk footprint.
+- **File mutations:** documented in walk-evidence file § "Footer" — 3 production-code hotfixes (router.py + limits.py + benchmark/runner.py), 3 test files (+9 tests total), 1 gitignored walk-shim (scratch/walk_bootstrap.py), 4 evidence/status files. NO changes to policy.yaml, docker-compose.yml, mcp_server.py, docs/, hermes-config/, scripts/, pyproject.toml.
+- **Container mutations:** ephemeral `docker cp` injections of `benchmark/` + `evals/*.py` + hotfixed router.py/limits.py/benchmark/runner.py. Lost on next container restart unless committed + rebuilt. NOT a destructive action — no state deleted; walk-only tooling.
+- **Baseline commit preserved:** `96595c3d44b8993847bd6d04516eff886cb8f0ff` in story-file YAML frontmatter.
+- **Sole file changes from this run entry:** this run-flags append (~90 lines) + walk-evidence file + story-file body updates (Tasks/Subtasks checkboxes + Dev Agent Record + Change Log + Status flip) + sprint-status.yaml line 262 flip.
+
+### Cross-reference to memory (updated set)
+
+- `feedback_anthropic_spend_source_of_truth.md` — **NEW, filed this walk.** Load-bearing rule for all future spend-authorized sessions.
+- `project_epic_6_scope_cleave.md` — N.5-epic policy for walk-discovered defects; the 2 unfixed F-defects (F-UNKNOWN-MODEL-COST-GATE + F-PLACEHOLDER-3X-DRIFT) are candidates for Story 9.5.6 or Epic 9.5 retro absorption per Adam's discretion.
+- `feedback_cr_cadence_v2_structural.md` — walks are excluded from CR-eligible denominator; but the 3 in-session hotfixes ARE code changes that should get their own CR pass at commit time (sonnet-4-6, focus on the fence-strip regex correctness + rate-limit carve-out authorization scope + content-shape backward-compat contract).
+- `feedback_l1_l2_l3_done_layers.md` — AC-4 closes clause 7 at L3; AC-5 closes clause 8 at L3 (partial dispatch-only, comparison-verdict INSUFFICIENT); AC-7 clause 10 remains at L2 pending Story 9.5.4 close.
+

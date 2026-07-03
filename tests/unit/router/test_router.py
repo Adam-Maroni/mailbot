@@ -253,6 +253,143 @@ async def test_ask_router_schema_failure_then_retry_fails_no_escalate(
     assert row == ("failed",)
 
 
+# ---- Story 9.5.3 hotfix: code-fence stripping (Anthropic wraps JSON in ```json fences) ----
+
+
+async def test_ask_router_first_attempt_json_wrapped_in_markdown_fence_succeeds(
+    tmp_path: Path, _clean_state: None
+) -> None:
+    """Story 9.5.3 walk-discovered defect: Claude Haiku 4-5 responses wrap the
+    JSON payload in a ```json ... ``` markdown code fence despite the prompt's
+    'no preamble' instruction. Without fence stripping, pydantic rejects the
+    input and every structured-output dispatch fails schema_validation.
+
+    Corpus evidence at walk time: 100% of Anthropic-served ingest tasks
+    (summary_short, importance_scoring, action_extraction, draft_reply)
+    failed with outcome='failed' across 500+ router_calls rows in the 3 days
+    before the hotfix. CR-F7 (2026-07-03): adapter registered under
+    ``fake-claude`` (not ``fake-qwen`` as in sibling tests) because the
+    fence-wrapping behavior is Anthropic-specific — the name reflects the
+    root cause the regression guards against.
+    """
+    db_path = _setup_db_and_policy(tmp_path, model="fake-claude")
+    fenced_response = f"```json\n{_good_output_json()}\n```"
+    adapter = _FakeAdapter([_adapter_response(fenced_response)])
+    register_adapter("fake-claude", adapter)
+
+    result = await ask_router("coarse_class", _content(), db_path=db_path)
+    assert result.ok is True
+    assert len(adapter.call_log) == 1, "first attempt should succeed after fence strip"
+
+    row = await fetchone(db_path, "SELECT outcome FROM router_calls", ())
+    assert row == ("ok",)
+
+
+async def test_ask_router_bare_json_still_works_after_hotfix(
+    tmp_path: Path, _clean_state: None
+) -> None:
+    """Regression: bare JSON (production ingest pre-Haiku-4-5) must still parse."""
+    db_path = _setup_db_and_policy(tmp_path, model="fake-claude")
+    adapter = _FakeAdapter([_adapter_response(_good_output_json())])
+    register_adapter("fake-claude", adapter)
+
+    result = await ask_router("coarse_class", _content(), db_path=db_path)
+    assert result.ok is True
+
+    row = await fetchone(db_path, "SELECT outcome FROM router_calls", ())
+    assert row == ("ok",)
+
+
+async def test_ask_router_generic_triple_backtick_fence_also_strips(
+    tmp_path: Path, _clean_state: None
+) -> None:
+    """Some Claude versions omit the language tag and emit ``` ... ``` bare."""
+    db_path = _setup_db_and_policy(tmp_path, model="fake-claude")
+    fenced_response = f"```\n{_good_output_json()}\n```"
+    adapter = _FakeAdapter([_adapter_response(fenced_response)])
+    register_adapter("fake-claude", adapter)
+
+    result = await ask_router("coarse_class", _content(), db_path=db_path)
+    assert result.ok is True
+
+
+async def test_ask_router_fenced_response_on_retry_leg_recovers(
+    tmp_path: Path, _clean_state: None
+) -> None:
+    """First attempt returns garbage, retry returns fenced JSON — fence strip
+    must also apply on the retry leg."""
+    db_path = _setup_db_and_policy(tmp_path, model="fake-claude")
+    adapter = _FakeAdapter(
+        [
+            _adapter_response("not json at all"),
+            _adapter_response(f"```json\n{_good_output_json()}\n```"),
+        ]
+    )
+    register_adapter("fake-claude", adapter)
+
+    result = await ask_router("coarse_class", _content(), db_path=db_path)
+    assert result.ok is True
+
+    row = await fetchone(db_path, "SELECT outcome FROM router_calls", ())
+    assert row == ("retry_recovered",)
+
+
+async def test_ask_router_fence_with_preamble_and_trailing_prose_strips(
+    tmp_path: Path, _clean_state: None
+) -> None:
+    """CR-F1 (2026-07-03): Claude sometimes emits ``Here you go:`` before the
+    fence and ``Note: ...`` after. The pre-fix regex was fully anchored
+    (``^...$``) so any surrounding prose caused the fence to survive and
+    pydantic to reject the input. Post-fix uses ``re.search`` on the
+    innermost fence pair, tolerating surrounding prose."""
+    db_path = _setup_db_and_policy(tmp_path, model="fake-claude")
+    fenced = (
+        f"Here you go:\n\n```json\n{_good_output_json()}\n```\n\n"
+        f"Note: this classification is my best guess."
+    )
+    adapter = _FakeAdapter([_adapter_response(fenced)])
+    register_adapter("fake-claude", adapter)
+
+    result = await ask_router("coarse_class", _content(), db_path=db_path)
+    assert result.ok is True
+
+
+async def test_ask_router_fence_with_uppercase_and_jsonlines_tag_strips(
+    tmp_path: Path, _clean_state: None
+) -> None:
+    """CR-F2 (2026-07-03): the pre-fix alternation ``(?:json|JSON)?`` only
+    matched literal ``json`` or ``JSON``. Tags like ``jsonlines`` or
+    ``JSON`` (already covered) or ``Json`` leaked ``lines\\n{...}`` etc.
+    into the captured payload. Post-fix uses ``\\w*`` so any word-char
+    language tag is consumed."""
+    db_path = _setup_db_and_policy(tmp_path, model="fake-claude")
+    fenced = f"```JSON\n{_good_output_json()}\n```"
+    adapter = _FakeAdapter([_adapter_response(fenced)])
+    register_adapter("fake-claude", adapter)
+
+    result = await ask_router("coarse_class", _content(), db_path=db_path)
+    assert result.ok is True
+
+
+async def test_ask_router_multi_fence_uses_first_fence_only(
+    tmp_path: Path, _clean_state: None
+) -> None:
+    """CR-F1 (2026-07-03): non-greedy match on the first fence pair. A model
+    that emits the payload then a second ``example`` fence must not have
+    its closing ``\\`\\`\\``` swallowed by a fullmatch anchor."""
+    db_path = _setup_db_and_policy(tmp_path, model="fake-claude")
+    fenced = (
+        f"```json\n{_good_output_json()}\n```\n\n"
+        f"For reference, the schema shape is:\n"
+        f"```json\n{{\"example\": true}}\n```"
+    )
+    adapter = _FakeAdapter([_adapter_response(fenced)])
+    register_adapter("fake-claude", adapter)
+
+    result = await ask_router("coarse_class", _content(), db_path=db_path)
+    assert result.ok is True
+
+
 async def test_ask_router_schema_failure_then_escalation_succeeds(
     tmp_path: Path, _clean_state: None
 ) -> None:

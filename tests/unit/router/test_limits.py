@@ -79,6 +79,62 @@ def test_enforce_rate_limit_unknown_lane_skips_lane_check() -> None:
     assert enforce_rate_limit("custom-lane", "override") is None
 
 
+# ---- Story 9.5.3 hotfix: benchmark-runner short-circuit ----
+
+
+def test_enforce_rate_limit_benchmark_runner_short_circuits() -> None:
+    """Story 9.5.3 walk-discovered defect: the benchmark runner dispatches
+    100-200 cells in a single walk, but draft_reply is `lane: interactive`
+    (60/hr). Without a carve-out, AC-5 walks are structurally impossible.
+
+    Mirrors the `caller_origin='cache-warmer'` carve-out at limits.py:100 —
+    benchmark-runner is a controlled, one-shot spend gate (Story 9-6 cost
+    gate authorizes each run in advance), so the per-hour rate limit is
+    orthogonal.
+    """
+    # Exhaust the interactive lane first with a normal caller.
+    for _ in range(LIMIT_INTERACTIVE_PER_HOUR):
+        enforce_rate_limit("interactive", "policy")
+    # Normal caller now sees the breach.
+    assert enforce_rate_limit("interactive", "policy") == "lane:interactive"
+    # But a benchmark-runner-origin call passes through the lane gate.
+    assert (
+        enforce_rate_limit("interactive", "override:api:force_model", caller_origin="benchmark-runner")
+        is None
+    )
+
+
+def test_enforce_rate_limit_benchmark_scorer_also_short_circuits() -> None:
+    """Same carve-out extends to `benchmark-scorer` (Story 9-7 subjective
+    auto-eval also dispatches 100+ cells against the anchor calibration
+    prompt). Explicit allowlist entry (CR-F5 2026-07-03, was startswith
+    prefix pre-patch)."""
+    for _ in range(LIMIT_INTERACTIVE_PER_HOUR):
+        enforce_rate_limit("interactive", "policy")
+    assert (
+        enforce_rate_limit("interactive", "override:api:force_model", caller_origin="benchmark-scorer")
+        is None
+    )
+
+
+def test_enforce_rate_limit_unlisted_benchmark_prefix_does_not_bypass() -> None:
+    """CR-F5 (2026-07-03): a caller_origin like ``benchmark-unauthorized`` or
+    ``benchmark-experimental`` must NOT bypass the interactive lane cap.
+    Only the explicit allowlist entries (``benchmark-runner``,
+    ``benchmark-scorer``) short-circuit; the pre-patch ``startswith``
+    check widened the trust surface to any future benchmark-*-prefixed
+    caller without cost-gate coverage."""
+    for _ in range(LIMIT_INTERACTIVE_PER_HOUR):
+        enforce_rate_limit("interactive", "policy")
+    # Unauthorized benchmark-* prefix sees the lane breach.
+    assert (
+        enforce_rate_limit(
+            "interactive", "policy", caller_origin="benchmark-unauthorized"
+        )
+        == "lane:interactive"
+    )
+
+
 def test_enforce_rate_limit_escalation_with_breach_lane_returns_lane_first() -> None:
     """Order: lane check fires first; escalation check only reached if lane passes."""
     for _ in range(LIMIT_INTERACTIVE_PER_HOUR):
