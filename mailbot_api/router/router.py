@@ -162,6 +162,53 @@ async def _record(
     await record_router_call(row, db_path=db_path)
 
 
+async def _emit_sensitivity_refusal_audit_row(
+    *,
+    db_path: str,
+    task_type: str,
+    prompt_version: str,
+    model: str,
+    caller_verb: str | None,
+    caller_origin: str,
+    email_id: str | None,
+) -> None:
+    """Story 9.5.2 Run 3 (Path B) — emit a `sensitivity_gate:refused` audit
+    row before an early-return sensitivity refusal.
+
+    Previously the sensitivity gate refused dispatch by returning a
+    `RouterError` (with error code `SENSITIVITY_BLOCKS_API` or
+    `SENSITIVITY_NOT_CLASSIFIED`) WITHOUT ever writing a `router_calls`
+    row — leaving the `sensitivity_gate:refused` audit vocab entry defined
+    but unwired. AC-3 of Story 9.5.2 requires an audit row on refusal.
+
+    This helper wraps `_record` with sensible refusal defaults:
+      * `tokens_in/out = 0`, `cost_usd_estimated = 0.0`, `latency_ms = 0`
+        (no adapter call happened)
+      * `outcome = "failed"` (the dispatch did not proceed)
+      * `model_chosen_reason = SENSITIVITY_GATE_REFUSED`
+
+    Symmetric emission from both `ask_router` and `dispatch_tool_call` per
+    the Path B symmetric-scope decision (2026-07-03) — the vocab entry is
+    designed for both dispatchers.
+    """
+    await _record(
+        db_path=db_path,
+        task_type=task_type,
+        prompt_version=prompt_version,
+        model_chosen=model,
+        model_chosen_reason=ModelChosenReason.SENSITIVITY_GATE_REFUSED.value,
+        tokens_in=0,
+        tokens_out=0,
+        cached_tokens_in=0,
+        cost_usd_estimated=0.0,
+        latency_ms=0,
+        outcome="failed",
+        caller_verb=caller_verb,
+        caller_origin=caller_origin,
+        email_id=email_id,
+    )
+
+
 async def ask_router(
     task_type: str,
     content: dict[str, Any],
@@ -334,10 +381,16 @@ async def ask_router(
     #   - sensitive + API-bound model + valid token → consume → dispatch + populate grant_id on router_calls
     #   - confidential + API-bound model → SENSITIVITY_BLOCKS_API regardless of token (NFR-PRIV-2)
     #
-    # No router_calls row is written when the gate refuses — the precondition
-    # is a routing-side decision, not a dispatch outcome. On consume-success,
-    # the grant_id is captured into `_sensitivity_grant_id` and threaded
-    # through to `record_router_call` so the audit row carries it.
+    # Story 9.5.2 Run 3 (Path B, symmetric AC-3): sensitivity refusals NOW
+    # write a `sensitivity_gate:refused` audit row before returning. Prior
+    # contract (Stories 3-3 / 4-7 / 6-20): no router_calls row on refusal.
+    # New contract: refusal emits an audit row with reason
+    # SENSITIVITY_GATE_REFUSED so consumers can slice/count refusals via
+    # the same `router_calls` interface as successful dispatches. The
+    # RouterError shape is UNCHANGED — only the audit-row side effect is new.
+    # On consume-success, the grant_id is captured into `_sensitivity_grant_id`
+    # and threaded through to `record_router_call` so the successful audit
+    # row carries it.
     _sensitivity_grant_id: str | None = None
     _sensitivity_grant_minted_at: str | None = None
     if task_type != "sensitivity_class" and email_id is not None:
@@ -345,6 +398,15 @@ async def ask_router(
         if sensitivity_row is None or sensitivity_row[1] is None:
             # Either the email row is missing entirely OR sensitivity_at is NULL.
             # In both cases the FR-2.3 invariant blocks dispatch.
+            await _emit_sensitivity_refusal_audit_row(
+                db_path=db_path,
+                task_type=task_type,
+                prompt_version=prompt.version,
+                model=model,
+                caller_verb=caller_verb,
+                caller_origin=caller_origin,
+                email_id=email_id,
+            )
             return RouterResult(
                 ok=False,
                 error=RouterError(
@@ -356,6 +418,15 @@ async def ask_router(
         sensitivity_value, _sensitivity_at = sensitivity_row
         if sensitivity_value == "confidential" and _API_BOUND_MODEL_RE.match(model) is not None:
             # Per NFR-PRIV-2: confidential admits no override even with a token.
+            await _emit_sensitivity_refusal_audit_row(
+                db_path=db_path,
+                task_type=task_type,
+                prompt_version=prompt.version,
+                model=model,
+                caller_verb=caller_verb,
+                caller_origin=caller_origin,
+                email_id=email_id,
+            )
             return RouterResult(
                 ok=False,
                 error=RouterError(
@@ -369,6 +440,15 @@ async def ask_router(
         if sensitivity_value == "sensitive" and _API_BOUND_MODEL_RE.match(model) is not None:
             # Token handshake — Story 4-7.
             if confirmation_token is None:
+                await _emit_sensitivity_refusal_audit_row(
+                    db_path=db_path,
+                    task_type=task_type,
+                    prompt_version=prompt.version,
+                    model=model,
+                    caller_verb=caller_verb,
+                    caller_origin=caller_origin,
+                    email_id=email_id,
+                )
                 return RouterResult(
                     ok=False,
                     error=RouterError(
@@ -1400,16 +1480,59 @@ async def dispatch_tool_call(
             ),
         )
 
+    # Story 9.5.2 Run 3 (Path B, Flavor 1) — one-shot + persistent override
+    # peeks. Mirror `ask_router` behavior at router.py:218-223 + 287-288 so
+    # Hermes-chat-driven MCP invocations of `set_model_oneshot` /
+    # `set_model_persistent` actually engage on the downstream
+    # `/v1/chat/completions` dispatches (which route here, NOT through
+    # `ask_router`). Without these peeks, the OVERRIDE_SLASH_ONE_SHOT and
+    # OVERRIDE_SLASH_PERSISTENT audit reasons could never fire on the
+    # Hermes-chat surface — the Run 3 architectural finding that HALTED
+    # Story 9.5.2 Run 3 walk. See epic-9-5-run-flags.md § "Story 9.5.2 Run
+    # 3" for the code-read + evidence trail.
+    #
+    # Precedence (matches `ask_router` semantics):
+    #   1. Explicit `is_force_override=True` from caller → OVERRIDE_API (unchanged).
+    #   2. One-shot slot armed → force_model = slot.model, emit
+    #      OVERRIDE_SLASH_ONE_SHOT, PEEK only (consume happens at the
+    #      effective-dispatch site).
+    #   3. Persistent override present for task key "hermes_aux" → force
+    #      model to the override, emit OVERRIDE_SLASH_PERSISTENT. Flavor 1
+    #      choice (2026-07-03): `hermes_aux` is a valid task key for the
+    #      persistent-override use-case, keyed on the LANE (not a specific
+    #      per-email task). This makes `set_model_persistent(task="hermes_aux",
+    #      model="opus")` mean "every Hermes-chat completion uses opus."
+    #   4. Otherwise → policy_default("hermes_aux") (unchanged).
+    _oneshot_engaged: bool = False
+    _persistent_engaged: bool = False
+    if not is_force_override:
+        _oneshot_active = _get_active_oneshot_override()
+        if _oneshot_active is not None:
+            model = _oneshot_active.model
+            _oneshot_engaged = True
+        elif "hermes_aux" in policy.overrides_applied:
+            # `overrides_applied` is a frozenset[str] of task-key names whose
+            # entries were merged from `policy.user-overrides.yaml` — the
+            # merged policy value already lives in `policy.tasks[key].model`.
+            model = policy.tasks["hermes_aux"].model
+            _persistent_engaged = True
+
     # CR-2 (Story 6-9 review 2026-06-04): default to policy so policy-
     # resolved dispatches don't pollute cost-attribution queries that filter
     # by reason. Only flip to OVERRIDE_API when the endpoint signaled this is
     # an explicit user override (via is_force_override=True).
     # Story 9.2: vocabulary migrated to closed-set enum (see audit_vocab.py).
-    model_chosen_reason: str = (
-        ModelChosenReason.OVERRIDE_API.value
-        if is_force_override
-        else policy_default("hermes_aux")
-    )
+    # Story 9.5.2 Run 3: OVERRIDE_SLASH_ONE_SHOT / OVERRIDE_SLASH_PERSISTENT
+    # take precedence over policy_default when the corresponding slot/entry
+    # is armed (peeks above).
+    if is_force_override:
+        model_chosen_reason: str = ModelChosenReason.OVERRIDE_API.value
+    elif _oneshot_engaged:
+        model_chosen_reason = ModelChosenReason.OVERRIDE_SLASH_ONE_SHOT.value
+    elif _persistent_engaged:
+        model_chosen_reason = ModelChosenReason.OVERRIDE_SLASH_PERSISTENT.value
+    else:
+        model_chosen_reason = policy_default("hermes_aux")
 
     # ---- Story 2-8 Layer 3 — degraded mode gate ----
     guard = get_guard()
@@ -1479,6 +1602,17 @@ async def dispatch_tool_call(
                         f"email {eid!r} sensitivity must be classified before "
                         "any other Router task"
                     )
+                # Story 9.5.2 Run 3 (Path B, symmetric AC-3): emit
+                # `sensitivity_gate:refused` audit row on refusal.
+                await _emit_sensitivity_refusal_audit_row(
+                    db_path=db_path,
+                    task_type=_TOOL_CALL_TASK_TYPE,
+                    prompt_version=_TOOL_CALL_PROMPT_VERSION,
+                    model=model,
+                    caller_verb=caller_verb,
+                    caller_origin=caller_origin,
+                    email_id=eid,
+                )
                 return ToolCallResult(
                     ok=False,
                     error=RouterError(
@@ -1498,6 +1632,17 @@ async def dispatch_tool_call(
                     msg = "confidential emails admit no API override"
                 else:
                     msg = f"confidential email {eid!r} admits no API override"
+                # Story 9.5.2 Run 3 (Path B, symmetric AC-3): emit
+                # `sensitivity_gate:refused` audit row on refusal.
+                await _emit_sensitivity_refusal_audit_row(
+                    db_path=db_path,
+                    task_type=_TOOL_CALL_TASK_TYPE,
+                    prompt_version=_TOOL_CALL_PROMPT_VERSION,
+                    model=model,
+                    caller_verb=caller_verb,
+                    caller_origin=caller_origin,
+                    email_id=eid,
+                )
                 return ToolCallResult(
                     ok=False,
                     error=RouterError(
@@ -1526,6 +1671,17 @@ async def dispatch_tool_call(
                             f"sensitive email {eid!r} requires per-session "
                             "confirmation token to escalate to API"
                         )
+                    # Story 9.5.2 Run 3 (Path B, symmetric AC-3): emit
+                    # `sensitivity_gate:refused` audit row on refusal.
+                    await _emit_sensitivity_refusal_audit_row(
+                        db_path=db_path,
+                        task_type=_TOOL_CALL_TASK_TYPE,
+                        prompt_version=_TOOL_CALL_PROMPT_VERSION,
+                        model=model,
+                        caller_verb=caller_verb,
+                        caller_origin=caller_origin,
+                        email_id=eid,
+                    )
                     return ToolCallResult(
                         ok=False,
                         error=RouterError(
@@ -1597,6 +1753,16 @@ async def dispatch_tool_call(
                 )
 
     # ---- Dispatch ----
+    # Story 9.5.2 Run 3 (Path B) — consume the one-shot slot IF it was
+    # peeked-and-engaged above. Mirrors `ask_router` at router.py:686-687:
+    # consume happens at the effective-dispatch site (after all gates pass,
+    # before adapter call), NOT at peek time. This preserves the Story 9-3
+    # AC-3 invariant: gate-refused paths leave the override armed within
+    # its TTL. Consume is outcome-independent — an adapter failure post-
+    # consume still consumes the slot, matching Story 9-3 semantics.
+    if _oneshot_engaged:
+        _consume_oneshot_override()
+
     tokens_in = 0
     tokens_out = 0
     cached_tokens_in = 0

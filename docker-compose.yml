@@ -84,15 +84,26 @@ services:
       #   this bind-mount existed, policy.yaml would have been missing in
       #   production deploys (dev mode was masked by docker-compose.override).
       # - Overrides (read-write): operator-state, gitignored, written by Story
-      #   9-4 set_model_persistent via atomic os.replace(). Bind-mount target
-      #   may not exist on host filesystem at first boot — `touch` it via
-      #   setup_vps.sh OR let Story 9-4's first /model persistent call create
-      #   it. Compose v2 silently creates the file as a directory if missing
-      #   on Linux hosts, so the host-side path MUST exist as a file (even
-      #   empty) BEFORE first `docker compose up`. See `router/policy.user-
-      #   overrides.yaml.example` for the operator-facing template.
+      #   9-4 set_model_persistent via atomic os.replace().
+      #
+      # Story 9.5.2 Run 3 (Path B, 2026-07-03): the router/ directory is
+      # bind-mounted as a whole so `os.replace()` in
+      # write_user_overrides_atomic() works against the override file. Docker's
+      # single-file bind-mount pins the target inode, which makes `os.replace`
+      # fail with EBUSY (errno=16) — atomic rename cannot cross a bind-mount
+      # boundary. A directory-level bind-mount keeps atomic writes on the same
+      # filesystem inside the mounted directory, so `os.replace(tmpfile,
+      # policy.user-overrides.yaml)` succeeds. The file-level `:ro` overlay for
+      # `policy.yaml` still enforces read-only at the file-mount layer (Docker
+      # file-mounts take precedence over dir-mounts for the specific inode),
+      # so the shipped-policy-never-mutated invariant (Story 9-4 AC-2) is
+      # preserved.
+      #
+      # The host-side `router/policy.user-overrides.yaml` MUST exist as a file
+      # (even empty) BEFORE first `docker compose up`. See `router/policy.user-
+      # overrides.yaml.example` for the operator-facing template.
+      - ./router:/app/router
       - ./router/policy.yaml:/app/router/policy.yaml:ro
-      - ./router/policy.user-overrides.yaml:/app/router/policy.user-overrides.yaml
       # NOTE: router/sensitivity_patterns.yaml has the same latent production
       # gap as policy.yaml (no Dockerfile COPY; lifespan default path
       # /app/router/sensitivity_patterns.yaml; dev mode masked by

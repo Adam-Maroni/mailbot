@@ -317,17 +317,20 @@ async def test_oneshot_override_inherits_sensitivity_gate(
         )
         assert active.model == _OPUS
 
-        # Audit row: NO row written on gate refusal (per Story 4-7 — refusal
-        # is a routing-side decision, not a dispatch outcome).
+        # Story 9.5.2 Run 3 (Path B, symmetric AC-3): gate refusal now emits
+        # a `sensitivity_gate:refused` audit row (contract inverted from the
+        # original Story 4-7 no-row-on-refusal invariant to close the
+        # vocabulary-wired-but-never-emitted gap).
         row = await fetchone(
             db_path,
             "SELECT model_chosen_reason FROM router_calls WHERE task_type = ?",
             (task_type,),
         )
-        # The router does NOT write router_calls rows when sensitivity refuses.
-        # This is the Story 4-7 contract; verified here for the override path.
-        assert row is None, (
-            f"expected NO router_calls row on sensitivity refusal; got {row}"
+        assert row is not None, (
+            "expected `sensitivity_gate:refused` router_calls row on refusal; got None"
+        )
+        assert row[0] == "sensitivity_gate:refused", (
+            f"expected model_chosen_reason='sensitivity_gate:refused'; got {row[0]!r}"
         )
     else:
         # Allowed case — dispatch succeeds + audit row carries

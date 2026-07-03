@@ -367,12 +367,16 @@ async def test_dispatch_tool_call_gates_on_sensitive_email_in_tool_result_conten
     assert result.error.code == ErrorCode.SENSITIVITY_BLOCKS_API
     assert "e_sens" in result.error.message
 
-    # AC-2 §5 — refusal MUST NOT write a router_calls row.
+    # Story 9.5.2 Run 3 (Path B, symmetric AC-3): refusal now writes a
+    # `sensitivity_gate:refused` audit row (contract inverted from the
+    # original F28 no-row-on-refusal invariant).
     rows = await fetchall(
-        db_path, "SELECT COUNT(*) FROM router_calls WHERE task_type = ?",
+        db_path,
+        "SELECT model_chosen_reason FROM router_calls WHERE task_type = ?",
         (_TOOL_CALL_TASK_TYPE,),
     )
-    assert rows[0][0] == 0
+    assert len(rows) == 1
+    assert rows[0][0] == "sensitivity_gate:refused"
 
 
 async def test_dispatch_tool_call_gates_on_confidential_email_unconditional(
@@ -547,12 +551,13 @@ async def test_dispatch_tool_call_legacy_email_id_param_path_still_gates(
     )
 
 
-async def test_dispatch_tool_call_refusal_writes_no_audit_row(
+async def test_dispatch_tool_call_refusal_writes_sensitivity_gate_refused_audit_row(
     tmp_path: Path, _clean_state: Any,
 ) -> None:
-    """AC-5.12 — precondition-layer refusal writes ZERO router_calls rows.
-    Counter-test to lock in the "refusal is a routing-side decision, not a
-    dispatch outcome" contract.
+    """Story 9.5.2 Run 3 (Path B, symmetric AC-3) — precondition-layer
+    refusal now writes exactly ONE `sensitivity_gate:refused` router_calls
+    row (contract inverted from the original AC-5.12 no-row invariant to
+    close the vocabulary-wired-but-never-emitted gap).
     """
     db_path = _setup(tmp_path)
     await _seed_email(db_path, graph_id="e_conf", sensitivity="confidential")
@@ -569,6 +574,12 @@ async def test_dispatch_tool_call_refusal_writes_no_audit_row(
     assert result.ok is False
 
     rows = await fetchall(
-        db_path, "SELECT COUNT(*) FROM router_calls", (),
+        db_path,
+        "SELECT task_type, model_chosen_reason, outcome, email_id FROM router_calls",
+        (),
     )
-    assert rows[0][0] == 0
+    assert len(rows) == 1
+    assert rows[0][0] == _TOOL_CALL_TASK_TYPE
+    assert rows[0][1] == "sensitivity_gate:refused"
+    assert rows[0][2] == "failed"
+    assert rows[0][3] == "e_conf"

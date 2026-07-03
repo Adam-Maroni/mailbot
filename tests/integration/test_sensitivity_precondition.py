@@ -164,9 +164,14 @@ async def test_precondition_refuses_unclassified_email(tmp_path: Path, _clean_st
     assert result.error is not None
     assert result.error.code == ErrorCode.SENSITIVITY_NOT_CLASSIFIED
 
-    # CRITICAL: no router_calls row written — precondition is upstream of audit.
-    rows = await fetchall(db_path, "SELECT id FROM router_calls", ())
-    assert rows == []
+    # Story 9.5.2 Run 3 (Path B, symmetric AC-3): refusal now writes a
+    # `sensitivity_gate:refused` audit row (contract inverted from the
+    # original no-row-on-refusal invariant).
+    rows = await fetchall(
+        db_path, "SELECT model_chosen_reason FROM router_calls", ()
+    )
+    assert len(rows) == 1
+    assert rows[0][0] == "sensitivity_gate:refused"
 
 
 async def test_precondition_allows_classified_email(tmp_path: Path, _clean_state: Any) -> None:
@@ -207,9 +212,14 @@ async def test_precondition_blocks_sensitive_to_haiku(tmp_path: Path, _clean_sta
     assert result.error.code == ErrorCode.SENSITIVITY_BLOCKS_API
     assert result.error.model_attempted == [_HAIKU]
 
-    # No router_calls row — gate is upstream of audit.
-    rows = await fetchall(db_path, "SELECT id FROM router_calls", ())
-    assert rows == []
+    # Story 9.5.2 Run 3 (Path B, symmetric AC-3): refusal now writes a
+    # `sensitivity_gate:refused` audit row (contract inverted from the
+    # original no-row-on-refusal invariant).
+    rows = await fetchall(
+        db_path, "SELECT model_chosen_reason FROM router_calls", ()
+    )
+    assert len(rows) == 1
+    assert rows[0][0] == "sensitivity_gate:refused"
 
 
 async def test_precondition_blocks_confidential_to_haiku(tmp_path: Path, _clean_state: Any) -> None:
