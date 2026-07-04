@@ -2,13 +2,16 @@
 
 The strong-model evaluator that scores per-row ``draft_reply`` and
 ``summary_short`` outputs 1-5 across the per-task rubric axes, using the
-20 hand-anchored examples from Story 9-5 as inline calibration.
+hand-anchored examples from Story 9-5 as inline calibration (the full
+anchor set per-row; a leave-one-out subset during anchor calibration —
+F-ANCHOR-ANSWER-KEY-LEAK fix, Story 9.5.4; count wording removed from
+SYSTEM per CR2026-07-04B-W1 so the instruction stays true for both).
 
 The USER_TEMPLATE accepts pre-rendered ``{anchors_block}`` +
 ``{item_block}`` strings (built by
 ``benchmark/scoring/subjective.py::build_subjective_eval_payload``).
 The SYSTEM block is byte-stable so Anthropic ephemeral prompt cache (Rule M)
-fires across the 20 anchor calibration calls + N per-row scoring calls
+fires across the anchor calibration calls + N per-row scoring calls
 within a single scorer invocation.
 
 Output is task-agnostic: ``overall_score`` ∈ {1..5} +
@@ -27,7 +30,7 @@ VERSION: str = "v1"
 
 SYSTEM = (
     "You are a strict evaluator. Score the model output 1-5 across the listed "
-    "rubric axes using the 20 anchored examples as calibration. Each anchor "
+    "rubric axes using the anchored examples as calibration. Each anchor "
     "carries Adam's overall score plus per-axis scores; calibrate against "
     "those values, do NOT use your own absolute scale.\n"
     "Reply with valid JSON matching the schema; no preamble, no commentary, "

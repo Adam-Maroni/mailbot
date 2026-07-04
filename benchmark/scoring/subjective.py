@@ -142,7 +142,7 @@ def load_anchors(anchors_dir: Path, task_type: str) -> list[AnchorItem]:
 
 
 def build_anchors_block(anchors: list[AnchorItem]) -> str:
-    """Render the 20 anchors as a markdown calibration block.
+    """Render the given anchors as a markdown calibration block.
 
     Each anchor section carries the input subject/body, the model_output
     being scored, Adam's per-axis scores, his overall score, and the
