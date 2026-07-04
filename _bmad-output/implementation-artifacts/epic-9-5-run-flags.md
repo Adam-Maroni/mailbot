@@ -651,3 +651,128 @@ Filed in walk-evidence file § "Walk-discovered defects" with full detail. Summa
 - `feedback_cr_cadence_v2_structural.md` — walks are excluded from CR-eligible denominator; but the 3 in-session hotfixes ARE code changes that should get their own CR pass at commit time (sonnet-4-6, focus on the fence-strip regex correctness + rate-limit carve-out authorization scope + content-shape backward-compat contract).
 - `feedback_l1_l2_l3_done_layers.md` — AC-4 closes clause 7 at L3; AC-5 closes clause 8 at L3 (partial dispatch-only, comparison-verdict INSUFFICIENT); AC-7 clause 10 remains at L2 pending Story 9.5.4 close.
 
+---
+
+## Story 9.5.4 Run 1 — 2026-07-03 — HALTED at autonomous-story-run Phase 0.4 (RUN-MODE BINDING enforcement)
+
+**Invocation:** `/autonomous-story-run 9.5.4` (Adam-typed via the autonomous-story-run skill, immediately after create-story pass in the same session).
+**Dev-model:** claude-opus-4-7[1m] (this session).
+**Outcome:** HALT at autonomous-story-run Phase 0.4 (Blocker Scan). Story-file top-of-file walk-story banner + § "RUN-MODE BINDING enforcement" section + sprint-status.yaml line 263 marker all name `/autonomous-story-run` explicitly as incompatible; the halt fires at the FIRST read of either surface. Skill's normal Phase 2.3 inline dev-story walk would (a) author zero code (walk story), (b) need to invoke `benchmark.anchor_stability_audit` with real-spend `--yes` (~$1-3 Anthropic budget the dev agent has no authority to trigger), (c) need Adam-decision on α<0.6 branching path (Path A reconciliation vs Path B accept-with-rationale) that no autonomous agent can substitute for. Halt log written; control returned to Adam.
+**Time-to-halt:** ~1 min (activation + settings.json envelope pre-flight + sprint-status.yaml line 263 read + story-file banner re-read to confirm + halt-log author).
+
+### Restated binding (verbatim from story file top-of-file banner + § "RUN-MODE BINDING enforcement")
+
+> ⚠️ **WALK STORY + REAL-SPEND — dev agents halt here per § "RUN-MODE BINDING enforcement".** Do not proceed with `dev-story` or `/autonomous-story-run`. Log halt in `_bmad-output/implementation-artifacts/epic-9-5-run-flags.md` (matching the Story 9.5.3 Run 1/Run 2 halt pattern) and return control to Adam. Walk execution is Adam-hands-on — one CLI invocation that consumes ~$1-3 of real Anthropic budget (real cost likely ~$0.4-1 after F-PLACEHOLDER-3X-DRIFT adjustment); the α outcome BRANCHES the discharge (α≥0.6 = clean close; α<0.6 = reconciliation OR accept-with-rationale per Story 9-11 AC-7 OR-branch).
+
+> If a dev agent picks this up regardless:
+>
+> 1. Log the halt in `epic-9-5-run-flags.md` matching the Story 9.5.3 Run 1/Run 2 pattern
+> 2. Do NOT invoke `benchmark.anchor_stability_audit` OR any `benchmark.*` CLI
+> 3. Do NOT author code
+> 4. Return control to Adam with a "walk story — Adam-hands-on real-spend + Adam-hands-on verdict-branch decision required" message
+
+Both story-file banner AND sprint-status.yaml line 263 marker point at the same halt. Belt-and-braces coverage per the Story 9.5.3 Run 1/Run 2 precedent chain.
+
+### Why halt fires at Phase 0.4 not Phase 2 (matches Story 9.5.3 hardening precedent)
+
+Story 9.5.4's sprint-status.yaml line 263 marker was authored during the 9.5.4 create-story pass with the expanded shape Adam applied at Story 9.5.3 Run 2 close ("NOT compatible with /autonomous-story-run OR manual dev-story invocation"). The autonomous-story-run skill's Phase 0.4 Blocker Scan reads sprint-status.yaml's target row + the story-file's authoritative AC source; both surfaces name `/autonomous-story-run` explicitly as incompatible. Halt fires at Phase 0.4 (Blocker Scan) BEFORE Phase 1 (dev-vs-review model determination), which is one full phase earlier than the Story 9.5.3 Run 1 halt (Step 1 task_check inside bmad-dev-story). This is the harder-encoded stop: autonomous-story-run's Phase 0.4 has a "hard blocker → do not enter Phase 1" contract, whereas dev-story's Step 1 is a softer read-and-honor.
+
+Net: Adam's marker-expansion round after 9.5.3 Run 2 (memory-of-record: 2026-07-03 hardening #1) shifted the halt origin one skill-phase earlier for the autonomous-story-run path.
+
+### Cross-reference to Story 9.5.3 Run 1/Run 2 halt symmetry
+
+Story 9.5.3 Run 1/Run 2 established the precedent for RUN-MODE BINDING halts on walk-story + real-spend targets. Story 9.5.4 is a structurally-identical case with a lower budget ($1-3 real vs $10-11) but the same blockers:
+
+- Story 9.5.3 blockers: Adam runs `benchmark.runner + benchmark.scorer + benchmark.report` CLIs at real-spend + captures verdicts (Adam-authority + Adam-cost-authorization + Adam-observation)
+- Story 9.5.4 blockers: Adam runs `benchmark.anchor_stability_audit` CLI at real-spend + captures α verdict + **Adam-decision on Path A vs Path B if α<0.6** (Adam-authority + Adam-cost-authorization + Adam-observation + Adam-branch-decision on evaluator-trust reconciliation)
+
+The Adam-branch-decision dimension is unique to 9.5.4 among the three walk stories — a dev agent structurally cannot substitute for Adam on the "we accept α=<value> for v1 because <reason>" retro-entry sign-off even if the ACs were somehow autonomous-friendly.
+
+### Recommendation (no action required this run; the marker + banner already halt correctly)
+
+No sprint-status.yaml mutation recommended this run. The 9.5.4 marker on line 263 was authored during the create-story pass with the full-shape "NOT compatible with /autonomous-story-run OR manual dev-story invocation" wording (belt-and-braces from Story 9.5.3 Run 2 lessons). Story-file banner is present at file top. Both surfaces do their job — halt fires cleanly at Phase 0.4.
+
+Future dev-agent pickup (whether `/autonomous-story-run 9.5.4` again OR `dev-story 9.5.4`) will halt on the same surfaces without additional hardening.
+
+### Zero destructive actions taken during Run 1
+
+- No sprint-status flips (story stays `ready-for-dev`).
+- No task/subtask checkboxes flipped in the story file (all Task 0 through Task 7 subtasks remain `[ ]`).
+- No walk-evidence file created (that is Adam's Task 4 output during the actual hands-on walk).
+- No benchmark CLI invocations (`benchmark.anchor_stability_audit` zero-invocation; no `benchmark.runner` / `scorer` / `report` either).
+- No code authored under `mailbot_api/`, `tests/`, `scripts/`, `benchmark/`, `evals/`, `router/policy.yaml`, `router/policy.user-overrides.yaml`, `docs/`, `docker-compose.yml`, `pyproject.toml`, `hermes-config/`.
+- No Docker operations (no `docker compose exec`, no container restarts, no volume mutations).
+- No Anthropic spend (zero API calls; the $0.00 burn side-effect is the point of the halt).
+- No `.autonomous-run-active.json` state file written (halt fires BEFORE Phase 1.6 which is where the state file is authored — Phase 0.4 blocker HALT terminates before Phase 1).
+- `baseline_commit: 680271d820278a9a23e3e8365a98d95fc5b158d4` preserved in the story file YAML frontmatter (set during 2026-07-03 create-story pass).
+- Sole change from this run: this Run 1 halt entry (append-only, ~70 lines).
+
+### Cross-reference to memory
+
+- `feedback_autonomous_continuity_no_text_between_subworkflows.md` — applies at Phase 2 boundaries; NOT applicable here because halt fires at Phase 0.4 before any sub-workflow dispatch. The story-file's own RUN-MODE BINDING is the load-bearing halt trigger.
+- `feedback_anthropic_spend_source_of_truth.md` — Adam-surfaced at Story 9.5.3 Run 3 (this file § "Story 9.5.3 Run 3"). Every walk on Anthropic-paid CLIs must poll the Console pre/post — no autonomous agent can substitute for that human-in-the-loop.
+- `feedback_cr_cadence_v2_structural.md` — walks are excluded from CR-eligible denominator; MANDATORY-CR-REDUCED-SCOPE at Task 7 is planned (criterion 6 fires because α verdict is load-bearing for Story 9.5.5) but does not execute this run (no walk executed → no scope for CR pass).
+- `feedback_l1_l2_l3_done_layers.md` — L3 (live-validated) is the layer this walk is designed to close for Epic 9 done-flip clause 9; that closure remains pending until Adam runs the walk hands-on.
+- `project_epic_6_scope_cleave.md` — N.5-epic policy; if the walk surfaces new defects, they route to Epic 9.5 retro F-track or a follow-up sub-story per Adam's discretion.
+
+---
+
+## Story 9.5.4 Run 2 — 2026-07-04 — HALTED at dev-story Step 1 task_check (RUN-MODE BINDING enforcement)
+
+**Invocation:** `dev-story 9.5.4` (Adam-typed via the bmad-dev-story skill, not `/autonomous-story-run`).
+**Dev-model:** claude-fable-5[1m] (this session).
+**Outcome:** HALT at bmad-dev-story Step 1 (task_check) — story-file top-of-file walk-story banner hit at first full story read, before any task execution, sprint-status mutation, or baseline_commit handling. Skill's Step 5 red-green-refactor loop would author zero code (walk story, no code to write) and cannot execute the ACs: AC-6 requires Adam-authorized real Anthropic spend (~$1-3 placeholder / ~$0.4-1 real) via `benchmark.anchor_stability_audit --yes`, Anthropic Console pre/post polling per `feedback_anthropic_spend_source_of_truth.md`, and an Adam-only branch decision (Path A reconciliation vs Path B accept-with-rationale) if α < 0.6. Halt log written; control returned to Adam.
+**Time-to-halt:** ~3 min (skill activation + workflow-block resolution + config load + story-file read incl. banner + Run 1 halt-entry cross-reference + this halt-log author).
+
+### Restated binding (same as Run 1; both invocation surfaces now exercised)
+
+The story-file banner names BOTH surfaces explicitly: *"Do not proceed with `dev-story` or `/autonomous-story-run`."* Run 1 (2026-07-03) exercised the `/autonomous-story-run` surface and halted at Phase 0.4 (Blocker Scan). This Run 2 exercises the manual `dev-story <key>` surface and halted at Step 1 (task_check) — the softer read-and-honor hook, exactly as the Run 1 entry § "Why halt fires at Phase 0.4 not Phase 2" predicted: *"Future dev-agent pickup (whether `/autonomous-story-run 9.5.4` again OR `dev-story 9.5.4`) will halt on the same surfaces without additional hardening."* Prediction confirmed empirically; the banner + sprint-status.yaml line 263 marker are sufficient. No additional hardening recommended.
+
+### What this walk needs from Adam (hands-on, per story Tasks 0-7)
+
+1. **Task 0 pre-flight:** stack healthy, anchors bind-mounted, `/data/anchor_baselines/` writable, `ANTHROPIC_API_KEY` set, `BENCHMARK_COST_MOCK` unset, `walk_bootstrap.py` shim present in container (re-inject from `scratch/walk_bootstrap.py` if container restarted since 9.5.3 Run 3), the 3 Story 9.5.3 hotfixes live in container.
+2. **Task 1:** Anthropic Console pre-walk baseline reading + spend authorization envelope (~$2-3 real recommended).
+3. **Task 2 (AC-6):** pre-flight cost estimate WITHOUT `--yes` (must print non-zero — `$0.00` means F-UNKNOWN-MODEL-COST-GATE still firing under bare `claude-opus-4-7`; halt), then real-spend run with `--yes`, capture α + verdict + `n_anchors_paired`, copy baseline file(s) to host, Console post-walk delta.
+4. **Task 3:** verdict-branch resolution — α ≥ 0.6 discharges AC-6 AND Story 9.5.3 AC-7 (clauses 9 + 10); α < 0.6 requires Adam Path A/Path B decision.
+5. **Tasks 4-7:** walk-evidence composition, run-flags append, sprint-status flip, MANDATORY-CR-REDUCED-SCOPE (sonnet-4-6 reviewer).
+
+### Zero destructive actions taken during Run 2
+
+- No sprint-status flips (story stays `ready-for-dev`).
+- No task/subtask checkboxes flipped in the story file (all Task 0 through Task 7 subtasks remain `[ ]`).
+- No walk-evidence file created (that is Adam's Task 4 output during the actual hands-on walk).
+- No benchmark CLI invocations (`benchmark.anchor_stability_audit` zero-invocation).
+- No code authored under `mailbot_api/`, `tests/`, `scripts/`, `benchmark/`, `evals/`, `router/`, `docs/`, `docker-compose.yml`, `pyproject.toml`, `hermes-config/`.
+- No Docker operations, no Anthropic spend (zero API calls).
+- `baseline_commit: 680271d820278a9a23e3e8365a98d95fc5b158d4` preserved in the story-file YAML frontmatter (already set at create-story pass; dev-story Step 4 preserve-if-present rule honored).
+- Sole change from this run: this Run 2 halt entry (append-only).
+
+### Cross-reference to memory
+
+Identical set to Run 1 (see above) — `feedback_anthropic_spend_source_of_truth.md` remains the load-bearing human-in-the-loop rule; `feedback_l1_l2_l3_done_layers.md` L3 closure for Epic 9 done-flip clause 9 remains pending until Adam runs the walk hands-on.
+
+---
+
+## Story 9.5.4 walk — 2026-07-04 — EXECUTED at L3, verdict=untrusted, HALT-AND-DEFER on Path A/B
+
+**Invocation:** interactive co-pilot walk with Adam (same session as the Run 2 dev-story halt above; Adam said "Let's do it" and drove the authorization + branch decisions hands-on).
+**Walk executor:** Adam (spend authorization, Console readings, 3 branch decisions) + claude-fable-5[1m] in Claude Code (pre-flight, CLI dispatches, triage, evidence composition).
+**Outcome summary per story Task 5 checklist:**
+
+- **(a) Clause closed:** Epic 9 done-flip clause 9 — **NOT closed; explicit BLOCK.** AC-6 walk EXECUTED at L3 with a real captured verdict, but α < 0.6 is the blocking outcome and Adam chose **halt-and-defer** (neither Path A reconciliation nor Path B accept-with-rationale). Clause closure pending the Path decision (next session or Epic 9.5 retro).
+- **(b) Story 9.5.3 AC-7 cross-discharge:** **NO.** Canonical `v1.json` not written (untrusted verdict writes the FAILED-CALIBRATION sibling only). Epic 9 done-flip clause 10 stays at L2. sprint-status line 262 left unsuffixed by design.
+- **(c) Verdict verbatim (CLI stdout, Run 2):** `VERDICT=untrusted alpha=0.3490 (threshold < 0.60). Wrote FAILED-CALIBRATION payload to /data/anchor_baselines/v1-FAILED-CALIBRATION.json. Canonical baseline NOT updated.` — n_anchors_paired=40 (from validated BaselineSnapshot). Exit code 2 (untrusted-shape per 9-11 CR-F3).
+- **(d) Evaluator model IDs (reproducibility):** primary `claude-opus-4-7`, secondary `claude-haiku-4-5-20251001`. **Deviation from story file:** the story spec'd `--secondary-model claude-sonnet-4-5`, which has NO registered adapter (`mailbot_api/router/registry.py` registers only qwen + haiku-4-5-20251001 + opus-4-7) — Run 1 (09:13Z) failed all 40 secondary dispatches pre-API (latency 0ms, $0) and exited via the zero-pairs sentinel (exit 2, no file written, guard behaved to spec). Adam-decided the haiku re-run, which matches this file's own line 52 original secondary-evaluator description. Filed as F-SECONDARY-MODEL-UNREGISTERED (create-story authored a CLI against an unregistered model).
+- **(e) Evidence + artifact:** `_bmad-output/implementation-artifacts/9.5.4-walk-evidence.md` (full capture: both runs verbatim, per-anchor disagreement table, triage, findings, spend). Baseline artifact host-side at `evals/anchor_baselines/v1-FAILED-CALIBRATION.json` (gitignored operator-state; BaselineSnapshot-validated; α byte-identical to stdout).
+- **(f) Path decision:** **HALT-AND-DEFER (Adam, 2026-07-04).** Context: (1) Adam flagged walk cost as too high for a development-phase process; (2) the load-bearing finding F-ANCHOR-ANSWER-KEY-LEAK means a Path A re-run without a production fix in `benchmark/scoring/subjective.py` re-measures the same confound — `build_anchors_block` shows every evaluator the item-under-test WITH Adam's scores (opus reproduced Adam's cyclic 2,3,4,5 label pattern 39/40; haiku compressed summary_short to a 2–3 ceiling, F-HAIKU-SCALE-COMPRESSION). Story 9.5.4 → `review`; Story 9.5.5 stays blocked.
+- **(g) Spend:** pre-flight placeholder estimate $8.57 (Run 1; post-hoc found to be opus-only — sonnet contributed $0 silently, F-COST-ESTIMATE-AGGREGATE-MASK) / $9.14 (Run 2). Walk total $11.91 placeholder ≈ ~$4.4 real expected vs ~$3.5 Adam-authorized (modest expected overshoot). **Console post-walk reading NOT captured** (Adam responded with the cost concern instead; capture at Path-decision session). Pre-walk Console baseline $13.46. Cache reuse saved real money: 60 opus cache hits across both runs ($0 re-billed; Run 2's opus leg was 40/40 cached) — Story 9-11 AC-3 cache contract verified live twice. **Spend-truth infrastructure note:** Anthropic Admin API (`/v1/organizations/cost_report`) is structurally unavailable on Adam's solo Console org (workload key 401s on Admin endpoints; Settings → Admin keys page 404s despite org + admin role) — durable memory `feedback_anthropic_spend_source_of_truth.md` updated with the caveat; Console-manual is the accepted fallback.
+
+**Findings filed (full detail in walk-evidence F-track):** F-SECONDARY-MODEL-UNREGISTERED (P1), F-COST-ESTIMATE-AGGREGATE-MASK (P1, folds into the unfixed F-UNKNOWN-MODEL-COST-GATE), F-ANCHOR-ANSWER-KEY-LEAK (P0 for measurement validity — also retroactively shadows 9.5.3's `calibration_mae=0.0`), F-HAIKU-SCALE-COMPRESSION (P2). Routing per N.5 policy (`project_epic_6_scope_cleave.md`): follow-up story or Epic 9.5 retro F-track — Adam-decision pending alongside the Path decision.
+
+### Same-session amendment — Adam-decided HYBRID path; F-ANCHOR-ANSWER-KEY-LEAK FIXED in-session; honest re-run DEFERRED
+
+After a plain-English decision walkthrough, Adam superseded the halt-and-defer with the **hybrid**: fix the leak now, re-measure honestly later, then branch on the uncontaminated α (≥0.6 → clean close of clause 9 + clause 10 + 9.5.5 unblock; <0.6 → Path B accept-with-rationale on an honest number).
+
+- **Fix shipped (RED-GREEN-REFACTOR, 9.5.3 Path B precedent):** `_run_anchor_calibration` in `benchmark/scoring/subjective.py` now builds a leave-one-out anchors block per dispatch (scored anchor excluded from its own calibration context); signature drops the shared-block param; both `score_subjective` call sites + both `anchor_stability_audit.py` call sites updated; `calibration_mae` docstring flags pre-/post-fix incomparability. New regression test `test_anchor_calibration_excludes_scored_anchor_from_context` (RED pre-fix, GREEN post-fix). Gates: **1680 passed + 2 skipped + 3 deselected** (+1 net vs 9.5.3 close baseline 1679), ruff clean, mypy strict clean. **CR pass (sonnet reviewer vs fable-5 dev): 0 Patch / 1 Defer (applied same session) / 3 Dismiss = 100% applied-rate.** Fixed files `docker cp`'d into the running container (ephemeral until next image rebuild, same caveat as 9.5.3 hotfixes).
+- **Re-run DEFERRED (Adam, cost grounds):** the fix changes prompt content → response cache fully invalidated → all 80 calls re-bill ≈ $21.5 placeholder ≈ **~$8 real** (per observed run-1 per-call actuals, not the under-guessing estimator). Adam declined both the immediate full run and a half-size probe; the honest measurement bundles with a later session (9.5.5 close or retro). July placeholder-projected spend stays ≈ $17.9 of $35.
+- **Status unchanged by the amendment:** Story 9.5.4 `review`; 9.5.5 blocked; clauses 9/10 open pending the deferred re-run's α.

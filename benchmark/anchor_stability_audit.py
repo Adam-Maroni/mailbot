@@ -292,13 +292,10 @@ async def _audit_all_tasks(
 
     for task in tasks:
         anchors = anchors_by_task[task]
-        anchors_block = build_anchors_block(anchors)
-        primary_result = await _run_anchor_calibration(
-            anchors, db_path, primary_model, anchors_block
-        )
-        secondary_result = await _run_anchor_calibration(
-            anchors, db_path, secondary_model, anchors_block
-        )
+        # F-ANCHOR-ANSWER-KEY-LEAK fix (Story 9.5.4 walk): leave-one-out blocks
+        # are built inside _run_anchor_calibration; no shared full block here.
+        primary_result = await _run_anchor_calibration(anchors, db_path, primary_model)
+        secondary_result = await _run_anchor_calibration(anchors, db_path, secondary_model)
         pairs = _compose_per_anchor_scores(primary_result, secondary_result, task)
         all_pairs.extend(pairs)
 

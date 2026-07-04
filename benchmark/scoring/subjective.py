@@ -84,7 +84,11 @@ class SubjectiveMetrics:
     Field semantics:
       * ``mean_overall``: mean of per-row overall_score (per AC-5).
       * ``mean_per_axis``: per-axis mean across the rows.
-      * ``calibration_mae``: anchor MAE for the PRIMARY evaluator.
+      * ``calibration_mae``: anchor MAE for the PRIMARY evaluator. NOT
+        comparable to values recorded before the Story 9.5.4 leave-one-out
+        fix (2026-07-04) — pre-fix MAE was computed against answer-key-
+        contaminated context (the scored anchor sat in its own calibration
+        block with Adam's score visible).
       * ``cross_evaluator_alpha``: None if no secondary; else α in [-1, 1].
       * ``outcome``: ``"ok"`` / ``"calibration_warning"`` /
         ``"insufficient_data"``. Calibration warning trips when MAE > 0.5
@@ -216,19 +220,27 @@ async def _run_anchor_calibration(
     anchors: list[AnchorItem],
     db_path: str,
     scorer_model: str,
-    anchors_block: str,
 ) -> _AnchorCalibrationResult:
-    """Run the auto-eval against each of the 20 anchors; compute MAE."""
+    """Run the auto-eval against each of the 20 anchors; compute MAE.
+
+    F-ANCHOR-ANSWER-KEY-LEAK fix (Story 9.5.4 walk, 2026-07-04): each anchor is
+    scored against a leave-one-out block of the OTHER anchors. Sending the full
+    block put the item under test — with Adam's overall_score and rationale —
+    inside its own calibration context, so the evaluator could read the answer
+    key for the item it was scoring (observed live: opus reproduced Adam's
+    labels 39/40, confounding both MAE and Krippendorff α).
+    """
     auto_scores: list[int] = []
     adam_scores: list[int] = []
     ids: list[str] = []
     for anchor in anchors:
+        loo_block = build_anchors_block([a for a in anchors if a.id != anchor.id])
         item_block = build_item_block(
             model_output=anchor.model_output,
             raw_subject=anchor.input_email_subject,
             raw_body=anchor.input_email_body,
         )
-        parsed = await _dispatch_eval(db_path, scorer_model, anchors_block, item_block)
+        parsed = await _dispatch_eval(db_path, scorer_model, loo_block, item_block)
         if parsed is None:
             # Pre-review self-audit FIX (LOW): log the dispatch failure
             # at WARNING so the operator can grep for silent drops.
@@ -273,7 +285,8 @@ async def score_subjective(
     """Score subjective rows for one (task_type, model) batch.
 
     Workflow:
-      1. Render the anchors block once (cached as input to every dispatch).
+      1. Render the anchors block once (input to every PER-ROW dispatch;
+         calibration dispatches build their own leave-one-out blocks).
       2. Run anchor calibration on the PRIMARY evaluator → MAE.
       3. (Optional) Run anchor calibration on the SECONDARY evaluator →
          compute Krippendorff α on the 20-anchor pair-scores.
@@ -284,9 +297,7 @@ async def score_subjective(
     total_count = len(rows)
     anchors_block = build_anchors_block(anchors)
 
-    primary = await _run_anchor_calibration(
-        anchors, db_path, scorer_model, anchors_block
-    )
+    primary = await _run_anchor_calibration(anchors, db_path, scorer_model)
     calibration_per_anchor: list[dict[str, float | str | int]] = [
         {
             "anchor_id": aid,
@@ -376,9 +387,7 @@ async def score_subjective(
     alpha: float | None = None
     cross_per_anchor: list[dict[str, float | str | int]] = []
     if secondary_evaluator is not None:
-        secondary = await _run_anchor_calibration(
-            anchors, db_path, secondary_evaluator, anchors_block
-        )
+        secondary = await _run_anchor_calibration(anchors, db_path, secondary_evaluator)
         # Align the two evaluators' per-anchor score lists by anchor_id so
         # an evaluator that failed on a specific anchor doesn't corrupt the
         # pairing.
