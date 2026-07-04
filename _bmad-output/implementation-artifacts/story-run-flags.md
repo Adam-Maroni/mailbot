@@ -704,3 +704,49 @@ Excluded from staging per selective-staging contract: .claude/settings.json (Ada
 **Notable second catch:** **CR-F3 [HIGH] token echo via raw `resp.text`.** Pre-fix `cmd_delete_all` printed `f"HTTP {resp.status_code} {resp.text}"` on enumerate failure — a 401 body from Discord can echo header fragments referencing the bearer token. Fix routes both enumerate and per-delete failures through `parse_registration_response` (structured code + message only), and CR-F1's raw-body-suppression closes the defense at the source. Two regression tests: `test_cr_f3_delete_all_error_path_uses_structured_parser` + `test_cr_f3_delete_all_delete_failure_uses_structured_parser`.
 
 **Autonomous-run efficacy note:** this run is the first time an epic-9.5 story completed the full autonomous pipeline. Run 1 correctly halted at Phase 0.4 on the architectural-impossibility blocker (cross-repo Hermes source); Adam's reframe decision converted the story into an in-repo Path γ artifact; Run 2 completed cleanly. The Blocker-Scan gate at Phase 0.4 worked exactly as designed — catch the wall before Phase 1, do NOT push through.
+
+## Story 9.5.5-policy-yaml-v0-to-v1-bump — 2026-07-04
+
+**Headline:** route (b) no-change close shipped — policy.yaml `policy-v0-2026-06-01` → `policy-v1-2026-07-04` (version + comments only, zero routing mutations), 3 hypothesis augments, route-(b) retro entry drafted PENDING-ADAM-SIGNATURE, +5 net tests (1685+2+3), MANDATORY-CR FULL scope 100% actionable applied-rate.
+
+**Dev model:** claude-fable-5
+**Review model:** claude-sonnet-5 (story-spec'd sonnet-4-6 substituted per 9.5.4 D2 blessing precedent)
+
+**Review rounds + applied rate:** 1 round (round 2 skipped — fixes trivial: 4 test assertions + comment lines). 3 findings: CR-F1 MEDIUM (model pins on un-benchmarked Opus cells in routing-unchanged guard) + CR-F3 LOW (F-COHORT-KEY-LEGACY-SCORE-CONFLATION named in policy.yaml comment + retro entry) APPLIED; CR-F2 LOW DEFERRED with rationale. 2/2 actionable Patches applied = **100% applied-rate**.
+
+**Deferred items aggregated:**
+
+- CR-F2 (LOW): AC-5 E2E dispatches coarse_class, not draft_reply — cohort `router_policy_version` component is task-agnostic by construction (`_read_policy_versions()` snapshots `PolicyTable.version` once per run); revisit only if per-task policy-version plumbing is ever introduced. Full rationale: epic-9-5-run-flags.md § "Story 9.5.5 autonomous run".
+
+**Gate verdicts:**
+
+- 2.3.5 Pre-review self-audit: PASS — 5 sections + 11 posture checks; §5.12 = MANDATORY-CR FULL (criteria 3+4+6), honored.
+- 2.4.4 Dev Agent Record completeness: PASS.
+- 2.4.5 UI-scope pre-flight: N/A — no graphical frontend.
+- 2.4.6 File-List-vs-git: PASS — 5/5 paths tracked post-add.
+- 2.4.7 Middleware-real-bootstrap: N/A — config version-string + comments + tests + docs only; no new verbs/endpoints/state-changing writes.
+- 2.4.8 Verbose-row truncation: PASS — narrative moved to story Completion Notes; sprint row is headline + pointer.
+
+**Step 2.5 dev-env verification:** N/A — no `<dev-env-skill>` defined for this project.
+
+**Flags raised (3):**
+
+- INFO — AC-3 retro entry PENDING-ADAM-SIGNATURE; Phase 3.5 PASS grants it; FAIL flips the story back to in-progress.
+- WARNING (pre-existing, out of scope) — 2 ruff T201 in untracked `scratch/walk_bootstrap.py` (9.5.3/9.5.4 walk leftover); full-repo `ruff check .` is red on that file alone; story surface clean. Recommend delete or .gitignore scratch/.
+- INFO — all 5 Epic 9.5 stories now done; epic done-flip + retrospective deliberately NOT performed (single-story scope).
+
+**Permission prompts:** no permission log configured — prompt count unknown; zero prompts observed during the run.
+
+**Staged (6 files):** router/policy.yaml, tests/integration/test_policy_v1_loads_cleanly.py, epic-9-5-retro-2026-07-04.md, sprint-status.yaml, story file, pre-review artifact. NOT staged: `.claude/settings.json` (pre-existing modification), `scratch/` (pre-existing untracked), `.autonomous-run-active.json` (run state). Nothing committed.
+
+## Story 9.5.5 Manual Verification — 2026-07-05
+
+**Verdict: PASS (delegated walk, Adam-directed — "Run manual verification yourself"; signature granted via explicit Phase 3.5 PASS).**
+
+- CP-1 [AC-1] citation chain: PASS — run_id/verdict/route re-verified verbatim against 9.5.3 walk evidence.
+- CP-2 [AC-3a] policy.yaml: PASS — v1 version, honest comments, draft_reply still opus, hypotheses intact.
+- CP-3 [AC-3b] retro entry: PASS — content satisfies AC template; **Signed: Adam Maroni, 2026-07-05** (PENDING marker replaced).
+- CP-4 [AC-4] regression tests: PASS — 5/5 green on re-run.
+- CP-5 [AC-5] live hot-reload: PASS at L3 — mailbot-api container (up 34h) logged `policy.reloaded` with `version=policy-v1-2026-07-04` at edit-matching timestamps; no restart.
+
+INFO flag "PENDING-ADAM-SIGNATURE" above is now RESOLVED.

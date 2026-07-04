@@ -9,7 +9,12 @@
 #
 # Schema reference: mailbot_api/router/policy.py (PolicyTable / PolicyEntry).
 
-version: "policy-v0-2026-06-01"
+# v1 bump (2026-07-04, Story 9.5.5): benchmark-reviewed against
+# benchmark_runs.run_id=db48480f-9692-4791-b3e2-4b3a2ab1fed8 (Story 9.5.3 AC-5,
+# draft_reply Haiku-vs-Opus). Verdict INSUFFICIENT_DATA → route (b) no-change:
+# version bump only, zero routing mutations. Rationale: epic-9-5-retro-2026-07-04.md
+# § "policy.yaml v0→v1". Hypothesis annotations retained for v2 re-review.
+version: "policy-v1-2026-07-04"
 
 tasks:
   coarse_class:
@@ -38,6 +43,16 @@ tasks:
     lane: "interactive"
     sensitivity: "any"
     notes: "Drafts can contain sensitive content; Epic-4's grant flow gates the send. Interactive-lane so chat reply doesn't wait behind ingest."
+    # v1-review (2026-07-04): benchmark_runs.run_id=db48480f-9692-4791-b3e2-4b3a2ab1fed8
+    # verdict=INSUFFICIENT_DATA; hypothesis retained because opus scoring returned n=0
+    # (no valid Haiku-vs-Opus comparison — scoring-pipeline defect, see
+    # 9.5.3-walk-evidence.md § "AC-5 verdict interpretation") AND haiku's absolute
+    # subjective_overall=2.6176 (n=34) sits below the ~3.0 hold-steady threshold,
+    # arguing AGAINST demotion even on the one-sided data available. Scores are
+    # from the pre-leak-fix evaluator run, and the n=34 report rows carry the
+    # filed F-COHORT-KEY-LEGACY-SCORE-CONFLATION defect (legacy pre-flight scorer
+    # rows conflated under the same cohort_key). Full caveat trail:
+    # epic-9-5-retro-2026-07-04.md § "policy.yaml v0→v1".
     demotion_hypothesis: "Haiku v1 may hold quality on short replies under 200 words; demote when corpus shows ≥0.85 calibrated score parity AND p95 latency stays under 8s."
     promotion_hypothesis: null
 
@@ -142,6 +157,8 @@ tasks:
     sensitivity: "any"
     response_cache_ttl_seconds: 2592000  # 30 days; tone evolves slowly
     notes: "Per-recipient tone fingerprint. Invoked ONCE per recipient (cache-keyed on recipient_address) per Story 5-3 AC-5; cache hit avoids the Opus call entirely on subsequent draft_reply turns."
+    # v1-review (2026-07-04): NOT covered by the Story 9.5.3 benchmark run
+    # (draft_reply-only); hypothesis retained unreviewed for v2 re-review.
     demotion_hypothesis: "Haiku may suffice for tone fingerprinting - demote when Epic 7 measures recipient-level tone accuracy parity."
 
   multi_turn_refinement:
@@ -152,6 +169,8 @@ tasks:
     lane: "interactive"
     sensitivity: "any"
     notes: "Iterative draft refinement (Story 5-9). Routes to Opus per FR-4.4. No response cache - refinements are turn-specific."
+    # v1-review (2026-07-04): NOT covered by the Story 9.5.3 benchmark run
+    # (draft_reply-only); hypothesis retained unreviewed for v2 re-review.
     demotion_hypothesis: "Haiku may suffice for small-delta refinements (e.g., 'make this shorter'); demote when Epic 7 measures refinement quality parity."
 
   daily_digest_intro:
