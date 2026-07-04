@@ -239,9 +239,11 @@ async def test_anchor_calibration_excludes_scored_anchor_from_context(tmp_path: 
     """
     db_path = str(tmp_path / "test.db")
     apply_pending_migrations(db_path)
-    # 12 anchors: crosses the double-digit boundary so bare-substring checks
-    # like "Rationale for anchor 1" would collide with "... anchor 12" —
-    # assertions below are delimiter-anchored to stay exact at any n.
+    # 12 anchors: crosses the n=10 double-digit boundary where the un-padded
+    # rationale needle "Rationale for anchor 1" would prefix-collide with
+    # "... anchor 12" (the id needle never collided — _anchor ids are
+    # zero-padded {idx:03d}) — assertions below are delimiter-anchored so
+    # both needles stay exact at any n.
     anchors = [_anchor(i + 1, adam_overall=3) for i in range(12)]
     adapter = _ScriptedSubjectiveAdapter(
         overall_score=3,
@@ -257,6 +259,12 @@ async def test_anchor_calibration_excludes_scored_anchor_from_context(tmp_path: 
     assert len(adapter.call_log) == len(anchors)
     for i, anchor in enumerate(anchors):
         user_prompt = adapter.call_log[i]["user"]
+        # Exactly n-1 answer-key lines: guards leaks through ANY channel
+        # (e.g. the item block growing an answer field), which the two
+        # needle checks below — scoped to the anchor-block format — cannot
+        # see. All fixture anchors share adam_overall=3, so the leaked
+        # VALUE alone is unassertable; the count is the invariant.
+        assert user_prompt.count("Adam's overall_score:") == len(anchors) - 1
         # The scored anchor's identity + answer key must be absent...
         assert f"(id={anchor.id})" not in user_prompt
         assert f"Rationale for anchor {i + 1}\n" not in user_prompt
