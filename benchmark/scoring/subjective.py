@@ -221,7 +221,7 @@ async def _run_anchor_calibration(
     db_path: str,
     scorer_model: str,
 ) -> _AnchorCalibrationResult:
-    """Run the auto-eval against each of the 20 anchors; compute MAE.
+    """Run the auto-eval against each anchor in ``anchors``; compute MAE.
 
     F-ANCHOR-ANSWER-KEY-LEAK fix (Story 9.5.4 walk, 2026-07-04): each anchor is
     scored against a leave-one-out block of the OTHER anchors. Sending the full

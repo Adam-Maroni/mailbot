@@ -239,7 +239,10 @@ async def test_anchor_calibration_excludes_scored_anchor_from_context(tmp_path: 
     """
     db_path = str(tmp_path / "test.db")
     apply_pending_migrations(db_path)
-    anchors = [_anchor(i + 1, adam_overall=3) for i in range(4)]
+    # 12 anchors: crosses the double-digit boundary so bare-substring checks
+    # like "Rationale for anchor 1" would collide with "... anchor 12" —
+    # assertions below are delimiter-anchored to stay exact at any n.
+    anchors = [_anchor(i + 1, adam_overall=3) for i in range(12)]
     adapter = _ScriptedSubjectiveAdapter(
         overall_score=3,
         per_axis_scores={"faithfulness": 3, "tone_match": 3, "actionability": 3},
@@ -255,13 +258,13 @@ async def test_anchor_calibration_excludes_scored_anchor_from_context(tmp_path: 
     for i, anchor in enumerate(anchors):
         user_prompt = adapter.call_log[i]["user"]
         # The scored anchor's identity + answer key must be absent...
-        assert f"id={anchor.id}" not in user_prompt
-        assert f"Rationale for anchor {i + 1}" not in user_prompt
+        assert f"(id={anchor.id})" not in user_prompt
+        assert f"Rationale for anchor {i + 1}\n" not in user_prompt
         # ...while every OTHER anchor remains as calibration context.
         for j, other in enumerate(anchors):
             if other.id != anchor.id:
-                assert f"id={other.id}" in user_prompt
-                assert f"Rationale for anchor {j + 1}" in user_prompt
+                assert f"(id={other.id})" in user_prompt
+                assert f"Rationale for anchor {j + 1}\n" in user_prompt
 
 
 async def test_calibration_warning_fires_when_mae_above_threshold(tmp_path: Path) -> None:
