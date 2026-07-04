@@ -12,8 +12,8 @@ status: 'complete'
 completedAt: '2026-05-31'
 requirementsConfirmed: true
 epicsApproved: true
-epicCount: 8
-storyCount: 65
+epicCount: 9
+storyCount: 72
 frCoverage: '62/62'
 nfrCoverage: '24/24'
 ---
@@ -415,6 +415,16 @@ Adam picks the model from chat. Every model assignment in `policy.yaml` is defen
 **FRs covered:** FR-3.3 (override surface completed via chat), FR-6.6 (evidence layer), FR-8.1, FR-8.2, FR-8.3, FR-8.4
 **NFRs:** NFR-PRIV-2 (sensitivity gate inherited by `/model` — gate-coverage), NFR-PERF-1 (Haiku/Opus latency profiles measured by runner)
 **AR-\*:** AR-SCHEMA-8 (`benchmark_runs`), AR-MODEL-OVERRIDE (new — `policy.user-overrides.yaml` companion-file merge), AR-COHORT-KEY (new — `(prompt_v, scorer_model, anchors_v, router_policy_v)` four-tuple), AR-ANALYTICS-1 (numpy used by scorer + Pareto frontier)
+
+### Epic 10: Full-Perimeter Live Validation — README-as-Charter UAT
+
+The product is what the README says it is — prove it. The README (rewritten 2026-07-04 as the main user documentation) contains executable claims: Discord command examples with expected outputs, a 12-command slash table, an operator CLI table, and a 17-row common-errors table with stable error codes. Epic 10 treats each documented example as one acceptance walk and each error row as one fault-injection case — UAT run on the LOCAL Docker stack (per Adam-decision D4: product viable locally is the top priority; VPS/CP-1 fires only on Adam's explicit green light). Ships the one pre-declared dev fix (pre_state capture + Tier-1 revert for the move-family — the only write path never live-walked and irreversible today), a qwen batch-lane quality audit, ~40-45 walk/fault cases, and closes with the README fully evidence-backed: every walked example's illustrative output replaced with real captured output under a `<!-- verified 10-x, run_id ... -->` tag, plus a complete per-row PASS/FAIL/EXCLUDED-with-reason verdict table. All other walk-discovered defects are FILED, not absorbed, per the N.5 policy.
+
+**Epic identity:** validate the full user-facing perimeter of MailBot against README.md as the test oracle, so the docs stop being illustrative and become evidence.
+
+**FRs covered:** none net-new — full-perimeter L3 validation of the already-shipped FR surface (F1–F8) against README claims
+**NFRs:** NFR-PRIV-2 + NFR-PRIV-4 (re-verified under live perimeter walks), NFR-PERSONA-1..3 (soft-assert per doc-drift rule (b)), NFR-PERF-1 (observed under live walks)
+**AR-\*:** AR-D5-\*/AR-D6-\* (queued-intent + drain seam exercised live + extended with move-family pre_state/revert), AR-ERR-1..6 (stable error-code contract validated under fault injection)
 
 ---
 
@@ -3727,3 +3737,272 @@ So that Epic 9's purpose — *the router defends its choices with evidence* — 
 **Given** this is the load-bearing closure story for Epic 9.5 + Epic 9
 **When** CR cadence is evaluated per the 6 criteria
 **Then** criterion 6 (load-bearing — this story converts hypothesis to evidence on the production routing policy) fires → **MANDATORY-CR per §5.12** with FULL scope under sonnet-4-6 (not reduced-scope) — the policy.yaml edit is reviewed for: correct evidence citation, correct version field bump, no accidental non-cited mutations, hypothesis annotations correctly augmented (not silently removed), and regression test correctness
+
+---
+
+## Epic 10 Detail — Full-Perimeter Live Validation: README-as-Charter UAT
+
+**Created 2026-07-04 via party-mode roundtable (README-as-charter).** The README was rewritten 2026-07-04 as MailBot's main user documentation, and in the process became something more useful than prose: a test oracle. It contains executable claims — Discord command examples with expected outputs, a 12-command slash table, an operator CLI table, and a 17-row common-errors table with stable error codes. The roundtable converged on treating each documented example as one acceptance walk and each error row as one fault-injection case: UAT with the README as the charter. Epic 10 runs against the **LOCAL Docker stack** (per D4 below — local viability is the top priority; VPS/CP-1 fires only on Adam's explicit green light).
+
+**Epic identity:** the product is what the README says it is — prove it. Epics 1–9.5 validated subsystems (sync, router, ingest, actions, chat, observability, benchmark instrument); Epic 10 validates the *perimeter*: the complete user-facing surface, walked end-to-end the way a user drives it, with the README as the single test oracle. At done-flip, every README example carries a verified tag backed by real captured output, every error row has a named verdict, and the limitations section tells the truth.
+
+**Adam-decision record (2026-07-04, party-mode roundtable):**
+- **D1** — Official filing into epics.md + sprint-status.yaml (this filing).
+- **D2** — Epic 10 INCLUDES the pre_state/revert dev-fix story (Story 10.2) — exactly one known defect fixed in-epic, sequenced after Story 10.1 informs what pre_state must capture. All OTHER walk-discovered defects follow the N.5 policy (memory: `project_epic_6_scope_cleave.md`): Epic 10 FILES them (spawning Epic 10.5 if needed), it does NOT absorb fixes.
+- **D3** — ALL 17 error-table rows are in fault-injection scope. The ~4 expensive rows (e.g., OAuth expiry mid-batch) may be harness-assisted, and MUST be honesty-tagged induced-vs-simulated in walk evidence.
+- **D4** (durable memory, same day) — top priority is a product viable LOCALLY; VPS deployment (CP-1) is NOT a priority and fires only on Adam's explicit green light. Epic 10 therefore runs on the local stack; its walk suite doubles as the future CP-1 post-deploy smoke checklist when Adam eventually green-lights deploy.
+
+**Doc-drift rules (epic contract — bind every story):**
+- **(a) Same-story, same-commit README updates** — walk evidence updates the README in the SAME story, same commit. A walk isn't done until the doc example matches reality.
+- **(b) Hard-assert vs soft-assert** — error codes + command names are hard-assert contract (a mismatch FAILS the walk row); response prose is soft-assert (Hermes-persona-dependent — recorded as evidence, never failed on wording).
+
+**Sequencing:**
+- **AFTER Epic 9.5 close** — HARD constraint for Story 10.3 (its scoring methodology inherits the anchor-calibration trust question from the 9.5.4 honest α re-run); RECOMMENDED for all other stories.
+- **RECOMMENDED before Epic 7 (Production Calibration)** — walk the perimeter once on frozen behavior, then calibrate (Murat's argument at the roundtable). Provisional; Adam can resequence.
+- **CP-1 remains outside all epics** per D4 + the CP-1-final-ship-gate rule (memory: `project_cp1_final_ship_gate.md`).
+
+**Size/budget:** ~40-45 total cases — ~12-15 net-new L3 walks + 17 fault injections + 1 dev story (10.2) + 1 audit story (10.3); ~8-10 cases across the epic are cheap re-confirmations of already-L3 behavior. Spend: mostly $0 (local qwen + read verbs); **~$2-4 real Anthropic** for Story 10.5's draft/send walks (`draft_reply` is Opus). Honesty rule: spend truth comes from the Anthropic Console per durable memory `feedback_anthropic_spend_source_of_truth.md` — never local placeholder estimates.
+
+**FRs covered:** none net-new — full-perimeter L3 validation of the already-shipped FR surface (F1–F8) against README claims
+**NFRs:** NFR-PRIV-2 + NFR-PRIV-4 (re-verified under live perimeter walks), NFR-PERSONA-1..3 (soft-assert per doc-drift rule (b)), NFR-PERF-1 (observed under live walks)
+**AR-\*:** AR-D5-\*/AR-D6-\* (queued-intent + drain seam exercised live + extended with move-family pre_state/revert in 10.2), AR-ERR-1..6 (stable error-code contract validated under fault injection)
+
+**Epic 10 Story List:**
+
+| # | Story | Dep-on | +tests | MANDATORY-CR | Real-spend? |
+| --- | --- | --- | --- | --- | --- |
+| 10.1 | Live folder-move walk against a sacrificial Outlook folder — propose→grant→drain→Graph dispatch, verify in Outlook, manual restore | — | walk-only | n/a (walk story) | No |
+| 10.2 | pre_state capture for `MOVE_TO_TRIAGE_FOLDER` + move-family + Tier-1 revert support + revert walk (the one dev story, per D2) | 10.1 (findings inform pre_state) | +8-12 | high (actions/drainer/reverter seam) | No |
+| 10.3 | Qwen batch-lane usage + quality audit — `router_calls` ground-truth query + spot-scoring qwen outputs | Epic 9.5 close (HARD) | walk-only | n/a | No |
+| 10.4 | Happy-path README perimeter walks — read family (~10-12 cases) | — | walk-only | n/a | No |
+| 10.5 | Happy-path README perimeter walks — write + slash family | — | walk-only | n/a | **~$2-4** |
+| 10.6 | Fault-injection walks — all 17 error-table rows (induce → assert code → fix → recover) | 10.4 + 10.5 recommended first (happy path before faults) | walk-only | n/a | No |
+| 10.7 | README evidence-backing close-out — verified tags + limitations + per-row verdict table | 10.1–10.6 | — | low (docs closure) | No |
+
+**Total: 7 stories, ~40-45 walk/fault cases, ~8-12 net-new tests (Story 10.2 is the only code story — walks produce evidence, not code).**
+
+**Done-flip gate (Epic 10, 5 clauses):**
+
+1. Stories 10.1 through 10.7 status=done in sprint-status.yaml
+2. **Complete per-row verdict table** — every README example AND all 17 error-table rows have a named PASS / FAIL / EXCLUDED-with-reason verdict, published as epic evidence
+3. **README fully evidence-backed** — every walked example's illustrative output replaced with real captured output tagged `<!-- verified 10-x, run_id ... -->`
+4. **Limitations section updated honestly**
+5. **All walk-discovered defects FILED, not absorbed** (except 10.2's pre-declared scope) — per N.5 policy, spawning Epic 10.5 if needed
+
+Clause 2 is the load-bearing one. Without it, Epic 10 closes at "we walked around a bit"; with it, Epic 10 closes at "every user-facing claim has a named, evidence-backed verdict."
+
+---
+
+### Story 10.1: Live folder-move walk — sacrificial Outlook folder, full propose→grant→drain→Graph dispatch chain
+
+**Created 2026-07-04 (party-mode roundtable).** Sequenced FIRST because it is the highest risk×blast-radius item on the perimeter: folder-move is the only write path that has never been live-walked (currently exercised via `FakeGraphWriteAdapter` at L2 only) and is irreversible today — no pre_state, no revert. Story 10.2 fixes the irreversibility, informed by this walk's findings.
+
+As Adam,
+I want to execute one real folder-move against a sacrificial Outlook folder through the full propose→grant→drain→Graph dispatch chain, verify the move in Outlook itself, and restore manually afterward,
+So that the one never-live-walked irreversible write path is validated at L3 before Epic 10 walks the rest of the perimeter, and so Story 10.2 learns exactly what pre_state must capture to make the move-family revertible.
+
+**Acceptance Criteria:**
+
+**Given** the live local stack is running against Adam's real mailbox
+**When** the walk is staged
+**Then** Adam creates (or designates) a sacrificial folder in the live Outlook mailbox and selects a low-value email as the move subject — blast radius bounded to one email + one folder by construction
+
+**Given** the staged subject email
+**When** the full chain fires — propose (queued intent) → grant → drain → Graph dispatch
+**Then** each stage's evidence is captured: the queued-intent row, the grant/authorization evidence, the drainer dispatch record, and the Graph write audit trail
+**And** the email physically appears in the sacrificial folder **verified in the Outlook client** (web or desktop), not merely inferred from a 2xx Graph response
+
+**Given** the move is irreversible today
+**When** the walk completes
+**Then** Adam manually restores the email to its original folder and the restore procedure is documented in the walk evidence (the walk leaves the mailbox as found)
+**And** `10-1-walk-evidence.md` explicitly records what pre-move state a future revert would have needed (source folder id at minimum, plus anything else observed) — this is the direct input to Story 10.2's pre_state field list
+
+**Given** doc-drift rule (a)
+**When** the walk closes
+**Then** the README's folder-move example is updated with the real captured output + `<!-- verified 10-1, run_id ... -->` tag in the same story, same commit
+
+**Given** this is a walk story
+**When** CR cadence is evaluated per the 6 criteria
+**Then** zero criteria fire → CR skipped per cadence binding; any in-walk code fix escalates per §5.12 (and, per D2, any defect other than the pre-declared 10.2 scope is FILED, not fixed)
+
+---
+
+### Story 10.2: pre_state capture for `MOVE_TO_TRIAGE_FOLDER` + move-family + Tier-1 revert support + revert walk
+
+**Created 2026-07-04 (party-mode roundtable) — the ONE dev story in Epic 10, pre-declared per D2.** Depends on Story 10.1: the walk's evidence defines what pre_state must capture. Every other walk-discovered defect in this epic is FILED per the N.5 policy; this one is absorbed because it was known at filing time and its fix is what makes the rest of the write-family walks safely repeatable.
+
+As Adam,
+I want move-family queued intents to capture pre_state (at minimum the source folder id, plus whatever Story 10.1's evidence names) at queue/drain time, and the reverter to support Tier-1 revert for `MOVE_TO_TRIAGE_FOLDER` and the move-family, verified by a live revert walk,
+So that folder-move stops being the only irreversible action in the perimeter, and so the Tier-1 revert promise in the authorization model is true for the move-family rather than aspirational.
+
+**Acceptance Criteria:**
+
+**Given** Story 10.1's walk evidence names the state a revert needs
+**When** the move-family intent is queued/drained
+**Then** pre_state is captured on the intent row (source folder id at minimum; field list per 10.1 findings) before the Graph dispatch fires
+**And** a move that fails at dispatch does NOT leave a misleading pre_state claiming a completed move
+
+**Given** the reverter surface
+**When** Tier-1 revert is requested on a completed move-family action
+**Then** the reverter re-moves the email back to the pre_state source folder via the same Graph write seam, with its own audit row
+**And** revert on an action with missing/legacy-null pre_state refuses with a clear error rather than guessing
+
+**Given** the fix is live-validated, not just unit-tested
+**When** the revert walk fires
+**Then** Adam performs move → revert against the sacrificial folder and verifies in the Outlook client that the email is back in its original folder; evidence captured in `10-2-walk-evidence.md`
+
+**Given** the change touches load-bearing production code
+**When** tests are written
+**Then** +8-12 net-new regression tests cover: pre_state write at queue/drain, revert dispatch, missing-pre_state refusal, and idempotency of the revert path
+
+**Given** this story touches the actions/drainer/reverter load-bearing seam
+**When** CR cadence is evaluated per the 6 criteria
+**Then** criterion 6 (load-bearing) fires → **MANDATORY-CR per §5.12** with full scope
+
+---
+
+### Story 10.3: Qwen batch-lane usage + quality audit
+
+**Created 2026-07-04 (party-mode roundtable).** Audit story: the free tier does most of the ingest volume, and nobody has ever ground-truthed what it actually does in production. **SEQUENCING CONSTRAINT (HARD): fires only after Epic 9.5 close** — the spot-scoring methodology inherits the anchor-calibration trust question (the 9.5.4 honest α re-run); scoring qwen outputs with an evaluator pipeline of unproven trustworthiness would reproduce the exact failure mode Epic 9.5 exists to close.
+
+As Adam,
+I want a ground-truth answer to "what is qwen actually doing in production" — a `router_calls` GROUP BY `model_chosen`/`task_type` query against the live DB — plus spot-scoring of a sample of qwen outputs on `sensitivity_class` / `coarse_class` / `fine_class`,
+So that the free tier's actual usage and quality are audited evidence rather than assumptions, and any misclassification patterns become filed defects with data behind them.
+
+**Acceptance Criteria:**
+
+**Given** the live local DB
+**When** the usage query fires
+**Then** the `router_calls` GROUP BY `model_chosen`/`task_type` distribution is captured in walk evidence — which tasks qwen actually serves, at what volume, vs what `policy.yaml` says it should serve
+
+**Given** the usage distribution
+**When** the quality audit fires
+**Then** a sample of qwen outputs on `sensitivity_class` / `coarse_class` / `fine_class` is spot-scored (sample size decided at walk time and recorded), with the scoring methodology documented in the evidence — including its inheritance from the post-9.5.4 calibration posture
+
+**Given** the audit surfaces misclassification patterns
+**When** findings emerge
+**Then** they are FILED per the N.5 policy (defect filings with the evidence attached) — this story does NOT absorb fixes
+
+**Given** this is a walk/audit story
+**When** CR cadence is evaluated per the 6 criteria
+**Then** zero criteria fire → CR skipped per cadence binding
+
+---
+
+### Story 10.4: Happy-path README perimeter walks — read family
+
+**Created 2026-07-04 (party-mode roundtable).** ~10-12 cases covering the read side of the perimeter: query flows, projections, counts, sender summaries, thread summaries, digest. Note honestly: ~8-10 cases across the epic are cheap re-confirmations of already-L3 behavior — this story holds most of them. Record the evidence, don't re-litigate the behavior.
+
+As Adam,
+I want every read-family example documented in the README walked against the live local stack — each documented example is one acceptance walk with captured real output,
+So that the read perimeter's README claims are evidence-backed rather than illustrative.
+
+**Acceptance Criteria:**
+
+**Given** the README's read-family examples (query flows, projections, counts, sender summaries, thread summaries, digest)
+**When** the walks fire
+**Then** each documented example is executed as one walk case (~10-12 total) with real output captured in `10-4-walk-evidence.md`
+
+**Given** doc-drift rule (b)
+**When** each case is asserted
+**Then** command names are hard-assert (mismatch = FAIL); response prose is soft-assert (Hermes-persona-dependent — captured, not failed on wording)
+
+**Given** doc-drift rule (a)
+**When** each case closes
+**Then** the corresponding README example is updated with the real captured output + `<!-- verified 10-4, run_id ... -->` tag in the same story, same commit
+**And** each case receives a named PASS / FAIL / EXCLUDED-with-reason verdict feeding Story 10.7's per-row table
+
+**Given** this is a walk story
+**When** CR cadence is evaluated per the 6 criteria
+**Then** zero criteria fire → CR skipped per cadence binding; discovered defects are FILED per N.5 policy
+
+---
+
+### Story 10.5: Happy-path README perimeter walks — write + slash family
+
+**Created 2026-07-04 (party-mode roundtable).** The write side plus the full slash surface: draft→refine→send with cooling-off + `/cancel`, Tier-2 batch archive with scoped grant, sensitive `/confirm` escalation, confidential refusal, the `/model` family, `/spend`, `/pause`, `/resume`, `/budget reset`, `/mute`, `/unmute`. This is the epic's only real-spend story (~$2-4 — `draft_reply` is Opus).
+
+**RUN-MODE BINDING: NOT compatible with /autonomous-story-run OR manual dev-story invocation — Adam-hands-on real-spend walk (~$2-4 Anthropic), following the 9.5.x binding-marker pattern; see `_bmad-output/implementation-artifacts/epic-9-5-run-flags.md` § "Story 9.5.3 Run 1" (2026-07-03 dev-story halt precedent).**
+
+As Adam,
+I want every write-family and slash-family example documented in the README walked against the live local stack in a hands-on session,
+So that the perimeter's authorization, cooling-off, sensitivity, and operator-control claims are evidence-backed under real conditions — including the real-spend draft/send path.
+
+**Acceptance Criteria:**
+
+**Given** the README's write-family examples
+**When** the write walks fire
+**Then** the following are executed as walk cases with evidence captured in `10-5-walk-evidence.md`: draft→refine→send with cooling-off + `/cancel`; Tier-2 batch archive with scoped grant; sensitive `/confirm` escalation; confidential refusal (no body leak, standard refusal surfaced)
+
+**Given** the README's slash-command table (12 commands)
+**When** the slash walks fire
+**Then** the `/model` family + `/spend` + `/pause` + `/resume` + `/budget reset` + `/mute` + `/unmute` are each walked per their documented examples
+
+**Given** this story consumes real Anthropic budget
+**When** the session completes
+**Then** actual spend is recorded against the ~$2-4 pre-flight estimate, with spend truth read from the Anthropic Console per durable memory `feedback_anthropic_spend_source_of_truth.md` — never local placeholder estimates
+
+**Given** doc-drift rules (a) + (b)
+**When** each case closes
+**Then** hard-assert on command names + error codes, soft-assert on prose; README examples updated with real captured output + `<!-- verified 10-5, run_id ... -->` tags same story, same commit; per-case verdicts feed Story 10.7's table
+
+**Given** this is a walk story
+**When** CR cadence is evaluated per the 6 criteria
+**Then** zero criteria fire → CR skipped per cadence binding; discovered defects are FILED per N.5 policy
+
+---
+
+### Story 10.6: Fault-injection walks — all 17 error-table rows
+
+**Created 2026-07-04 (party-mode roundtable).** The README's 17-row common-errors table carries stable error codes and documented fixes; each row is one fault-injection case. Per D3, ALL 17 rows are in scope — no cherry-picking the cheap ones.
+
+As Adam,
+I want each of the 17 documented error rows induced against the live local stack, asserting that the documented stable error code surfaces in Discord/status, that the documented fix works, and that the system recovers,
+So that the error table stops being aspirational documentation and becomes a verified troubleshooting contract.
+
+**Acceptance Criteria:**
+
+**Given** the 17-row common-errors table
+**When** each fault-injection case fires
+**Then** the per-row protocol is: induce the condition → assert the documented stable error code surfaces in Discord and/or `mailbot status` → apply the documented fix → assert recovery
+**And** error codes are hard-assert per doc-drift rule (b); surrounding prose is soft-assert
+
+**Given** D3's honesty requirement
+**When** any of the ~4 expensive rows (e.g., OAuth expiry mid-batch) is exercised harness-assisted rather than genuinely induced
+**Then** the walk evidence for that row is explicitly honesty-tagged **induced-vs-simulated** — no simulated row may be recorded as induced
+
+**Given** the per-row outcomes
+**When** the story closes
+**Then** all 17 rows carry a named PASS / FAIL / EXCLUDED-with-reason verdict in `10-6-walk-evidence.md`, feeding Story 10.7's table, and any row whose documented fix does NOT work produces a FILED defect per N.5 policy (plus a same-commit README correction per doc-drift rule (a))
+
+**Given** this is a walk story (the injection harness, if any, is test scaffolding, not production code)
+**When** CR cadence is evaluated per the 6 criteria
+**Then** zero criteria fire → CR skipped per cadence binding; escalate per §5.12 if any production code is touched
+
+---
+
+### Story 10.7: README evidence-backing close-out — verified tags + limitations + per-row verdict table
+
+**Created 2026-07-04 (party-mode roundtable).** The closure story — discharges done-flip clauses 2, 3, and 4. Converts the epic's accumulated walk evidence into the finished artifact: a README where every example is real, and a verdict table where every claim has a name.
+
+As Adam,
+I want every walked example's illustrative output in the README replaced with real captured output tagged `<!-- verified 10-x, run_id ... -->`, the limitations section updated honestly, and the complete per-row verdict table published as epic evidence,
+So that Epic 10 closes at "every user-facing claim has a named, evidence-backed verdict" rather than "we walked around a bit."
+
+**Acceptance Criteria:**
+
+**Given** Stories 10.1–10.6 have each updated their README examples same-story same-commit per doc-drift rule (a)
+**When** the close-out sweep fires
+**Then** the sweep verifies NO walked example remains illustrative — every one carries real captured output + its `<!-- verified 10-x, run_id ... -->` tag — and back-fills any gap the per-story passes missed
+
+**Given** the walks surfaced what the product does NOT do well
+**When** the limitations section is updated
+**Then** it honestly reflects walk findings (including any FAIL/EXCLUDED rows and FILED defects), not marketing posture
+
+**Given** done-flip clause 2
+**When** the verdict table is published as epic evidence
+**Then** every README example AND all 17 error rows have a named PASS / FAIL / EXCLUDED-with-reason verdict, with citations into the 10-x walk-evidence files (and induced-vs-simulated honesty tags carried through from 10.6)
+
+**Given** this is a docs-closure story
+**When** CR cadence is evaluated per the 6 criteria
+**Then** zero mandatory criteria fire → ship under §5.12 self-audit cadence (the verdict table is reviewed for completeness against the README as part of the done-flip gate itself)
