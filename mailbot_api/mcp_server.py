@@ -931,7 +931,8 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
     ),
     "revert_action": (
         "Revert a Tier-1 action by action_id. 24h window; "
-        "MOVE_TO_TRIAGE_FOLDER returns INVERSE_UNAVAILABLE."
+        "MOVE_TO_TRIAGE_FOLDER re-moves to the recorded source folder "
+        "(legacy pre-10-2 rows without pre_state return PRE_STATE_MISSING)."
     ),
     "mint_sensitivity_token": (
         "Mint a single-use confirmation token for a sensitive email + task_type. "

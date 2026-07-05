@@ -19,7 +19,6 @@ import pytest
 from mailbot_api.actions.authorization import mint_grant, revoke_grant
 from mailbot_api.actions.drainer import (
     PendingActionRow,
-    _build_pre_state,
     run_tick,
 )
 from mailbot_api.actions.graph_write import (
@@ -534,24 +533,220 @@ async def test_pre_dispatch_crash_marks_failed_not_stuck_in_draining(
     assert reason.startswith("drainer_internal_error:"), reason
 
 
-# ---- Pre-state snapshot -------------------------------------------------------
+# ---- Pre-state snapshot (Story 10-2) -------------------------------------------
 
 
-def test_build_pre_state_returns_empty_dict_for_now() -> None:
-    """Story 4-4 ships empty pre_state for every action; Story 4-8 fills."""
-    row = PendingActionRow(
-        id=1,
-        email_id="e-1",
-        action_type=ActionType.MARK_READ,
-        tier=1,
-        payload={},
-        proposed_at="2026-06-02T00:00:00Z",
-        proposed_by_grant_id=None,
-        change_marker_at_propose=None,
-        status="draining",
-        retry_count=0,
-        failure_reason=None,
-        terminal_at=None,
-        budget_consumed=0,
+async def _insert_revert_row(
+    db_path: str,
+    *,
+    email_id: str,
+    destination_folder_id: str,
+    revert_of_action_id: int,
+) -> int:
+    """Insert a reverter-shaped inverse row directly (the reverter inserts via
+    PENDING_ACTION_INSERT, NOT via propose_action — which refuses the reserved
+    revert_of_action_id payload key)."""
+    from mailbot_api.db.connection import execute_insert_returning_id
+    from mailbot_api.db.queries import PENDING_ACTION_INSERT
+
+    payload = json.dumps(
+        {
+            "destination_folder_id": destination_folder_id,
+            "revert_of_action_id": revert_of_action_id,
+        },
+        sort_keys=True,
     )
-    assert _build_pre_state(row) == {}
+    return await execute_insert_returning_id(
+        db_path,
+        PENDING_ACTION_INSERT,
+        (
+            email_id,
+            ActionType.MOVE_TO_TRIAGE_FOLDER.value,
+            1,
+            payload,
+            "2026-07-05T00:00:00Z",
+            None,
+            None,
+            "pending",
+        ),
+    )
+
+
+async def test_move_family_captures_pre_state_before_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 10-2 AC-1: a move-family drain writes the real source folder id
+    into action_history.pre_state (was '{}' for every action before 10-2)."""
+    db_path = _setup(tmp_path, monkeypatch)
+    await _seed_email(db_path, graph_id="e-1")
+    out = await propose_action(
+        "e-1", ActionType.MOVE_TO_TRIAGE_FOLDER,
+        payload={"destination_folder_id": "folder-dst"}, db_path=db_path,
+    )
+    await run_tick(db_path, FakeGraphWriteAdapter(source_folder_id="folder-src-1"))
+    status, reason, _ = _read_status(db_path, out.action_id)
+    assert status == "applied"
+    assert reason is None
+    with get_connection(db_path) as conn:
+        pre_state_json = conn.execute(
+            "SELECT pre_state FROM action_history WHERE action_id = ?",
+            (out.action_id,),
+        ).fetchone()[0]
+    pre_state = json.loads(pre_state_json)
+    assert pre_state["source_folder_id"] == "folder-src-1"
+    assert pre_state["captured_at"]  # ISO-Z timestamp present
+
+
+async def test_non_move_action_still_writes_empty_pre_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 10-2 regression fence: non-move actions keep pre_state='{}'
+    byte-identical (send/delete/category paths untouched)."""
+    db_path = _setup(tmp_path, monkeypatch)
+    await _seed_email(db_path, graph_id="e-1")
+    out = await propose_action("e-1", ActionType.MARK_READ, db_path=db_path)
+    await run_tick(db_path, FakeGraphWriteAdapter())
+    with get_connection(db_path) as conn:
+        pre_state_json = conn.execute(
+            "SELECT pre_state FROM action_history WHERE action_id = ?",
+            (out.action_id,),
+        ).fetchone()[0]
+    assert json.loads(pre_state_json) == {}
+
+
+async def test_pre_state_read_failure_fails_closed_without_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 10-2 AC-1 fail-closed: a failed pre-state read marks the row
+    failed (pre_state_capture_failed:*) and NEVER calls adapter.apply — a
+    move dispatched without pre_state would be irreversible-by-construction.
+    Check-class failure → no history row (consistent with target_deleted et al.)."""
+    from mailbot_api.actions.graph_write import GraphReadResult
+
+    class _PreStateReadFailingAdapter:
+        def __init__(self) -> None:
+            self.apply_calls = 0
+
+        async def apply(self, row: PendingActionRow) -> GraphApplyResult:
+            self.apply_calls += 1
+            return GraphApplyResult(ok=True, error=None, retry_count=0)
+
+        async def read_move_pre_state(self, email_id: str) -> GraphReadResult:
+            return GraphReadResult(ok=False, error="forced_read_failure")
+
+    db_path = _setup(tmp_path, monkeypatch)
+    await _seed_email(db_path, graph_id="e-1")
+    out = await propose_action(
+        "e-1", ActionType.MOVE_TO_TRIAGE_FOLDER,
+        payload={"destination_folder_id": "folder-dst"}, db_path=db_path,
+    )
+    adapter = _PreStateReadFailingAdapter()
+    await run_tick(db_path, adapter)  # type: ignore[arg-type]
+    status, reason, _ = _read_status(db_path, out.action_id)
+    assert status == "failed"
+    assert reason is not None
+    assert reason.startswith("pre_state_capture_failed")
+    assert adapter.apply_calls == 0
+    with get_connection(db_path) as conn:
+        n_history = conn.execute(
+            "SELECT COUNT(*) FROM action_history WHERE action_id = ?",
+            (out.action_id,),
+        ).fetchone()[0]
+    assert n_history == 0
+
+
+async def test_revert_marked_row_bypasses_target_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 10-2 (F5 landmine): the original move soft-deletes the local row
+    via delta sync, so the inverse row would always fail target_deleted. Rows
+    carrying the reserved revert_of_action_id payload key bypass the lenient
+    deleted-gate; ordinary rows on the same email still refuse."""
+    db_path = _setup(tmp_path, monkeypatch)
+    # Two separate soft-deleted emails: the revert row's success repairs ITS
+    # email's soft-delete (Task 3.3), which would un-gate a plain row sharing
+    # the same email — so the gate-intact assertion gets its own subject.
+    await _seed_email(db_path, graph_id="e-1", deleted_at="2026-07-05T00:00:10Z")
+    await _seed_email(db_path, graph_id="e-2", deleted_at="2026-07-05T00:00:10Z")
+
+    # Ordinary Tier-1 move on a soft-deleted email → target_deleted (gate intact).
+    plain = await propose_action(
+        "e-1", ActionType.MOVE_TO_TRIAGE_FOLDER,
+        payload={"destination_folder_id": "folder-dst"}, db_path=db_path,
+    )
+    # Revert-marked row on a soft-deleted email → drains + applies.
+    revert_id = await _insert_revert_row(
+        db_path, email_id="e-2", destination_folder_id="folder-orig",
+        revert_of_action_id=plain.action_id,
+    )
+
+    await run_tick(db_path, FakeGraphWriteAdapter(source_folder_id="folder-dst"))
+    plain_status, plain_reason, _ = _read_status(db_path, plain.action_id)
+    assert plain_status == "failed"
+    assert plain_reason == "target_deleted"
+    revert_status, revert_reason, _ = _read_status(db_path, revert_id)
+    assert revert_status == "applied"
+    assert revert_reason is None
+
+
+async def test_tier_2_move_family_also_captures_pre_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 10-2 AC-2 interpretation pin: ALL five move-family actions capture
+    pre_state (cheap, audit-valuable) — revert support extends only to the
+    Tier-1 member (test_revert_tier_2_refused pins the ONLY_TIER_1_REVERTIBLE
+    half of the pair)."""
+    db_path = _setup(tmp_path, monkeypatch)
+    await _seed_email(db_path, graph_id="e-1")
+    out = await propose_action("e-1", ActionType.ARCHIVE, db_path=db_path)
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE pending_actions SET status = 'pending' WHERE id = ?",
+            (out.action_id,),
+        )
+        conn.commit()
+    grant_out = await mint_grant(
+        ActionType.ARCHIVE, ["e-1"], _hours_from_now(1), db_path=db_path,
+    )
+    assert grant_out.ok
+
+    await run_tick(db_path, FakeGraphWriteAdapter(source_folder_id="folder-inbox"))
+    status, reason, _ = _read_status(db_path, out.action_id)
+    assert status == "applied"
+    assert reason is None
+    with get_connection(db_path) as conn:
+        pre_state_json = conn.execute(
+            "SELECT pre_state FROM action_history WHERE action_id = ?",
+            (out.action_id,),
+        ).fetchone()[0]
+    assert json.loads(pre_state_json)["source_folder_id"] == "folder-inbox"
+
+
+async def test_revert_marked_row_repairs_local_soft_delete_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 10-2 (10-1 evidence §5 item 5): a successful revert clears
+    deleted_at/removed_reason on the local email row — otherwise the
+    'reverted' email stays invisible to every read verb (F5+F6 interaction)."""
+    db_path = _setup(tmp_path, monkeypatch)
+    await _seed_email(db_path, graph_id="e-1", deleted_at="2026-07-05T00:00:10Z")
+    await execute_write(
+        db_path,
+        "UPDATE emails SET removed_reason = 'deleted' WHERE graph_id = ?",
+        ("e-1",),
+    )
+    revert_id = await _insert_revert_row(
+        db_path, email_id="e-1", destination_folder_id="folder-orig",
+        revert_of_action_id=999,
+    )
+    await run_tick(db_path, FakeGraphWriteAdapter())
+    status, reason, _ = _read_status(db_path, revert_id)
+    assert status == "applied"
+    assert reason is None
+    with get_connection(db_path) as conn:
+        deleted_at, removed_reason = conn.execute(
+            "SELECT deleted_at, removed_reason FROM emails WHERE graph_id = ?",
+            ("e-1",),
+        ).fetchone()
+    assert deleted_at is None
+    assert removed_reason is None

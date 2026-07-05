@@ -292,3 +292,46 @@ async def test_missing_email_id_for_id_required_action_returns_error() -> None:
     assert out.ok is False
     assert out.error is not None
     assert out.error.startswith("missing_email_id_for_")
+
+
+# ---- Story 10-2: move pre-state read ------------------------------------------
+
+
+async def test_read_move_pre_state_parses_parent_folder_id() -> None:
+    """Story 10-2 AC-1: the pre-state read is GET /me/messages/{id}
+    ?$select=parentFolderId via the same token seam; parentFolderId lands in
+    GraphReadResult.source_folder_id."""
+    captured: dict[str, Any] = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured["method"] = req.method
+        captured["url"] = str(req.url)
+        captured["select"] = req.url.params.get("$select")
+        return httpx.Response(
+            200, json={"parentFolderId": "folder-abc", "changeKey": "ck-1"},
+        )
+
+    adapter = OutlookGraphWriteAdapter(
+        access_token_provider=_fake_token, transport=_mock_transport(handler),
+    )
+    result = await adapter.read_move_pre_state("e-1")
+    assert result.ok is True
+    assert result.source_folder_id == "folder-abc"
+    assert captured["method"] == "GET"
+    assert "/me/messages/e-1" in captured["url"]
+    assert captured["select"] == "parentFolderId"
+
+
+async def test_read_move_pre_state_404_fails_closed() -> None:
+    """Story 10-2: a 4xx on the pre-state read surfaces ok=False so the
+    drainer fails the row (pre_state_capture_failed) instead of dispatching
+    an irreversible move."""
+    adapter = OutlookGraphWriteAdapter(
+        access_token_provider=_fake_token,
+        transport=_mock_transport(lambda req: httpx.Response(404, json={})),
+    )
+    result = await adapter.read_move_pre_state("e-gone")
+    assert result.ok is False
+    assert result.source_folder_id is None
+    assert result.error is not None
+    assert "4xx" in result.error or "404" in result.error

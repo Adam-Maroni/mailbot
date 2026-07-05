@@ -115,7 +115,7 @@ Every mutation is tier-classified. You'll always see what MailBot intends to do 
 | Tier | Actions (examples) | What you must do |
 | --- | --- | --- |
 | 0 | read, search, count | nothing — free |
-| 1 | mark read/unread, add/remove category, move to triage folder | nothing — auto-applied; revertible for 24h ("undo that") **except** triage-move (manual revert only — see Limitations) |
+| 1 | mark read/unread, add/remove category, move to triage folder | nothing — auto-applied; revertible for 24h ("undo that") — including triage-move (re-moved to its recorded source folder; moves applied before the pre_state capture shipped refuse with `PRE_STATE_MISSING`) |
 | 2 | archive, move (batch) | approve the batch grant in chat |
 | 3 | send, delete | grant + confirmation (sends also cool off 60s) |
 
@@ -141,7 +141,7 @@ applied: email physically in the target folder — verified in Outlook
 
 <!-- verified 10-1, run_id action-4/2026-07-05 -->
 
-Two real caveats on triage-moves today (both live-observed): the chat path can't resolve folder *names* to folder ids yet, and a moved email drops out of MailBot's local view until a full resync (the delta sync records it as deleted).
+Two real caveats on triage-moves today (both live-observed): the chat path can't resolve folder *names* to folder ids yet, and a moved email drops out of MailBot's local view until a full resync (the delta sync records it as deleted) — though a *reverted* move now repairs the local row on the way back (live-verified: `deleted_at` cleared the moment the revert applied). <!-- verified 10-2, run_id action-6/2026-07-05 -->
 
 **Example — Tier-1 undo:**
 
@@ -367,7 +367,7 @@ Honest snapshot as of 2026-07:
 
 - **Local Docker only.** The stack runs and is live-verified on the local dev machine; VPS deployment (CP-1) is the final ship gate and has not happened yet.
 - **Folder moves: walked once, with findings.** The triage-move write path was live-verified end to end on 2026-07-05 (propose → auto-approve → drain → real Graph dispatch → verified in Outlook, one email against a sacrificial folder). <!-- verified 10-1, run_id action-4/2026-07-05 --> The same walk filed real defects: `pause` does not stop the action drainer (they live in different processes), a moved email is recorded locally as *deleted* and stays invisible to MailBot even after it's moved back, and the chat path can't propose a folder move at all yet (no folder-name lookup).
-- **Triage-move has no auto-revert yet** — unlike mark-read/category actions, an automated move can't be undone with "undo that"; revert it manually in Outlook. (Live-confirmed: the reverter refuses with `INVERSE_UNAVAILABLE`; revert support is the next planned fix.)
+- **Triage-move auto-revert: shipped and walked.** A triage-move now captures its source folder (from Graph, before dispatch — fail-closed: no capture, no move) and `mailbot revert <id>` / "undo that" re-moves the email back within 24h; the revert also repairs the email's local soft-deleted row. Live-verified end to end on 2026-07-05 (move → revert → verified back in Inbox in the Outlook client, same sacrificial-folder rig as the 10-1 walk). <!-- verified 10-2, run_id action-6/2026-07-05 --> Honest caveats: moves applied *before* this shipped have no recorded source folder and refuse with `PRE_STATE_MISSING` (revert those manually in Outlook); Tier-2 moves (batch archive etc.) capture their source folder for the audit trail but are still not auto-revertible.
 - **Benchmark calibration in progress** (epics 7 / 9 / 9.5): the model-per-task assignments in `router/policy.yaml` carry promote/demote hypotheses that are still being measured; expect routing to shift as results land.
 - **Native Discord slash registration covers the `/model` family only**; the other slash commands are interpreted by the Hermes agent from your typed message (functionally equivalent, no autocomplete).
 - Epics 1–6.5 are shipped and largely live-verified; the send flow, sensitivity gates, budget gates, digest, and notifications are all exercised against the real mailbox.

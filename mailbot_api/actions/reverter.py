@@ -1,4 +1,4 @@
-"""Tier-1 24-hour reverter — Story 4-8.
+"""Tier-1 24-hour reverter — Story 4-8 (+ Story 10-2 move-family support).
 
 `revert_action(action_id)` consults the action_history row + inverse-action
 map, constructs an inverse pending_actions row, and re-queues it for the
@@ -8,23 +8,35 @@ drainer. Refuses cases:
   - status != 'applied' (only applied actions are revertible)
   - terminal_at + 24h < now() (revert window closed)
   - action_history.reverted_at IS NOT NULL (already reverted)
-  - MOVE_TO_TRIAGE_FOLDER (no Tier-1 inverse available — pre_state path not yet filled)
+  - move-family action with missing/legacy-empty pre_state (PRE_STATE_MISSING
+    — legacy rows drained before Story 10-2 have pre_state='{}'; never guess
+    a destination)
 
-Per Story 4-4's design note: pre_state is `{}` for every action today. Story 4-8
-uses a hardcoded inverse-action map keyed on action_type, sidestepping the
-pre_state gap. A future story that fills pre_state can support state-dependent
-inverses (e.g., MOVE_TO_TRIAGE_FOLDER → MOVE_TO_<previous_folder>).
+Two inverse strategies:
+  - Static map (Story 4-8): MARK_READ↔MARK_UNREAD, ADD↔REMOVE_LOCAL_CATEGORY.
+  - State-dependent (Story 10-2): a Tier-1 move reverts as another
+    MOVE_TO_TRIAGE_FOLDER row (the Tier-1 move primitive — same Graph seam)
+    targeting pre_state.source_folder_id, payload-marked with the reserved
+    REVERT_OF_ACTION_ID_KEY so the drainer bypasses the target_deleted gate
+    (the original move soft-deleted the local row, 10-1 walk F5) and repairs
+    the local soft-delete on applied.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from mailbot_api.actions.types import ActionType, tier_for
+from mailbot_api.actions.types import (
+    REVERT_OF_ACTION_ID_KEY,
+    ActionType,
+    is_move_family,
+    tier_for,
+)
 from mailbot_api.db.connection import (
     execute_insert_returning_id,
     execute_write,
@@ -42,7 +54,8 @@ _logger = logging.getLogger(__name__)
 REVERT_WINDOW = timedelta(hours=24)
 
 
-# Tier-1 inverse-action map. Excludes MOVE_TO_TRIAGE_FOLDER (no Tier-1 inverse).
+# Tier-1 static inverse-action map (Story 4-8). Move-family inverses are
+# state-dependent and handled by the Story 10-2 pre_state branch instead.
 _INVERSE_ACTION: dict[ActionType, ActionType] = {
     ActionType.MARK_READ: ActionType.MARK_UNREAD,
     ActionType.MARK_UNREAD: ActionType.MARK_READ,
@@ -58,6 +71,7 @@ RevertErrorCode = Literal[
     "REVERT_WINDOW_EXPIRED",
     "ALREADY_REVERTED",
     "INVERSE_UNAVAILABLE",
+    "PRE_STATE_MISSING",
 ]
 
 
@@ -85,6 +99,24 @@ def _iso(dt: datetime) -> str:
 
 def _parse_iso(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _extract_source_folder_id(pre_state_json: str | None) -> str | None:
+    """Story 10-2: parse action_history.pre_state and return source_folder_id,
+    or None for missing/legacy-empty/malformed pre_state (→ PRE_STATE_MISSING).
+    """
+    if not pre_state_json:
+        return None
+    try:
+        pre_state = json.loads(pre_state_json)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(pre_state, dict):
+        return None
+    source_folder_id = pre_state.get("source_folder_id")
+    if not isinstance(source_folder_id, str) or not source_folder_id:
+        return None
+    return source_folder_id
 
 
 async def revert_action(action_id: int, *, db_path: str) -> RevertOut:
@@ -157,18 +189,47 @@ async def revert_action(action_id: int, *, db_path: str) -> RevertOut:
             ),
         )
 
-    # Resolve inverse.
+    # Resolve inverse. Move-family (Story 10-2): state-dependent — re-move the
+    # email back to pre_state.source_folder_id via another Tier-1 move row.
+    # Any move-family action reaching this point is Tier-1 (the tier gate
+    # above already refused everything else), i.e. MOVE_TO_TRIAGE_FOLDER.
     action_type = ActionType(action_type_str)
-    inverse = _INVERSE_ACTION.get(action_type)
-    if inverse is None:
-        return RevertOut(
-            ok=False,
-            error=RevertError(
-                code="INVERSE_UNAVAILABLE",
-                message=f"no Tier-1 inverse available for {action_type.value!r} "
-                        "(MOVE_TO_TRIAGE_FOLDER and similar require pre_state which is not yet populated)",
-            ),
+    inverse_payload_json: str
+    if is_move_family(action_type):
+        source_folder_id = _extract_source_folder_id(
+            history_row[0] if history_row is not None else None,
         )
+        if source_folder_id is None:
+            return RevertOut(
+                ok=False,
+                error=RevertError(
+                    code="PRE_STATE_MISSING",
+                    message=f"action_id {action_id} has no usable pre_state "
+                            "(source_folder_id) — rows drained before Story 10-2 "
+                            "recorded pre_state='{}'; refusing to guess a "
+                            "destination folder",
+                ),
+            )
+        inverse = action_type  # the Tier-1 move primitive, same Graph seam
+        inverse_payload_json = json.dumps(
+            {
+                "destination_folder_id": source_folder_id,
+                REVERT_OF_ACTION_ID_KEY: action_id,
+            },
+            sort_keys=True,
+        )
+    else:
+        maybe_inverse = _INVERSE_ACTION.get(action_type)
+        if maybe_inverse is None:
+            return RevertOut(
+                ok=False,
+                error=RevertError(
+                    code="INVERSE_UNAVAILABLE",
+                    message=f"no Tier-1 inverse available for {action_type.value!r}",
+                ),
+            )
+        inverse = maybe_inverse
+        inverse_payload_json = payload_json or "{}"
 
     # Construct the inverse pending_actions row.
     inverse_tier = tier_for(inverse)
@@ -185,6 +246,34 @@ async def revert_action(action_id: int, *, db_path: str) -> RevertOut:
         )
 
     proposed_at = _iso(_utc_now())
+
+    # CR-10-2-1: atomically CLAIM the revert BEFORE queueing the inverse row.
+    # Every fetchone/execute_write in this function is its own transaction, so
+    # two concurrent revert_action calls can both pass the ALREADY_REVERTED
+    # gate read above. ACTION_HISTORY_MARK_REVERTED is guarded by
+    # `AND reverted_at IS NULL`, so exactly one racer's UPDATE hits a row —
+    # the loser sees rowcount 0 and refuses here instead of queueing a
+    # duplicate inverse (for a move, a second real Graph dispatch). If the
+    # insert below then fails, the row is marked reverted with no inverse
+    # queued — recoverable and strictly safer than the duplicate dispatch.
+    # action_history may not exist for this action_id (Story 4-4 writes it
+    # during drain; legacy rows may lack one) — if absent, the revert still
+    # proceeds unclaimed as before (residual race deferred as CR-10-2-D1;
+    # move-family rows never reach here without history: PRE_STATE_MISSING).
+    if history_row is not None:
+        claimed = await execute_write(
+            db_path, ACTION_HISTORY_MARK_REVERTED, (proposed_at, action_id),
+        )
+        if claimed == 0:
+            return RevertOut(
+                ok=False,
+                error=RevertError(
+                    code="ALREADY_REVERTED",
+                    message=f"action_id {action_id} was already reverted by a "
+                            "concurrent revert call",
+                ),
+            )
+
     revert_action_id = await execute_insert_returning_id(
         db_path,
         PENDING_ACTION_INSERT,
@@ -192,22 +281,13 @@ async def revert_action(action_id: int, *, db_path: str) -> RevertOut:
             email_id,
             inverse.value,
             inverse_tier,
-            payload_json or "{}",
+            inverse_payload_json,
             proposed_at,
             None,  # proposed_by_grant_id — Tier-1 doesn't need a grant
             None,  # change_marker_at_propose — Tier-1 doesn't capture
             "pending",
         ),
     )
-
-    # Mark the original action_history row reverted_at. action_history row
-    # may not exist for this action_id (Story 4-4 writes it during drain, but
-    # only on the success path) — if absent, the revert still proceeds (we
-    # already verified status='applied' which implies dispatch succeeded).
-    if history_row is not None:
-        await execute_write(
-            db_path, ACTION_HISTORY_MARK_REVERTED, (proposed_at, action_id),
-        )
 
     _logger.info(
         "action reverted",

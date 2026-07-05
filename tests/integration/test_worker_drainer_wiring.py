@@ -62,9 +62,15 @@ def _read_status(db_path: str, action_id: int) -> str:
 
 
 def _make_mock_transport(captured: dict[str, Any]) -> httpx.MockTransport:
-    """Return an httpx.MockTransport that records the request + returns 200."""
+    """Return an httpx.MockTransport that records the request + returns 200.
+
+    Story 10-2: move-family drains issue a pre-state GET ($select=parentFolderId)
+    before the dispatch; serve it a folder id (fail-closed would otherwise
+    refuse the row) and keep `captured` recording the dispatch call only."""
 
     def handler(req: httpx.Request) -> httpx.Response:
+        if req.method == "GET" and req.url.params.get("$select") == "parentFolderId":
+            return httpx.Response(200, json={"parentFolderId": "folder-pre-state"})
         captured["method"] = req.method
         captured["url"] = str(req.url)
         captured["body"] = req.content

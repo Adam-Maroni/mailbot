@@ -5,7 +5,9 @@ Continuous-loop coroutine inside the worker process. Each tick:
   2. Atomic claim per row — conditional flip pending → draining; concurrent
      drainers race-free (rowcount=0 means another drainer beat us).
   3. Per-tier checks (Tier-1 lenient, Tier-2 grant+lenient, Tier-3 grant+strict-ETag).
-  4. Write action_history pre_state row (empty for Story 4-4; Story 4-8 fills).
+  4. Write action_history pre_state row (Story 10-2: move-family rows carry
+     {"source_folder_id", "captured_at"} captured from Graph fail-closed;
+     everything else keeps the Story 4-4 empty '{}').
   5. Dispatch via GraphWriteAdapter (Fake for 4-4 happy-path; Story 4-5 ships real).
   6. Terminal status flip (applied / failed / pending_grant if grant missing).
 
@@ -40,7 +42,12 @@ from mailbot_api.actions.graph_write import (
     GraphApplyResult,
     GraphWriteAdapter,
 )
-from mailbot_api.actions.types import ActionType, is_send_family
+from mailbot_api.actions.types import (
+    REVERT_OF_ACTION_ID_KEY,
+    ActionType,
+    is_move_family,
+    is_send_family,
+)
 from mailbot_api.db.connection import (
     execute_write,
     fetchall,
@@ -48,6 +55,7 @@ from mailbot_api.db.connection import (
 )
 from mailbot_api.db.queries import (
     ACTION_HISTORY_INSERT,
+    EMAIL_CLEAR_SOFT_DELETE,
     EMAIL_MARKER_AND_DELETED_AT_SELECT,
     PENDING_ACTION_CLAIM_DRAINING,
     PENDING_ACTION_MARK_APPLIED,
@@ -216,18 +224,49 @@ async def _revert_to_pending_grant(
     )
 
 
-def _build_pre_state(row: PendingActionRow) -> dict[str, Any]:
-    """Construct the pre-state snapshot for action_history.
+def _is_revert_row(row: PendingActionRow) -> bool:
+    """Story 10-2: True iff this row is a reverter-queued inverse (payload
+    carries the reserved REVERT_OF_ACTION_ID_KEY). propose_action refuses the
+    key, so only rows the reverter inserted directly can be marked.
 
-    Story 4-4 ships an empty dict for every action_type — the emails table
-    doesn't carry per-action revert fields (is_read, folder_id, categories).
-    Story 4-8 chooses the implementation path (schema migration vs Graph-read
-    at revert time) and fills this in.
+    CR-10-2-2 (defense-in-depth): also require a move-family action_type —
+    the reverter only mints move inverses, so a non-move row carrying the
+    marker is malformed and gains neither the deleted-gate bypass nor the
+    soft-delete repair; both fail-safes re-validate here rather than trusting
+    the propose boundary alone."""
+    return (
+        is_move_family(row.action_type)
+        and row.payload.get(REVERT_OF_ACTION_ID_KEY) is not None
+    )
+
+
+async def _capture_move_pre_state(
+    adapter: GraphWriteAdapter, row: PendingActionRow,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Story 10-2: read the message's current source folder from Graph for a
+    move-family row. Returns (pre_state, None) on success or (None, failure
+    reason) — the caller fails the row CLOSED on capture failure: a move
+    dispatched without pre_state is irreversible-by-construction, which is
+    the exact defect Story 10-2 closes.
     """
-    return {}
+    if row.email_id is None:
+        return (None, "pre_state_capture_failed:missing_email_id")
+    try:
+        read = await adapter.read_move_pre_state(row.email_id)
+    except Exception as exc:  # noqa: BLE001 — adapter contract is "return result"; defend against bugs
+        return (None, f"pre_state_capture_failed:adapter_exception:{type(exc).__name__}")
+    if not read.ok or not read.source_folder_id:
+        detail = read.error or "no_source_folder_id"
+        return (None, f"pre_state_capture_failed:{detail}")
+    return (
+        {"source_folder_id": read.source_folder_id, "captured_at": _iso(_utc_now())},
+        None,
+    )
 
 
-async def _insert_history(db_path: str, row: PendingActionRow) -> None:
+async def _insert_history(
+    db_path: str, row: PendingActionRow, pre_state: dict[str, Any] | None = None,
+) -> None:
     """Write the action_history pre-state row.
 
     CR-4-4-2: per AC-7 — the action_history row must exist BEFORE the
@@ -236,8 +275,12 @@ async def _insert_history(db_path: str, row: PendingActionRow) -> None:
     only on the success path inside `_write_history_and_apply`; failed and
     adapter-exception paths produced no history row, breaking Story 4-8's
     reverter and contradicting the docstring's own stated intent.
+
+    Story 10-2: `pre_state` is the captured move-family snapshot
+    ({"source_folder_id": ..., "captured_at": ...}); None (all non-move
+    actions) keeps the legacy empty '{}'.
     """
-    pre_state_json = json.dumps(_build_pre_state(row))
+    pre_state_json = json.dumps(pre_state if pre_state is not None else {})
     await execute_write(
         db_path,
         ACTION_HISTORY_INSERT,
@@ -284,6 +327,14 @@ async def _check_tier_1(
     if row.email_id is None:
         # Tier-1 actions in the current type spec are all email-scoped, but
         # be defensive: if an email-less Tier-1 ever lands here, just proceed.
+        return None
+    if _is_revert_row(row):
+        # Story 10-2: the original move soft-deletes the local row via delta
+        # sync (10-1 walk F5) — a revert row exists precisely to restore an
+        # email the local DB believes is gone, so the missing/deleted refusal
+        # must not apply. The Graph immutable id is the stable handle; if the
+        # message is truly gone, Graph 404s and the dispatch fails cleanly
+        # (provider_4xx_404).
         return None
     marker_info = await _read_email_marker_and_deleted(db_path, row.email_id)
     if marker_info is None:
@@ -564,11 +615,43 @@ async def _process_claimed_row(
         await _notify_failure(row, "daily_send_cap_exceeded", db_path=db_path)
         return
 
+    # Story 10-2: move-family rows capture pre_state (the message's current
+    # source folder) from Graph BEFORE the history write + dispatch. Fail
+    # CLOSED on capture failure — check-class failure, consistent with
+    # target_deleted et al. (no history row, no dispatch); recovery is
+    # `mailbot replay <id>` once Graph reads succeed again.
+    pre_state: dict[str, Any] | None = None
+    if is_move_family(row.action_type):
+        pre_state, capture_failure = await _capture_move_pre_state(adapter, row)
+        if capture_failure is not None:
+            _logger.warning(
+                "drainer pre-state capture failed — failing closed",
+                extra={
+                    "event": "action.drainer.pre_state.failed",
+                    "action_id": row.id,
+                    "action_type": row.action_type.value,
+                    "tier": row.tier,
+                    "failure_reason": capture_failure,
+                },
+            )
+            await _mark_failed(db_path, row, capture_failure)
+            await _notify_failure(row, capture_failure, db_path=db_path)
+            return
+        _logger.info(
+            "drainer pre-state captured",
+            extra={
+                "event": "action.drainer.pre_state.captured",
+                "action_id": row.id,
+                "action_type": row.action_type.value,
+                "tier": row.tier,
+            },
+        )
+
     # CR-4-4-2: action_history pre-state row MUST exist before dispatch so
     # that failed/exception paths still leave an auditable record (AC-7).
     # Previous implementation wrote history only on the success path inside
     # `_write_history_and_apply`.
-    await _insert_history(db_path, row)
+    await _insert_history(db_path, row, pre_state)
 
     # Dispatch via the adapter — capture both result and any synchronous exception.
     try:
@@ -580,6 +663,20 @@ async def _process_claimed_row(
 
     if result.ok:
         await _mark_applied(db_path, row, grant_id=grant_id)
+        if _is_revert_row(row) and row.email_id is not None:
+            # Story 10-2 (10-1 evidence §5 item 5): a successful revert must
+            # also repair the LOCAL row — the original move soft-deleted it
+            # (F5) and the delta re-add never resurrects it (F6). Without
+            # this, a "reverted" email stays invisible to every read verb.
+            await execute_write(db_path, EMAIL_CLEAR_SOFT_DELETE, (row.email_id,))
+            _logger.info(
+                "drainer revert applied — local soft-delete cleared",
+                extra={
+                    "event": "action.drainer.revert.local_row_repaired",
+                    "action_id": row.id,
+                    "action_type": row.action_type.value,
+                },
+            )
     else:
         reason = result.error or "unknown_adapter_failure"
         await _mark_failed(db_path, row, reason)

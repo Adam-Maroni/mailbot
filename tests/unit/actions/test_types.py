@@ -264,6 +264,38 @@ def test_send_new_email_in_email_less_but_other_sends_not() -> None:
     assert ActionType.REPLY_TO_INACTIVE_THREAD not in EMAIL_LESS_ACTIONS
 
 
+def test_move_family_membership_exact_and_matches_dispatch_table() -> None:
+    """Story 10-2 — MOVE_FAMILY membership.
+
+    The move-family is defined as "every action that dispatches via
+    POST /me/messages/{id}/move" (Epic 10 / Story 10.2 AC interpretation pin).
+    Cross-check the frozenset against the adapter's dispatch table so the two
+    can never drift apart: adding a new move-dispatching action requires
+    updating MOVE_FAMILY (and this test) — deliberate friction, mirroring
+    EMAIL_LESS_ACTIONS.
+    """
+    from mailbot_api.actions.outlook_adapter import _DISPATCH_TABLE
+    from mailbot_api.actions.types import MOVE_FAMILY, is_move_family
+
+    assert MOVE_FAMILY == frozenset(
+        {
+            ActionType.MOVE_TO_TRIAGE_FOLDER,
+            ActionType.ARCHIVE,
+            ActionType.MARK_JUNK,
+            ActionType.MOVE_TO_USER_FOLDER,
+            ActionType.MOVE_TO_INBOX,
+        }
+    )
+    move_endpoint_types = {
+        at
+        for at, dispatch in _DISPATCH_TABLE.items()
+        if dispatch.path_template == "/me/messages/{id}/move"
+    }
+    assert MOVE_FAMILY == move_endpoint_types
+    for at in ActionType:
+        assert is_move_family(at) == (at in MOVE_FAMILY)
+
+
 def test_boundary_check_action_value_set_matches_enum_tier_1_to_3() -> None:
     """AC-5 / AC-7 — keep `scripts/check_boundaries.py`'s hardcoded action-value
     set in sync with the Tier 1-3 subset of ActionType. Drift here = the rule

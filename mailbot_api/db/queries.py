@@ -158,6 +158,16 @@ EMAIL_SOFT_DELETE = (
     "UPDATE emails SET deleted_at = ?, removed_reason = ? WHERE graph_id = ? AND deleted_at IS NULL"
 )
 
+# Story 10-2: executed by the drainer when a revert-marked move-family row
+# applies. A move soft-deletes the local row via delta sync (10-1 walk F5) and
+# the delta re-add never resurrects it (F6, FILED) — without this repair a
+# "reverted" email would stay invisible to every read verb. Self-correcting:
+# if the revert destination is outside the synced folder set, the next delta
+# re-soft-deletes correctly.
+EMAIL_CLEAR_SOFT_DELETE = (
+    "UPDATE emails SET deleted_at = NULL, removed_reason = NULL WHERE graph_id = ?"
+)
+
 EMAIL_EXISTS_WITH_MARKER = "SELECT 1 FROM emails WHERE graph_id = ? AND change_marker = ?"
 
 

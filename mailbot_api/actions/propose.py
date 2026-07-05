@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict
 from mailbot_api.actions.recovery_action import RecoveryAction
 from mailbot_api.actions.types import (
     EMAIL_LESS_ACTIONS,
+    REVERT_OF_ACTION_ID_KEY,
     ActionType,
     is_send_family,
     requires_grant,
@@ -228,6 +229,21 @@ async def propose_action(
         return _refused(
             "TIER_PROMOTION_ATTEMPT",
             "tier is computed by the verb API and cannot be agent-specified",
+            action_type=action_type,
+            tier=tier,
+            email_id=email_id,
+        )
+
+    # 2b. Story 10-2: reserved revert-marker guard. The key makes the drainer
+    # bypass the lenient target_deleted gate (and repair the local row on
+    # applied) — provenance-safe ONLY because it cannot enter through this
+    # boundary. The reverter inserts inverse rows via PENDING_ACTION_INSERT
+    # directly and is unaffected.
+    if payload is not None and REVERT_OF_ACTION_ID_KEY in payload:
+        return _refused(
+            "INVALID_PAYLOAD",
+            f"payload key {REVERT_OF_ACTION_ID_KEY!r} is reserved for the "
+            "reverter and cannot be agent-specified",
             action_type=action_type,
             tier=tier,
             email_id=email_id,

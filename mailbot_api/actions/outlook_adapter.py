@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 import httpx
 
-from mailbot_api.actions.graph_write import GraphApplyResult
+from mailbot_api.actions.graph_write import GraphApplyResult, GraphReadResult
 from mailbot_api.actions.types import ActionType
 
 if TYPE_CHECKING:
@@ -237,6 +237,32 @@ class OutlookGraphWriteAdapter:
 
         return await self._dispatch_with_retry(dispatch.method, url, body)
 
+    async def read_move_pre_state(self, email_id: str) -> GraphReadResult:
+        """Story 10-2: read the message's current parentFolderId — the
+        pre-state a move-family revert needs. Same token seam and AR-D5-1
+        retry semantics as dispatch; read-only (GET, $select-narrowed).
+
+        The 10-1 walk proved this is the ONLY viable capture point: the local
+        emails table has no folder column, and the read must happen before the
+        move dispatch mutates parentFolderId.
+        """
+        url = (
+            _GRAPH_BASE_URL
+            + "/me/messages/"
+            + email_id
+            + "?$select=parentFolderId"
+        )
+        result, response = await self._request_with_retry("GET", url, None)
+        if not result.ok or response is None:
+            return GraphReadResult(ok=False, error=result.error or "unknown")
+        try:
+            parent_folder_id = response.json().get("parentFolderId")
+        except ValueError:
+            return GraphReadResult(ok=False, error="pre_state_body_not_json")
+        if not parent_folder_id:
+            return GraphReadResult(ok=False, error="parent_folder_id_absent")
+        return GraphReadResult(ok=True, source_folder_id=str(parent_folder_id))
+
     async def _dispatch_with_retry(
         self,
         method: str,
@@ -245,6 +271,18 @@ class OutlookGraphWriteAdapter:
     ) -> GraphApplyResult:
         """AR-D5-1 retry chain. Returns the final GraphApplyResult after at
         most _MAX_RETRIES attempts."""
+        result, _response = await self._request_with_retry(method, url, body)
+        return result
+
+    async def _request_with_retry(
+        self,
+        method: str,
+        url: str,
+        body: dict[str, Any] | None,
+    ) -> tuple[GraphApplyResult, httpx.Response | None]:
+        """AR-D5-1 retry chain, returning the successful response alongside
+        the result so read paths (Story 10-2 pre-state) can parse the body.
+        The response is non-None only when result.ok is True."""
         last_error = "unknown"
         for attempt in range(_MAX_RETRIES + 1):
             try:
@@ -260,17 +298,17 @@ class OutlookGraphWriteAdapter:
                 if attempt < _MAX_RETRIES:
                     await asyncio.sleep(_BACKOFF_SCHEDULE[min(attempt, len(_BACKOFF_SCHEDULE) - 1)])
                     continue
-                return GraphApplyResult(ok=False, error="timeout", retry_count=attempt)
+                return (GraphApplyResult(ok=False, error="timeout", retry_count=attempt), None)
             except httpx.TransportError as exc:
                 last_error = f"transport:{type(exc).__name__}"
                 if attempt < _MAX_RETRIES:
                     await asyncio.sleep(_BACKOFF_SCHEDULE[min(attempt, len(_BACKOFF_SCHEDULE) - 1)])
                     continue
-                return GraphApplyResult(ok=False, error=last_error, retry_count=attempt)
+                return (GraphApplyResult(ok=False, error=last_error, retry_count=attempt), None)
 
             status = response.status_code
             if 200 <= status < 300:
-                return GraphApplyResult(ok=True, error=None, retry_count=attempt)
+                return (GraphApplyResult(ok=True, error=None, retry_count=attempt), response)
 
             # Per AR-D5-1: 429/503 → exponential backoff up to 3 retries.
             if status in (429, 503):
@@ -286,8 +324,11 @@ class OutlookGraphWriteAdapter:
                         wait = _BACKOFF_SCHEDULE[min(attempt, len(_BACKOFF_SCHEDULE) - 1)]
                     await asyncio.sleep(wait)
                     continue
-                return GraphApplyResult(
-                    ok=False, error=f"provider_{status}_retry_exhausted", retry_count=attempt,
+                return (
+                    GraphApplyResult(
+                        ok=False, error=f"provider_{status}_retry_exhausted", retry_count=attempt,
+                    ),
+                    None,
                 )
 
             # 5xx non-503 → 1 retry then fail (per AR-D5-1).
@@ -295,22 +336,31 @@ class OutlookGraphWriteAdapter:
                 if attempt < 1:
                     await asyncio.sleep(_BACKOFF_SCHEDULE[0])
                     continue
-                return GraphApplyResult(
-                    ok=False, error=f"provider_5xx_{status}", retry_count=attempt,
+                return (
+                    GraphApplyResult(
+                        ok=False, error=f"provider_5xx_{status}", retry_count=attempt,
+                    ),
+                    None,
                 )
 
             # 4xx non-429 → immediate fail.
             if 400 <= status < 500:
-                return GraphApplyResult(
-                    ok=False, error=f"provider_4xx_{status}", retry_count=attempt,
+                return (
+                    GraphApplyResult(
+                        ok=False, error=f"provider_4xx_{status}", retry_count=attempt,
+                    ),
+                    None,
                 )
 
             # Unknown — defensive.
-            return GraphApplyResult(
-                ok=False, error=f"unexpected_status_{status}", retry_count=attempt,
+            return (
+                GraphApplyResult(
+                    ok=False, error=f"unexpected_status_{status}", retry_count=attempt,
+                ),
+                None,
             )
 
-        return GraphApplyResult(ok=False, error=last_error, retry_count=_MAX_RETRIES)
+        return (GraphApplyResult(ok=False, error=last_error, retry_count=_MAX_RETRIES), None)
 
 
 __all__ = ["OutlookGraphWriteAdapter"]

@@ -87,6 +87,27 @@ async def test_tier_promotion_payload_refused(tmp_path: Path) -> None:
     assert out.error.code == "TIER_PROMOTION_ATTEMPT"
 
 
+# ---- Story 10-2: reserved revert marker key ------------------------------------
+
+
+async def test_reserved_revert_marker_payload_key_refused(tmp_path: Path) -> None:
+    """Story 10-2: `revert_of_action_id` is reserved for the reverter — it
+    makes the drainer bypass the lenient target_deleted gate, so an agent
+    must not be able to set it via propose_action (the reverter inserts
+    directly via PENDING_ACTION_INSERT and is unaffected)."""
+    db_path = _setup(tmp_path)
+    await _seed_email(db_path, graph_id="e-1")
+    out = await propose_action(
+        "e-1", ActionType.MOVE_TO_TRIAGE_FOLDER,
+        payload={"destination_folder_id": "f-1", "revert_of_action_id": 7},
+        db_path=db_path,
+    )
+    assert out.ok is False
+    assert out.error is not None
+    assert out.error.code == "INVALID_PAYLOAD"
+    assert "revert_of_action_id" in out.error.message
+
+
 # ---- AC-11: invalid action_type via shim --------------------------------------
 
 

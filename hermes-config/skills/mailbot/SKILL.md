@@ -208,11 +208,15 @@ apply.
 
 Example user turn: "undo that mark-as-read." → call `revert_action(action_id=<id>)`.
 The verb maps the inverse (MARK_READ ↔ MARK_UNREAD, ADD ↔ REMOVE_LOCAL_CATEGORY).
-Tier-2 and Tier-3 actions are NOT revertible via this path; the user must take
-a new compensating action manually.
+A triage-folder move (MOVE_TO_TRIAGE_FOLDER) reverts by re-moving the email
+back to its recorded source folder — this works only for moves applied after
+the pre_state capture shipped (Story 10-2); older moves refuse with
+`PRE_STATE_MISSING`. Tier-2 and Tier-3 actions are NOT revertible via this
+path; the user must take a new compensating action manually.
 
 Tier-handling responsibility: Tier-1 only. If the verb returns
-`INVERSE_UNAVAILABLE`, surface the limitation to the user.
+`INVERSE_UNAVAILABLE` or `PRE_STATE_MISSING`, surface the limitation to the
+user.
 
 ### `mint_sensitivity_token`
 

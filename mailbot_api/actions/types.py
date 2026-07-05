@@ -357,11 +357,50 @@ EMAIL_LESS_ACTIONS: Final[frozenset[ActionType]] = frozenset(
 )
 
 
+# Story 10-2: the move-family — every action that dispatches via Graph
+# POST /me/messages/{id}/move (must stay in lockstep with the adapter's
+# _DISPATCH_TABLE; test_move_family_membership_exact_and_matches_dispatch_table
+# pins the invariant). The drainer captures pre_state (source folder id) for
+# these before dispatch; only the Tier-1 member (MOVE_TO_TRIAGE_FOLDER) is
+# revertible via the reverter per FR-5.1.
+MOVE_FAMILY: Final[frozenset[ActionType]] = frozenset(
+    {
+        ActionType.MOVE_TO_TRIAGE_FOLDER,
+        ActionType.ARCHIVE,
+        ActionType.MARK_JUNK,
+        ActionType.MOVE_TO_USER_FOLDER,
+        ActionType.MOVE_TO_INBOX,
+    }
+)
+
+
+# Story 10-2: reserved pending_actions payload key marking a row as the
+# reverter-queued inverse of a prior applied action. The drainer bypasses the
+# lenient target_deleted gate for marked rows (the original move soft-deletes
+# the local row, so the inverse would otherwise always refuse) and repairs the
+# local row's soft-delete on applied. propose_action REFUSES payloads carrying
+# this key — only the reverter (which inserts via PENDING_ACTION_INSERT
+# directly) may set it.
+REVERT_OF_ACTION_ID_KEY: Final[str] = "revert_of_action_id"
+
+
+def is_move_family(action_type: ActionType) -> bool:
+    """True iff the action dispatches via POST /me/messages/{id}/move.
+
+    Used by the drainer's pre_state capture (Story 10-2) and the reverter's
+    state-dependent move-inverse branch.
+    """
+    return action_type in MOVE_FAMILY
+
+
 __all__ = [
     "ACTION_PROPERTIES",
     "ActionProperties",
     "ActionType",
     "EMAIL_LESS_ACTIONS",
+    "MOVE_FAMILY",
+    "REVERT_OF_ACTION_ID_KEY",
+    "is_move_family",
     "is_send_family",
     "requires_grant",
     "tier_for",
