@@ -47,6 +47,7 @@ from benchmark.db import (
 )
 from benchmark.schemas import BenchmarkCell, BenchmarkRunRow, OutcomeLiteral, StatusLiteral
 from evals.corpus_schema import CorpusItem, load_corpus, read_anchors_version
+from mailbot_api.router.pricing import UnknownModelPricingError
 
 _logger = logging.getLogger(__name__)
 
@@ -542,7 +543,12 @@ async def _run_async(args: argparse.Namespace) -> int:
         return 0
 
     # Cost gate (AC-5).
-    total_cost, breakdown = _estimate_total_cost(cells, items_by_id)
+    try:
+        total_cost, breakdown = _estimate_total_cost(cells, items_by_id)
+    except UnknownModelPricingError as exc:
+        # Epic 9.5 retro A2 (F-UNKNOWN-MODEL-COST-GATE): refuse the run
+        # rather than gate on a $0-contaminated estimate.
+        raise SystemExit(f"cost gate refused: {exc}") from exc
     print(_format_cost_breakdown(total_cost, breakdown))
 
     if total_cost > _COST_GATE_THRESHOLD_USD and not args.yes:

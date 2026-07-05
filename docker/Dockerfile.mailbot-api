@@ -52,6 +52,13 @@ WORKDIR /app
 # sync-now) — required inside the container per AC-2 and AC-7 of those stories.
 COPY --chown=mailbot:mailbot mailbot_api/ ./mailbot_api/
 COPY --chown=mailbot:mailbot scripts/ ./scripts/
+# Epic 9.5 retro A1 (2026-07-05): bake the benchmark package + the evals Python
+# modules it imports, so benchmark CLI walks (Stories 9-6/9-7/9-11, Epic 10)
+# run in-container without `docker cp` drift. Code only — corpus/anchor DATA
+# stays out of the image (privacy invariant AC-6.5) and arrives via the
+# read-only bind-mounts declared in docker-compose.yml.
+COPY --chown=mailbot:mailbot benchmark/ ./benchmark/
+COPY --chown=mailbot:mailbot evals/__init__.py evals/corpus_schema.py ./evals/
 COPY --chown=mailbot:mailbot docker/entrypoint.sh ./docker/entrypoint.sh
 RUN chmod +x ./docker/entrypoint.sh
 

@@ -520,3 +520,30 @@ def await_fetchall(
         return list(cur.fetchall())
     finally:
         conn.close()
+
+
+# ---------- CR2026-07-05-F3 (Epic 9.5 retro A2 CR pass): unknown-model gate ----------
+
+
+def test_runner_cost_gate_refuses_unknown_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _clean_state: None,
+) -> None:
+    """F-UNKNOWN-MODEL-COST-GATE regression: an unpriceable model must hard-fail
+    the cost gate (SystemExit 'cost gate refused'), never estimate $0.00 and
+    proceed to real dispatch."""
+    db_path, corpus_path, anchors_dir = _setup_test_env(tmp_path, n_items=2)
+
+    with pytest.raises(SystemExit, match="cost gate refused"):
+        _run_cli(
+            db_path, corpus_path, anchors_dir, monkeypatch,
+            [
+                "--tasks", "coarse_class",
+                "--models", "claude-made-up-model-9000",
+                "--yes",
+            ],
+        )
+
+    rows = await_fetchall(db_path, "SELECT COUNT(*) FROM benchmark_runs", ())
+    assert rows[0][0] == 0, "no cells may be written when the cost gate refuses"

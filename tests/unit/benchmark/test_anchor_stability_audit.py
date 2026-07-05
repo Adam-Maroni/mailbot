@@ -256,10 +256,10 @@ def test_cli_happy_path_writes_canonical_baseline(tmp_path: Path) -> None:
     secondary = _ScriptedEvaluatorAdapter(
         overall_score=4,
         per_axis_scores={"faithfulness": 4, "tone_match": 4, "actionability": 4},
-        model_id="claude-sonnet-4-5",
+        model_id="claude-haiku-4-5-20251001",
     )
     register_adapter("claude-opus-4-7", primary)
-    register_adapter("claude-sonnet-4-5", secondary)
+    register_adapter("claude-haiku-4-5-20251001", secondary)
 
     output = tmp_path / "anchor_baselines" / "v1.json"
     exit_code = main(
@@ -269,7 +269,7 @@ def test_cli_happy_path_writes_canonical_baseline(tmp_path: Path) -> None:
             "--primary-model",
             "claude-opus-4-7",
             "--secondary-model",
-            "claude-sonnet-4-5",
+            "claude-haiku-4-5-20251001",
             "--output",
             str(output),
             "--db-path",
@@ -292,7 +292,7 @@ def test_cli_happy_path_writes_canonical_baseline(tmp_path: Path) -> None:
     # All anchors agree perfectly so α = 1.0 (degenerate-but-perfect case).
     assert payload["krippendorff_alpha"] == 1.0
     assert payload["primary_evaluator"] == "claude-opus-4-7"
-    assert payload["secondary_evaluator"] == "claude-sonnet-4-5"
+    assert payload["secondary_evaluator"] == "claude-haiku-4-5-20251001"
     assert payload["anchors_version"] == "v1"
     assert len(payload["per_anchor_scores"]) == 6  # 3 + 3 paired
 
@@ -319,10 +319,10 @@ def test_cli_untrusted_writes_failed_calibration_and_exits_2(
     secondary = _ScriptedEvaluatorAdapter(
         overall_score=1,
         per_axis_scores={"faithfulness": 1, "tone_match": 1, "actionability": 1},
-        model_id="claude-sonnet-4-5",
+        model_id="claude-haiku-4-5-20251001",
     )
     register_adapter("claude-opus-4-7", primary)
-    register_adapter("claude-sonnet-4-5", secondary)
+    register_adapter("claude-haiku-4-5-20251001", secondary)
 
     output = tmp_path / "anchor_baselines" / "v1.json"
     exit_code = main(
@@ -332,7 +332,7 @@ def test_cli_untrusted_writes_failed_calibration_and_exits_2(
             "--primary-model",
             "claude-opus-4-7",
             "--secondary-model",
-            "claude-sonnet-4-5",
+            "claude-haiku-4-5-20251001",
             "--output",
             str(output),
             "--db-path",
@@ -377,10 +377,10 @@ def test_cli_rerun_within_24h_reuses_response_cache(tmp_path: Path) -> None:
     secondary = _ScriptedEvaluatorAdapter(
         overall_score=3,
         per_axis_scores={"faithfulness": 3, "tone_match": 3, "actionability": 3},
-        model_id="claude-sonnet-4-5",
+        model_id="claude-haiku-4-5-20251001",
     )
     register_adapter("claude-opus-4-7", primary)
-    register_adapter("claude-sonnet-4-5", secondary)
+    register_adapter("claude-haiku-4-5-20251001", secondary)
 
     output = tmp_path / "anchor_baselines" / "v1.json"
     argv = [
@@ -389,7 +389,7 @@ def test_cli_rerun_within_24h_reuses_response_cache(tmp_path: Path) -> None:
         "--primary-model",
         "claude-opus-4-7",
         "--secondary-model",
-        "claude-sonnet-4-5",
+        "claude-haiku-4-5-20251001",
         "--output",
         str(output),
         "--db-path",
@@ -434,10 +434,10 @@ def test_cli_cost_gate_yes_bypasses_confirmation(tmp_path: Path) -> None:
     secondary = _ScriptedEvaluatorAdapter(
         overall_score=3,
         per_axis_scores={"faithfulness": 3, "tone_match": 3, "actionability": 3},
-        model_id="claude-sonnet-4-5",
+        model_id="claude-haiku-4-5-20251001",
     )
     register_adapter("claude-opus-4-7", primary)
-    register_adapter("claude-sonnet-4-5", secondary)
+    register_adapter("claude-haiku-4-5-20251001", secondary)
     output = tmp_path / "anchor_baselines" / "v1.json"
 
     # Run with --yes; should NOT raise EOFError or hang on input().
@@ -448,7 +448,7 @@ def test_cli_cost_gate_yes_bypasses_confirmation(tmp_path: Path) -> None:
             "--primary-model",
             "claude-opus-4-7",
             "--secondary-model",
-            "claude-sonnet-4-5",
+            "claude-haiku-4-5-20251001",
             "--output",
             str(output),
             "--db-path",
@@ -510,10 +510,10 @@ def test_cli_cost_gate_yes_bypasses_above_threshold(
     secondary = _ScriptedEvaluatorAdapter(
         overall_score=3,
         per_axis_scores={"faithfulness": 3, "tone_match": 3, "actionability": 3},
-        model_id="claude-sonnet-4-5",
+        model_id="claude-haiku-4-5-20251001",
     )
     register_adapter("claude-opus-4-7", primary)
-    register_adapter("claude-sonnet-4-5", secondary)
+    register_adapter("claude-haiku-4-5-20251001", secondary)
 
     output = tmp_path / "anchor_baselines" / "v1.json"
     exit_code = main(
@@ -523,7 +523,7 @@ def test_cli_cost_gate_yes_bypasses_above_threshold(
             "--primary-model",
             "claude-opus-4-7",
             "--secondary-model",
-            "claude-sonnet-4-5",
+            "claude-haiku-4-5-20251001",
             "--output",
             str(output),
             "--db-path",
@@ -574,7 +574,7 @@ def test_cli_cost_gate_user_decline_exits_1(
             "--primary-model",
             "claude-opus-4-7",
             "--secondary-model",
-            "claude-sonnet-4-5",
+            "claude-haiku-4-5-20251001",
             "--output",
             str(output),
             "--db-path",
@@ -622,7 +622,7 @@ def test_cli_zero_pairs_exits_2_without_crash(tmp_path: Path) -> None:
             return _adapter_response("not-a-json-blob")
 
     register_adapter("claude-opus-4-7", _BrokenAdapter("claude-opus-4-7"))
-    register_adapter("claude-sonnet-4-5", _BrokenAdapter("claude-sonnet-4-5"))
+    register_adapter("claude-haiku-4-5-20251001", _BrokenAdapter("claude-haiku-4-5-20251001"))
 
     output = tmp_path / "anchor_baselines" / "v1.json"
     exit_code = main(
@@ -632,7 +632,7 @@ def test_cli_zero_pairs_exits_2_without_crash(tmp_path: Path) -> None:
             "--primary-model",
             "claude-opus-4-7",
             "--secondary-model",
-            "claude-sonnet-4-5",
+            "claude-haiku-4-5-20251001",
             "--output",
             str(output),
             "--db-path",
@@ -687,3 +687,49 @@ def test_failed_calibration_path_derives_sibling() -> None:
     assert _failed_calibration_path(p2) == Path(
         "/abs/path/v2-FAILED-CALIBRATION.json"
     )
+
+
+# ---------- CR2026-07-05-F2+F3 (Epic 9.5 retro A2 CR pass): unknown-model gate ----------
+
+
+def test_cli_cost_gate_refuses_unknown_model(tmp_path: Path) -> None:
+    """F-UNKNOWN-MODEL-COST-GATE regression: an unpriceable evaluator model must
+    hard-fail the cost gate (SystemExit 'cost gate refused') before any dispatch;
+    no baseline file may be written."""
+    db_path = str(tmp_path / "audit.db")
+    apply_pending_migrations(db_path)
+    anchors_dir = tmp_path / "anchors"
+    summary = [_anchor(i + 1, adam_overall=3, task="summary_short") for i in range(2)]
+    draft = [_anchor(i + 1, adam_overall=3, task="draft_reply") for i in range(2)]
+    _write_anchors_dir(anchors_dir, summary_short=summary, draft_reply=draft)
+
+    output = tmp_path / "anchor_baselines" / "v1.json"
+    with pytest.raises(SystemExit, match="cost gate refused"):
+        main(
+            [
+                "--evaluators", "primary,secondary",
+                "--primary-model", "claude-made-up-model-9000",
+                "--secondary-model", "claude-haiku-4-5-20251001",
+                "--output", str(output),
+                "--db-path", db_path,
+                "--anchors-dir", str(anchors_dir),
+                "--tasks", "summary_short,draft_reply",
+                "--yes",
+            ]
+        )
+    assert not output.is_file()
+    assert not _failed_calibration_path(output).is_file()
+
+
+def test_cli_default_models_are_priced() -> None:
+    """CR2026-07-05-F2: both CLI evaluator defaults must have pricing rows —
+    the former dated primary default ('claude-opus-4-7-20251220') would have
+    hard-failed every no-flags invocation at the strict gate."""
+    from benchmark.anchor_stability_audit import (
+        _DEFAULT_PRIMARY_MODEL,
+        _DEFAULT_SECONDARY_MODEL,
+    )
+    from mailbot_api.router.pricing import estimate_cost_usd
+
+    assert estimate_cost_usd(_DEFAULT_PRIMARY_MODEL, 1_000, 100) > 0
+    assert estimate_cost_usd(_DEFAULT_SECONDARY_MODEL, 1_000, 100) > 0

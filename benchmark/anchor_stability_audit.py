@@ -11,7 +11,7 @@ CLI surface:
 
     python -m benchmark.anchor_stability_audit \\
         --evaluators primary,secondary \\
-        --secondary-model claude-sonnet-4-5 \\
+        --secondary-model claude-haiku-4-5-20251001 \\
         [--primary-model claude-opus-4-7-20251220] \\
         [--output evals/anchor_baselines/v1.json] \\
         [--db-path <path>] \\
@@ -69,11 +69,21 @@ from benchmark.scoring.subjective import (
     load_anchors,
 )
 from evals.corpus_schema import AnchorItem
+from mailbot_api.router.pricing import UnknownModelPricingError
 
 _logger = logging.getLogger(__name__)
 
-_DEFAULT_PRIMARY_MODEL: str = "claude-opus-4-7-20251220"
-_DEFAULT_SECONDARY_MODEL: str = "claude-sonnet-4-5"
+# CR2026-07-05-F2 (Epic 9.5 retro A2 CR pass): the former primary default was
+# the dated "claude-opus-4-7-20251220" — registered in neither the adapter
+# registry nor the pricing map, so the no-flags CLI invocation would hard-fail
+# at the strict cost gate (and previously silent-$0'd it). Bare alias is the
+# registered, priced ID.
+_DEFAULT_PRIMARY_MODEL: str = "claude-opus-4-7"
+# Epic 9.5 retro A2 (F-SECONDARY-MODEL-UNREGISTERED): the former default
+# "claude-sonnet-4-5" has no registered adapter — Story 9.5.4 Run 1 burned all
+# 40 secondary dispatches against it (0ms, $0, zero pairs). Default to the
+# secondary evaluator the honest Run 2 measurement actually used.
+_DEFAULT_SECONDARY_MODEL: str = "claude-haiku-4-5-20251001"
 _DEFAULT_OUTPUT_PATH: str = "evals/anchor_baselines/v1.json"
 _DEFAULT_ANCHORS_DIR: str = "evals/anchors"
 _DEFAULT_DB_PATH_ENV: str = "MAILBOT_DB_PATH"
@@ -133,7 +143,7 @@ def _estimate_audit_cost(
     anchors_block_chars: int,
     per_row_chars: int = 600,
     sample_output_tokens: int = 256,
-) -> float:
+) -> tuple[float, dict[str, tuple[float, int]]]:
     """Rough USD cost estimate for the full audit dispatch.
 
     For each (task, evaluator) we run ``n_anchors_per_task`` calibration
@@ -141,6 +151,13 @@ def _estimate_audit_cost(
     is ``n_anchors_per_task * n_tasks * 2``. Per-call token volume is
     the rendered anchors block + the item-under-test block, chunked at
     4 chars/token (same heuristic as Story 9-7 scorer).
+
+    Returns ``(total, breakdown)`` — breakdown maps evaluator model →
+    ``(cost, n_calls)``. Epic 9.5 retro A2 (F-COST-ESTIMATE-AGGREGATE-MASK):
+    this exact gate masked 40 dead secondary dispatches at $0 inside a
+    non-zero aggregate in the 9.5.4 Run 1 walk. Unknown models now raise
+    UnknownModelPricingError (strict default in estimate_cost_usd) instead
+    of contributing $0.
     """
     from mailbot_api.router.pricing import estimate_cost_usd
 
@@ -153,7 +170,11 @@ def _estimate_audit_cost(
     secondary_cost = n_calls_per_eval * estimate_cost_usd(
         secondary_model, tokens_in_per_call, sample_output_tokens
     )
-    return primary_cost + secondary_cost
+    breakdown: dict[str, tuple[float, int]] = {}
+    for model, cost in ((primary_model, primary_cost), (secondary_model, secondary_cost)):
+        prev_cost, prev_n = breakdown.get(model, (0.0, 0))
+        breakdown[model] = (prev_cost + cost, prev_n + n_calls_per_eval)
+    return primary_cost + secondary_cost, breakdown
 
 
 def _failed_calibration_path(output_path: Path) -> Path:
@@ -441,14 +462,21 @@ async def _run_async(args: argparse.Namespace) -> int:
     largest_block_chars = max(
         len(build_anchors_block(v)) for v in anchors_by_task.values()
     )
-    total_cost = _estimate_audit_cost(
-        n_anchors_per_task=n_anchors_per_task,
-        n_tasks=len(tasks),
-        primary_model=args.primary_model,
-        secondary_model=args.secondary_model,
-        anchors_block_chars=largest_block_chars,
-    )
+    try:
+        total_cost, cost_breakdown = _estimate_audit_cost(
+            n_anchors_per_task=n_anchors_per_task,
+            n_tasks=len(tasks),
+            primary_model=args.primary_model,
+            secondary_model=args.secondary_model,
+            anchors_block_chars=largest_block_chars,
+        )
+    except UnknownModelPricingError as exc:
+        # F-UNKNOWN-MODEL-COST-GATE: refuse the run rather than print a
+        # $0-contaminated estimate before real-spend dispatch.
+        raise SystemExit(f"cost gate refused: {exc}") from exc
     print(f"Estimated audit dispatch cost: ${total_cost:.2f}")
+    for eval_model, (model_cost, n_calls) in sorted(cost_breakdown.items()):
+        print(f"  {eval_model}: ${model_cost:.2f} ({n_calls} calls)")
     if total_cost > _COST_GATE_THRESHOLD_USD and not args.yes:
         if not _confirm_proceed("Proceed? [y/N]: "):
             # CR-F3 (MEDIUM): user-abort returns exit code 1 so CI

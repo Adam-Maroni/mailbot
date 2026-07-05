@@ -1,30 +1,27 @@
 """Per-model cost estimation per Story 2-4 AC-2 (skeleton) and Story 2-6 (verified rates).
 
-Story 2-4 ships a conservative skeleton: Qwen is free; Anthropic models use
-placeholder rates that Story 2-6 will replace with verified May-2026 numbers
-including cached-input discounts (Rule M). The function is intentionally a
-pure leaf — no DB, no network, no config-file reads.
+Rates verified 2026-07-05 (Epic 9.5 retro action A2, closing F-PLACEHOLDER-3X-DRIFT):
+cross-referenced against the Anthropic pricing docs and reconciled against real
+Console billing observed during the Epic 9.5 real-spend walks (placeholder-billed
+figures ran ~2.7x over Console truth — driver was the 3x-overstated Opus rows).
+The function is intentionally a pure leaf — no DB, no network, no config-file reads.
 """
 
 from __future__ import annotations
 
 # Rates in USD per million tokens.
 #
-# Story 2-6 ops-verification status:
+# Verification status (2026-07-05):
 #   * qwen2.5:3b-instruct-q4_K_M — free (local serving)
-#   * claude-haiku-4-5-20251001 — PLACEHOLDER pending live-billing verification
-#   * claude-opus-4-7 — PLACEHOLDER pending live-billing verification
+#   * claude-haiku-4-5-20251001 — VERIFIED $1.00 in / $5.00 out (the former
+#     placeholder happened to match the published rate)
+#   * claude-opus-4-7 — VERIFIED $5.00 in / $25.00 out (former placeholder was
+#     $15/$75 — exactly 3x overstated; the F-PLACEHOLDER-3X-DRIFT root cause)
 #
-# Verification methodology: cross-reference these against the Anthropic console
-# pricing page + a recent invoice line item. Story 6-8 (spend chart) will
-# reconcile this map against actual billing during epic-6.
-#
-# The current placeholders are within ~2x of expected real values, which is
-# sufficient for Story 2-8's Layer-4 $0.20 per-call threshold + the daily
-# soft-warn at $2 (those gates trigger correctly even with rates that are
-# off by ≤2x). The cached-input discount ratio (10x) is conservative —
-# Anthropic's published ephemeral-cache discount is "up to 90% off cached
-# input tokens" per the prompt-caching docs.
+# Cached-input rows use Anthropic's published ephemeral-cache read rate of
+# ~0.1x the base input price. Cache WRITES bill at 1.25x base input (5-min TTL);
+# this map models reads only, so estimates for cache-writing calls are slightly
+# conservative-low by the 0.25x write premium on the cached span.
 _RATES: dict[str, dict[str, float]] = {
     "qwen2.5:3b-instruct-q4_K_M": {
         "input_per_mtok": 0.0,
@@ -32,18 +29,27 @@ _RATES: dict[str, dict[str, float]] = {
         "output_per_mtok": 0.0,
     },
     "claude-haiku-4-5-20251001": {
-        # PLACEHOLDER — ops-team to verify.
         "input_per_mtok": 1.0,
         "cached_input_per_mtok": 0.1,
         "output_per_mtok": 5.0,
     },
     "claude-opus-4-7": {
-        # PLACEHOLDER — ops-team to verify.
-        "input_per_mtok": 15.0,
-        "cached_input_per_mtok": 1.5,
-        "output_per_mtok": 75.0,
+        "input_per_mtok": 5.0,
+        "cached_input_per_mtok": 0.5,
+        "output_per_mtok": 25.0,
     },
 }
+
+
+class UnknownModelPricingError(LookupError):
+    """Raised when a cost estimate is requested for a model with no pricing row.
+
+    Epic 9.5 retro action A2 (F-UNKNOWN-MODEL-COST-GATE): an unknown model
+    silently estimating $0.00 let a real-spend pre-flight gate print "$0.00"
+    and approve a 322-call Opus dispatch (Story 9.5.3, ~$3.43 overshoot).
+    Unknown models must fail the estimate loudly unless the caller explicitly
+    opts into the lenient under-account behavior.
+    """
 
 
 def estimate_cost_usd(
@@ -51,16 +57,29 @@ def estimate_cost_usd(
     tokens_in: int,
     tokens_out: int,
     cached_tokens_in: int = 0,
+    *,
+    strict: bool = True,
 ) -> float:
     """Compute estimated USD cost for a call.
 
-    Unknown models return 0.0 (conservative — better to under-account a
-    rogue caller than to inflate the daily budget readout). Story 2-9's
-    anomaly detection will catch volume from unknown models via the
-    `caller_origin` dimension instead.
+    Unknown models raise :class:`UnknownModelPricingError` by default — a
+    spend gate estimating $0.00 for a model it cannot price is false-safe
+    (F-UNKNOWN-MODEL-COST-GATE). Pass ``strict=False`` to restore the legacy
+    return-0.0 behavior; that mode is reserved for post-call audit accounting
+    and pre-dispatch refusal estimates inside the Router hot path, where a
+    raise would fail calls that policy/registry already vetted and where test
+    fixtures register fake model names (Story 2-9's anomaly detection catches
+    unknown-model volume via ``caller_origin`` there instead).
     """
     rates = _RATES.get(model)
     if rates is None:
+        if strict:
+            raise UnknownModelPricingError(
+                f"no pricing row for model {model!r}; refusing to estimate "
+                "(an unknown model estimating $0.00 is false-safe — register "
+                "the model in mailbot_api/router/pricing.py or pass "
+                "strict=False for lenient under-accounting)"
+            )
         return 0.0
 
     fresh_in = max(0, tokens_in - cached_tokens_in)
@@ -71,4 +90,4 @@ def estimate_cost_usd(
     )
 
 
-__all__ = ["estimate_cost_usd"]
+__all__ = ["UnknownModelPricingError", "estimate_cost_usd"]

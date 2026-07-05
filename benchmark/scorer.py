@@ -56,10 +56,16 @@ from benchmark.scoring.subjective import (
     score_subjective,
 )
 from evals.corpus_schema import CorpusItem, load_corpus
+from mailbot_api.router.pricing import UnknownModelPricingError
 
 _logger = logging.getLogger(__name__)
 
-_DEFAULT_SCORER_MODEL: str = "claude-opus-4-7-20251220"
+# Epic 9.5 retro A2 (F-UNKNOWN-MODEL-COST-GATE): the former default
+# "claude-opus-4-7-20251220" is a dated ID registered in neither the adapter
+# registry nor the pricing map — it estimated $0.00 at the pre-flight gate and
+# then dispatched a real-Opus scorer run (Story 9.5.3 overshoot). The bare
+# alias is the registered, priced ID.
+_DEFAULT_SCORER_MODEL: str = "claude-opus-4-7"
 _DEFAULT_DB_PATH_ENV: str = "MAILBOT_DB_PATH"
 _DEFAULT_CORPUS_PATH: str = "evals/email_corpus_v1.jsonl"
 _DEFAULT_ANCHORS_DIR: str = "evals/anchors"
@@ -456,8 +462,15 @@ def _estimate_subjective_cost(
     anchors_block_chars: int | None = None,
     per_row_chars: int = 600,
     sample_output_tokens: int = 256,
-) -> float:
+) -> tuple[float, dict[str, tuple[float, int]]]:
     """Rough estimate of total subjective-evaluator cost in USD.
+
+    Returns ``(total, breakdown)`` where ``breakdown`` maps evaluator model →
+    ``(cost, n_calls)``. Epic 9.5 retro A2 (F-COST-ESTIMATE-AGGREGATE-MASK):
+    the gate must print per-model line items, not a single aggregate — a $0
+    contributor hiding inside a non-zero total masked half the 9.5.4 dispatch
+    plan. Unknown models now raise UnknownModelPricingError out of this
+    function (strict default in estimate_cost_usd).
 
     Per subjective (task, model) pair we run: ``n_anchors`` calibration
     dispatches + ``len(pair_rows)`` per-row dispatches. If a secondary
@@ -479,18 +492,24 @@ def _estimate_subjective_cost(
     total_input_chars = block_chars + per_row_chars
     tokens_in_per_call = max(1, total_input_chars // 4)
     total = 0.0
+    breakdown: dict[str, tuple[float, int]] = {}
+
+    def _add(model: str, n_calls: int) -> None:
+        nonlocal total
+        cost = n_calls * estimate_cost_usd(
+            model, tokens_in_per_call, sample_output_tokens
+        )
+        total += cost
+        prev_cost, prev_n = breakdown.get(model, (0.0, 0))
+        breakdown[model] = (prev_cost + cost, prev_n + n_calls)
+
     for (task_type, _model), pair_rows in by_pair.items():
         if task_type not in _SUBJECTIVE_TASKS:
             continue
-        primary_calls = n_anchors + len(pair_rows)
-        total += primary_calls * estimate_cost_usd(
-            scorer_model, tokens_in_per_call, sample_output_tokens
-        )
+        _add(scorer_model, n_anchors + len(pair_rows))
         if secondary_evaluator is not None:
-            total += n_anchors * estimate_cost_usd(
-                secondary_evaluator, tokens_in_per_call, sample_output_tokens
-            )
-    return total
+            _add(secondary_evaluator, n_anchors)
+    return total, breakdown
 
 
 def _resolve_db_path(cli_db_path: str | None) -> str:
@@ -604,14 +623,21 @@ async def _run_async(args: argparse.Namespace) -> int:
         )
     else:
         anchors_block_chars = None
-    total_cost = _estimate_subjective_cost(
-        by_pair,
-        n_anchors=n_anchors,
-        scorer_model=args.scorer_model,
-        secondary_evaluator=args.secondary_evaluator,
-        anchors_block_chars=anchors_block_chars,
-    )
+    try:
+        total_cost, cost_breakdown = _estimate_subjective_cost(
+            by_pair,
+            n_anchors=n_anchors,
+            scorer_model=args.scorer_model,
+            secondary_evaluator=args.secondary_evaluator,
+            anchors_block_chars=anchors_block_chars,
+        )
+    except UnknownModelPricingError as exc:
+        # F-UNKNOWN-MODEL-COST-GATE: never print a $0 estimate and dispatch
+        # real dollars — refuse the run outright.
+        raise SystemExit(f"cost gate refused: {exc}") from exc
     print(f"Estimated subjective-dispatch cost: ${total_cost:.2f}")
+    for eval_model, (model_cost, n_calls) in sorted(cost_breakdown.items()):
+        print(f"  {eval_model}: ${model_cost:.2f} ({n_calls} calls)")
     if total_cost > _COST_GATE_THRESHOLD_USD and not args.yes:
         if not _confirm_proceed("Proceed? [y/N]: "):
             print("Aborted by user; no scores written.")

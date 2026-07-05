@@ -104,6 +104,7 @@ async def _cmd_rederive(
         execute_rederive,
         plan_rederive,
     )
+    from mailbot_api.router.pricing import UnknownModelPricingError
 
     if task not in VALID_RE_DERIVATION_TASKS:
         print(  # noqa: T201
@@ -129,9 +130,17 @@ async def _cmd_rederive(
     # Load policy for plan_rederive's snapshot_for_dispatch call.
     _load_policy_for_cli()
 
-    plan = await plan_rederive(
-        task=task, since=since, prompt_version=prompt_version, db_path=db_path
-    )
+    try:
+        plan = await plan_rederive(
+            task=task, since=since, prompt_version=prompt_version, db_path=db_path
+        )
+    except UnknownModelPricingError as exc:
+        # CR2026-07-05-F1 (Epic 9.5 retro A2 CR pass): plan_rederive prices the
+        # policy-assigned model at the strict default; a policy model with no
+        # pricing row must surface as a clean refusal, not a raw traceback —
+        # same F-UNKNOWN-MODEL-COST-GATE contract as the benchmark CLI gates.
+        print(f"REFUSED: cost gate refused: {exc}", file=sys.stderr)  # noqa: T201
+        return 2
 
     # AC-4 sensitivity precondition gate.
     if plan.blocked_by_sensitivity_count > 0:

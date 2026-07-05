@@ -149,7 +149,7 @@ def _bench_run_row(
             "latency_ms": 100,
             "outcome": outcome,
             "status": "completed",
-            "scorer_model": "claude-opus-4-7-20251220",
+            "scorer_model": "claude-opus-4-7",
             "anchors_version": "v1",
             "router_policy_version": "test",
             "ran_at": "2026-06-28T00:00:00Z",
@@ -275,9 +275,9 @@ def test_scenario_2_happy_path_subjective(tmp_path: Path) -> None:
     adapter = _ScriptedSubjectiveAdapter(
         overall_score=3,
         per_axis_scores={"faithfulness": 3, "tone_match": 3, "actionability": 3},
-        model_id="claude-opus-4-7-20251220",
+        model_id="claude-opus-4-7",
     )
-    register_adapter("claude-opus-4-7-20251220", adapter)
+    register_adapter("claude-opus-4-7", adapter)
 
     exit_code = scorer_main(
         [
@@ -285,7 +285,7 @@ def test_scenario_2_happy_path_subjective(tmp_path: Path) -> None:
             "--db-path", db_path,
             "--corpus", str(corpus_path),
             "--anchors-dir", str(anchors_dir),
-            "--scorer-model", "claude-opus-4-7-20251220",
+            "--scorer-model", "claude-opus-4-7",
             "--yes",
         ]
     )
@@ -317,9 +317,9 @@ def test_scenario_3_calibration_warning_fires(tmp_path: Path) -> None:
     adapter = _ScriptedSubjectiveAdapter(
         overall_score=5,
         per_axis_scores={"faithfulness": 5, "tone_match": 5, "actionability": 5},
-        model_id="claude-opus-4-7-20251220",
+        model_id="claude-opus-4-7",
     )
-    register_adapter("claude-opus-4-7-20251220", adapter)
+    register_adapter("claude-opus-4-7", adapter)
 
     exit_code = scorer_main(
         [
@@ -327,7 +327,7 @@ def test_scenario_3_calibration_warning_fires(tmp_path: Path) -> None:
             "--db-path", db_path,
             "--corpus", str(corpus_path),
             "--anchors-dir", str(anchors_dir),
-            "--scorer-model", "claude-opus-4-7-20251220",
+            "--scorer-model", "claude-opus-4-7",
             "--yes",
         ]
     )
@@ -354,15 +354,15 @@ def test_scenario_4_cross_evaluator_alpha_path(tmp_path: Path) -> None:
     primary = _ScriptedSubjectiveAdapter(
         overall_score=3,
         per_axis_scores={"faithfulness": 3, "tone_match": 3, "actionability": 3},
-        model_id="claude-opus-4-7-20251220",
+        model_id="claude-opus-4-7",
     )
     secondary = _ScriptedSubjectiveAdapter(
         overall_score=4,
         per_axis_scores={"faithfulness": 4, "tone_match": 4, "actionability": 4},
-        model_id="claude-sonnet-4-6-20250929",
+        model_id="claude-haiku-4-5-20251001",
     )
-    register_adapter("claude-opus-4-7-20251220", primary)
-    register_adapter("claude-sonnet-4-6-20250929", secondary)
+    register_adapter("claude-opus-4-7", primary)
+    register_adapter("claude-haiku-4-5-20251001", secondary)
 
     exit_code = scorer_main(
         [
@@ -370,8 +370,8 @@ def test_scenario_4_cross_evaluator_alpha_path(tmp_path: Path) -> None:
             "--db-path", db_path,
             "--corpus", str(corpus_path),
             "--anchors-dir", str(anchors_dir),
-            "--scorer-model", "claude-opus-4-7-20251220",
-            "--secondary-evaluator", "claude-sonnet-4-6-20250929",
+            "--scorer-model", "claude-opus-4-7",
+            "--secondary-evaluator", "claude-haiku-4-5-20251001",
             "--yes",
         ]
     )
@@ -419,3 +419,41 @@ def test_scenario_5_unique_constraint_enforcement(tmp_path: Path) -> None:
     assert len(second_scores) == first_count, (
         f"AC-9.5: row count MUST stay stable across re-runs; first={first_count}, second={len(second_scores)}"
     )
+
+
+# ---------- CR2026-07-05-F3 (Epic 9.5 retro A2 CR pass): unknown-model gate ----------
+
+
+def test_scorer_cost_gate_refuses_unknown_model(tmp_path: Path) -> None:
+    """F-UNKNOWN-MODEL-COST-GATE regression: an unpriceable --scorer-model must
+    hard-fail the cost gate (SystemExit 'cost gate refused'), never estimate
+    $0.00 and dispatch real dollars (the Story 9.5.3 overshoot shape)."""
+    db_path = str(tmp_path / "test.db")
+    apply_pending_migrations(db_path)
+    corpus_path = tmp_path / "corpus.jsonl"
+    anchors_dir = tmp_path / "anchors"
+    _write_anchors(anchors_dir, "draft_reply", [_anchor(i + 1, adam_overall=3) for i in range(3)])
+    import asyncio
+
+    asyncio.run(_seed_subjective_run(db_path, corpus_path, n_items=1))
+
+    with pytest.raises(SystemExit, match="cost gate refused"):
+        scorer_main(
+            [
+                "--run-id", "run-9-7-test",
+                "--db-path", db_path,
+                "--corpus", str(corpus_path),
+                "--anchors-dir", str(anchors_dir),
+                "--scorer-model", "claude-made-up-model-9000",
+                "--yes",
+            ]
+        )
+
+
+def test_scorer_default_model_is_priced() -> None:
+    """CR2026-07-05-F2 sibling pin: the CLI default scorer model must have a
+    pricing row (the former dated default estimated $0.00 — F-UNKNOWN-MODEL-COST-GATE)."""
+    from benchmark.scorer import _DEFAULT_SCORER_MODEL
+    from mailbot_api.router.pricing import estimate_cost_usd
+
+    assert estimate_cost_usd(_DEFAULT_SCORER_MODEL, 1_000, 100) > 0

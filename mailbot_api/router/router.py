@@ -697,7 +697,13 @@ async def _dispatch_with_failure_chain(
         # rogue caller can't trigger the cache-write path with an
         # ultra-expensive call.
         estimated_tokens_in = (len(prompt.system) + len(user_msg)) // 4
-        estimated_cost = estimate_cost_usd(model, estimated_tokens_in, policy_entry.max_tokens_out)
+        # strict=False: Router paths price models that policy/registry already
+        # vetted; test fixtures also register fake model names here. The
+        # strict raise (F-UNKNOWN-MODEL-COST-GATE) is for pre-flight spend
+        # gates, not the per-call refusal net.
+        estimated_cost = estimate_cost_usd(
+            model, estimated_tokens_in, policy_entry.max_tokens_out, strict=False
+        )
         if estimated_cost > PER_CALL_REFUSAL_THRESHOLD_USD and not force:
             result = RouterResult(
                 ok=False,
@@ -814,7 +820,12 @@ async def _dispatch_with_failure_chain(
         tokens_out = response.tokens_out
         cached_tokens_in = response.cached_tokens_in
         latency_ms = response.latency_ms
-        cost_usd = estimate_cost_usd(model, tokens_in, tokens_out, cached_tokens_in)
+        # strict=False: post-call audit accounting must not fail a call that
+        # already succeeded (rogue-caller volume is caught by Story 2-9
+        # anomaly detection via caller_origin instead).
+        cost_usd = estimate_cost_usd(
+            model, tokens_in, tokens_out, cached_tokens_in, strict=False
+        )
 
         # Try schema validation.
         try:
@@ -875,6 +886,7 @@ async def _dispatch_with_failure_chain(
                 retry_response.tokens_in,
                 retry_response.tokens_out,
                 retry_response.cached_tokens_in,
+                strict=False,
             )
             try:
                 parsed = prompt.output_schema.model_validate_json(
@@ -1862,7 +1874,10 @@ async def dispatch_tool_call(
             for t in tools
         )
         estimated_tokens_in = (msg_text_total + tool_text_total) // 4
-        estimated_cost = estimate_cost_usd(model, estimated_tokens_in, max_tokens_out)
+        # strict=False: same rationale as ask_router's Layer-4 gate above.
+        estimated_cost = estimate_cost_usd(
+            model, estimated_tokens_in, max_tokens_out, strict=False
+        )
         if estimated_cost > PER_CALL_REFUSAL_THRESHOLD_USD:
             result = ToolCallResult(
                 ok=False,
@@ -1946,7 +1961,10 @@ async def dispatch_tool_call(
         tokens_out = tool_response.tokens_out
         cached_tokens_in = tool_response.cached_tokens_in
         latency_ms = tool_response.latency_ms
-        cost_usd = estimate_cost_usd(model, tokens_in, tokens_out, cached_tokens_in)
+        # strict=False: post-call audit accounting (see ask_router above).
+        cost_usd = estimate_cost_usd(
+            model, tokens_in, tokens_out, cached_tokens_in, strict=False
+        )
 
         tool_calls_count = len(tool_response.tool_calls)
         tool_calls_summary = _build_tool_calls_summary(tool_response.tool_calls) if tool_response.tool_calls else None

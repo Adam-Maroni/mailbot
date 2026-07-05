@@ -16,3 +16,9 @@ _bmad-output/
 .claude/
 *.md
 !README.md
+# Epic 9.5 retro A1 (2026-07-05): defense-in-depth — eval corpus/anchor DATA
+# must never enter an image even if a future COPY broadens (privacy AC-6.5).
+evals/**/*.jsonl
+evals/_labeling/
+evals/anchor_baselines/
+scratch/
