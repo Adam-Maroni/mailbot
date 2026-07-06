@@ -750,3 +750,52 @@ Excluded from staging per selective-staging contract: .claude/settings.json (Ada
 - CP-5 [AC-5] live hot-reload: PASS at L3 — mailbot-api container (up 34h) logged `policy.reloaded` with `version=policy-v1-2026-07-04` at edit-matching timestamps; no restart.
 
 INFO flag "PENDING-ADAM-SIGNATURE" above is now RESOLVED.
+
+---
+
+## Story 10-3-qwen-batch-lane-usage-and-quality-audit — 2026-07-06
+
+**Headline:** read-only qwen usage+quality audit executed end-to-end autonomously ($0, zero code, zero mailbox/Router touches); story file inline-authored from epics.md (Step 2.2 Branch A); 6 findings FILED per N.5; story at `review` awaiting Adam's Phase 3.5 verdicts for the done-flip.
+
+**Dev model:** claude-fable-5 (inline execution). **Review model:** claude-opus-4-7 reserved but never dispatched — CR skipped per cadence binding (story AC-4 pre-declared + pre-review §5.12 GATE-COVERAGE-ELIGIBLE with all 6 criteria NO; 10-1 zero-code precedent). Not a silent skip: binding recorded in pre-review §5.12, story Dev Agent Record, and epic-10-run-flags.md § Story 10-3 Run 1.
+
+**Review rounds:** 0 (per above). **Aggregated [deferred:*] items:** none — the 6 audit findings (F-10-3-1..6) are FILED-by-design deliverables per N.5, not deferrals; Epic 10.5 triage inputs listed in epic-10-run-flags.md.
+
+**Gate verdicts:**
+
+- 2.3.5 (Pre-Review Self-Audit) — PASS (5 sections; §3 = 5 severity-tagged self-caught issues, incl. 1 HIGH fixed in-session: evidence file briefly carried fabricated "Adam-signed PASS" verdict text, corrected to PENDING before any other artifact referenced it; §5 all 11 checks + 5.12 pasted)
+- 2.4 (Code Review) — SKIPPED per cadence binding (see above)
+- 2.4.4 (Dev Agent Record completeness) — PASS (model, per-AC completion notes, docs-only File List declaration, Change Log). Story `Status:` stays `review` by design — see sequencing deviation below
+- 2.4.5 (UI-scope pre-flight) — N/A — no graphical frontend per PORTING.md
+- 2.4.6 (File-List-vs-git) — PASS (`git ls-files --error-unmatch` clean on all 5 File List paths post-staging)
+- 2.4.7 (Middleware-Real-Bootstrap) — N/A (exemption: markdown/evidence-only; zero state-changing code; live-DB access was SELECT-only via `mode=ro` URI)
+- 2.4.8 (Verbose-row truncation) — PASS-by-construction (sprint-status review-row is a 3-sentence headline + evidence pointer; full narrative in story Completion Notes + walk evidence)
+
+**Step 2.5 (dev-env verification):** N/A — docs-only File List and no `<dev-env-skill>` defined; stack independently confirmed healthy at audit Task 0 (mailbot-api healthy, 17h up).
+
+**Sequencing deviation from the generic skill table (deliberate, recorded):** the skill flips sprint-status to `done` after the 2.4.x gates; this project's walk-story convention (10-1/10-2 precedent + this story's own Task 5.4) keeps walk stories at `review` until Adam signs per-AC verdicts. The done-flip executes AT the Phase 3.5 PASS verdict (together with the evidence verdict lines PENDING→signed), not before.
+
+**4 quality gates at audit close:** ruff clean on tracked tree (2 pre-existing T201 in untracked `scratch/`, same WARNING as 9.5.5 block above) / mypy --strict 129 files clean / boundaries exit 0 / pytest **1708 passed + 2 skipped + 3 deselected** (byte-identical to 10-2-close baseline — docs-only confirmed).
+
+**Flags raised:** 0 CRITICAL / 1 WARNING / 1 INFO
+
+- WARNING (operational, filed as F-10-3-1, needs Adam decision): degraded mode ACTIVE since 2026-07-03T14:41Z on the pre-A2 inflated estimator counter — Anthropic ingest tasks qwen-served since 07-05; Hermes tool-calling turns fail under qwen (F-10-3-2). Recovery options (budget reset / accept until Aug 1 / re-derive July estimates) in the filing.
+- INFO — story artifacts staged (5 files); `.claude/settings.json`, `scratch/`, `.autonomous-run-active.json` deliberately NOT staged. Nothing committed.
+
+**Permission prompts:** no permission log configured — prompt count unknown; zero prompts observed during the run.
+
+## Story 10-3 Manual Verification — 2026-07-06
+
+**Verdict: PASS WITH FINDINGS (delegated walk, Adam-directed — "Can you run the manual verification yourself?"; 1 finding caught + corrected in-walk, per the 6-13/9.5.5 delegation precedent and the 9-11 caught-and-fixed pattern).**
+
+Checkpoints re-verified with FRESH commands (not by re-reading the audit's own artifacts):
+
+- **CP-1 [AC-1] PASS** — re-ran the load-bearing queries live: `degraded_mode_state` = `(1, active=1, entered_at='2026-07-03T14:41:24.978890Z', exited_at=NULL)`; July-cumulative-at-entry $35.37; monthly est $1.96 / $70.24; totals 13,600 calls / 9,651 qwen (71.0%); coarse+fine 0 `ok` of 3,042; qwen tool-call 18 failed. All byte-match the evidence. Zero new router_calls since audit close (count unchanged) — evidence is current.
+- **CP-2 [AC-2] PASS** — methodology §2.1 precedes the score table as AC-2 requires; provenance re-verified on spot-checked rows 3366 (confidential 0.75 v3 qwen), 3559 (human 0.95 → cold_outreach 0.85 qwen), 1271 (sensitive 0.7 v3); dead-valve claim re-confirmed (`class_fine='automated'` = 0 of 1,105); human share 1,105/1,908 = 57.9% re-confirmed.
+- **CP-3 [AC-3] PASS** — `git status --porcelain` + `git diff --cached --name-only`: staging contains ONLY the `_bmad-output/` story artifacts; zero source files anywhere; findings F-10-3-1..6 present in evidence §3 + mirrored in epic-10-run-flags.md.
+- **CP-4 [AC-4] PASS** — pre-review §5.12 verdict GATE-COVERAGE-ELIGIBLE (all 6 criteria NO) + "CR skipped per cadence binding" recorded in story Dev Agent Record; consistent with AC-4.
+- **Live F-10-3-1 confirmation** — `mailbot status`: `degraded mode: yes`, `month: $70.2359 / $30.00 cap (234.1%) (warning)`, and the ERRORS block shows the degraded-qwen ingest churn live (retry_recovered/failed action_extraction + importance_scoring rows).
+
+**Walk-caught finding (WALK-10-3-F1, corrected in-walk):** the evidence conflated two caps — it claimed the degraded trigger was "the $35 monthly cap", but $35 is the **Anthropic Console** cap (the 9.5.x figure); MailBot's budget-guard cap is **$30** (`MONTHLY_HARD_CAP_USD = 30.0`, budget.py:37), confirmed by live `mailbot status`. Corrected in evidence §1.4 + F-10-3-1 row + story Completion Notes + epic-10-run-flags, with amendment banner A1 recording the change. The correction STRENGTHENS F-10-3-1: honest July spend (~$26 real) is under the $30 cap, so with corrected pricing degraded mode would not be active at all. Residual open detail (noted in A1, not blocking): the $5.37 gap between DB-cumulative-at-entry ($35.37) and the cap ($30) is attributed to counter-vs-ledger accounting (successful-only `add_spend` vs all-rows ledger) — not fully traced; belongs to whoever picks up F-10-3-1.
+
+**Disposition:** Story 10-3 flipped review → done. Evidence verdict lines flipped PENDING → PASS (delegated walk). Recommendation unchanged from the flags: F-10-3-1 needs an Adam decision (`/budget reset` now vs accept degraded until Aug 1) — the Discord surface is degraded (F-10-3-2) until then.
