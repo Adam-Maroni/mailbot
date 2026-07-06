@@ -86,3 +86,26 @@ Modeled on `epic-9-5-run-flags.md`. One section per story run; halts, path decis
 - **Findings F-10-3-1..6 ALL FILED per N.5, zero fixed** (2 HIGH: stuck-degraded-on-inflated-counter, qwen-tool-call-hard-fail; 3 MEDIUM: degraded action_extraction ~45% fail, coarse/fine 2× retry tax, P1+P2 misclassification cascade; 1 LOW: sensitivity edge behaviors P3–P6). Epic 10.5 triage inputs.
 
 **CR-cadence determination (story AC-4):** zero of the 6 criteria fire — zero code touched (evidence/tracking artifacts only). **CR skipped per cadence binding.**
+
+---
+
+## Story 10-4 Run 1 — 2026-07-06 — EXECUTED (hybrid: Adam-hands-on Discord walk + orchestrator evidence capture; ~$0.11 haiku cents; COMPLETE pending Adam verdicts)
+
+**Invocation:** Adam typed `autonomous story run 10-4`. Pre-flight found two blockers, both Adam-resolved in-session: (1) **degraded mode still active** (F-10-3-1/2 — chat walks unrunnable) → Adam chose "Reset now"; executed via `reset_degraded_mode` verb in-container + `docker compose restart mailbot-api` (both processes re-seeded; re-trip impossible — Layer-3 entry is crossing-only and the inflated counter sits far above the cap); exited 07:54:33Z, verified. F-10-3-1 stays FILED — this was an operator action, not a fix. (2) **Walk surface is Discord chat** (no run-mode binding existed) → Adam chose option (a) hands-on: Adam typed every turn and pasted replies; orchestrator (claude-fable-5) drove the case protocol, captured `router_calls`/mcp-log provenance read-only, and applied the doc-drift edits. Story file inline-authored from epics.md § Story 10.4 (Step 2.2 Branch A).
+
+**Walk record (full detail in `10-4-walk-evidence.md`):** 8 README read-family anchors walked as 11 cases (C0 smoke + C1-C8 + 2 sub-cases), 08:05-08:27 UTC. **6 PASS / 5 FAIL / 0 EXCLUDED.** Every reply DB-cross-checked read-only (`mode=ro`): C1 3/3 exact, C2 3/3 exact, C5b aggregates exact (41 emails 2016→Jun 1), C7 7/7 exact in-window, C8 buckets 2+9=11 = last-24h baseline exact. Projection-first held (zero body-reads on list/count turns); C6 exactly one `hydrate_email`, cap constant 5 verified. Provenance rows 13607-13647, zero `degraded:*` reasons post-reset; walk traffic tripped the hourly anomaly detector live (captured).
+
+**Findings F-10-4-1..6 ALL FILED per N.5, zero fixed:**
+
+- **F-10-4-3 HIGH** — `get_thread` unreachable from chat by construction (`EmailProjection` exposes no `thread_id`; agent fabricates → `THREAD_NOT_FOUND` 2/2, log-proven incl. the C3-Stripe reply that dressed the error as "doesn't have a thread"). README thread-summary example cannot succeed.
+- **F-10-4-4 HIGH** — enrichment layer has never run in production: `sender_reputation_summary` 0/727 senders, `thread_continuity_note` 0/1753 threads. Story 3-7's verbs have no production trigger.
+- **F-10-4-6 HIGH** — `daily_digest_intro` has ZERO router_calls rows all-time; today's delivered digest carries no intro. The documented `ask_router(task_type="daily_digest_intro")` contract (cron-jobs.md §3, epics.md Story 6.5 AC) has never held.
+- **F-10-4-1 MEDIUM** — `is_read` never synced (known 5-1 deferral, was undisclosed in README): C1 silently reframes "unread"→"from today"; C4 count flow refuses.
+- **F-10-4-5 MEDIUM** — no display-name search: "Who is Steve Gabison" found 0 of 52 existing emails; `get_sender_summary` never invoked on the name form.
+- **F-10-4-2 LOW** — transient Anthropic 529s surface as `failed` router rows; Hermes 3-attempt retry absorbs (4/17 rows this session; root-caused live at C8).
+
+**C8 layered honestly:** scheduled slot FIRED today 08:49 local and FAILED under degraded mode (`tools_unsupported` in Discord — live blast-radius capture of F-10-3-1/2, ~49-min scheduler drift noted); manual trigger post-reset DELIVERED end-to-end (`compose_digest` → `finalize_digest_delivery` ok, honesty-tagged manually-triggered).
+
+**Doc-drift rule (a) discharged same session:** README:19 blanket-illustrative sentence rescoped (read family verified, write/slash still illustrative); C1/C2 examples replaced with real sanitized captured output + tags; C3 thread-summary example replaced with an honest currently-broken note (F-10-4-3/4); C4 count row + C5 sender row corrected to walked truth; digest sentence rewritten (buckets verified, intro-never-generated + scheduled-slot-failure caveats). FAIL cases carry no verified tag except as explicitly-marked honest-FAIL documentation.
+
+**CR-cadence determination (story AC-4):** zero of the 6 criteria fire — zero code touched (README + evidence/tracking artifacts only). **CR skipped per cadence binding.**

@@ -16,57 +16,55 @@ Outlook ──Graph delta sync──▶ SQLite ──ingest (Qwen/Haiku)──�
 
 ## Talking to MailBot on Discord
 
-You talk to MailBot in plain language in your Discord channel. The Hermes agent translates your message into read verbs (free, no cloud calls) or action proposals (tier-gated). All example outputs below are **illustrative** — real values will differ, but the shapes match the live contracts.
+You talk to MailBot in plain language in your Discord channel. The Hermes agent translates your message into read verbs (free, no cloud calls) or action proposals (tier-gated). The read-family examples below carry **real captured output** from the 2026-07-06 live walk (tagged `verified 10-4`, lightly sanitized); the write and slash examples further down are still **illustrative** pending their own walks (Story 10-5).
 
 ### Querying your mail
 
 Reads are projection-first: MailBot answers from cached metadata + summaries and only opens a body when you ask about one specific email (capped at 5 body-reads per turn).
 
-**Example — list unread:**
+**Example — list unread:** <!-- verified 10-4, run_id 10-4-c1/2026-07-06 -->
 
 ```text
 You:  show me unread from today
 ```
 
 ```text
-MailBot:  3 unread today:
-1. **Invoice #2231 overdue** — billing@acme.com — 09:14
-   ⭑ 82 · Payment reminder for the May invoice, due date passed 3 days ago.
-2. **Re: Saturday hike** — sarah@example.com — 08:47
-   ⭑ 45 · Sarah confirms 10am at the trailhead, asks if you're bringing the dog.
-3. **Your weekly digest** — news@substack.com — 06:02
-   ⭑ 12 · Newsletter roundup, no action needed.
+MailBot:  Three emails from today:
+
+Hostinger (07:41 UTC) — VPS srv…….cloud is offline due to expiration. Importance: 80,
+Duolingo (05:53 UTC) — S——— invites you to try 3 free days of Duolingo Super Family. Importance: 15,
+LinkedIn (05:02 UTC) — Newsletter from Anthony Bourbon about Instacart valuation. Importance: 15,
+
+The Hostinger notification is the only one flagged as important. Your VPS expired.
 ```
 
-**Example — importance filter:**
+Honest caveat: read/unread state is not synced yet (`is_read` is a deferred follow-up from Story 5-1), so "unread" queries are served as *recent* emails — note the reply says "emails from today", not "unread". Filed as a walk finding (F-10-4-1).
+
+**Example — importance filter:** <!-- verified 10-4, run_id 10-4-c2/2026-07-06 -->
 
 ```text
 You:  anything important this week?
-MailBot:  2 emails scored above 70 this week:
-1. **Invoice #2231 overdue** — billing@acme.com — ⭑ 82 — action: pay by Friday
-2. **Contract renewal — signature needed** — legal@partner.io — ⭑ 78 — deadline 2026-07-08
+MailBot:  Three important emails this week (importance ≥70):
+
+Stripe (Jul 5, 07:46 UTC) — Failed $10.19 payment to Superwhisper. Importance: 86,
+LinkedIn (Jul 5, 17:27 UTC) — CEA embedded systems engineer job application prompt. Importance: 85,
+Hostinger (Jul 6, 07:41 UTC) — VPS srv…….cloud expired. Importance: 80,
+
+Two action items: fix the Stripe payment and your VPS is down.
 ```
 
-**Example — thread summary:**
-
-```text
-You:  summarize that thread
-MailBot:  Thread "Contract renewal" (4 messages, oldest first):
-Continuity note: Partner sent the renewal 2026-06-28; you asked for a net-45
-payment term; they countered net-30 and attached the revised PDF yesterday.
-Latest message is waiting on your signature.
-```
+**Thread summaries — currently broken via chat (walked 2026-07-06, FAIL).** Asking "summarize that thread" resolves the reference correctly (MailBot asks which one if it's ambiguous), but the thread lookup itself fails every time: search results don't expose thread ids, so the agent can't call `get_thread` with a valid one (filed as F-10-4-3), and thread continuity notes have never been generated in production (F-10-4-4). What you get today is a graceful fallback — MailBot opens the most recent message in the thread and summarizes that, with the thread's message count from cached metadata. The full ordered-thread summary with continuity note returns once those two findings are fixed.
 
 **Other queries that work the same way:**
 
 | You say | What happens |
 | --- | --- |
-| "how many unread do I have?" | count only, no listing |
-| "who is this person?" / "who is `billing@acme.com`?" | cached sender-reputation summary |
-| "what does the email from Sarah say?" | opens that one body (5-per-turn cap) |
-| "show me newsletters from this week" | filtered projection list |
+| "how many unread do I have?" | honest refusal today — unread counts need `is_read`, which isn't synced yet (F-10-4-1); MailBot offers sender/importance/date/class filters instead <!-- verified 10-4, run_id 10-4-c4/2026-07-06 (FAIL, documented honestly) --> |
+| "who is `firstname.lastname@gmail.com`?" (real address masked here; walked against a real long-time contact) | sender summary with real aggregates (message count, last contact) + context synthesized from cached projections <!-- verified 10-4, run_id 10-4-c5b/2026-07-06 --> — but ask by *name* and MailBot finds nothing (no name search yet, F-10-4-5), and cached reputation summaries aren't generated yet (F-10-4-4) |
+| "what does the email from Stripe say?" | opens that one body (5-per-turn cap) <!-- verified 10-4, run_id 10-4-c6/2026-07-06 --> |
+| "show me newsletters from this week" | filtered projection list <!-- verified 10-4, run_id 10-4-c7/2026-07-06 --> |
 
-You also get a **daily digest at 08:00** automatically — per-category counts, top-importance emails, and a short intro. You don't need to ask for it.
+You also get a **daily digest at 08:00** automatically — importance-bucketed counts and top-importance emails, built from the last 24 hours (the `is_read`-less "unread" proxy). <!-- verified 10-4, run_id 10-4-c8/2026-07-06 (delivery chain verified via manual trigger; bucket counts matched the DB exactly) --> Two honest caveats from the walk: the documented "short intro" paragraph has never actually been generated (the `daily_digest_intro` router task has zero calls in production history — filed as F-10-4-6), and the scheduled slot fired ~49 minutes late that morning and failed while degraded mode was active (`tools_unsupported`, the F-10-3-2 failure mode).
 
 ### Drafting and sending a reply
 

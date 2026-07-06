@@ -799,3 +799,31 @@ Checkpoints re-verified with FRESH commands (not by re-reading the audit's own a
 **Walk-caught finding (WALK-10-3-F1, corrected in-walk):** the evidence conflated two caps — it claimed the degraded trigger was "the $35 monthly cap", but $35 is the **Anthropic Console** cap (the 9.5.x figure); MailBot's budget-guard cap is **$30** (`MONTHLY_HARD_CAP_USD = 30.0`, budget.py:37), confirmed by live `mailbot status`. Corrected in evidence §1.4 + F-10-3-1 row + story Completion Notes + epic-10-run-flags, with amendment banner A1 recording the change. The correction STRENGTHENS F-10-3-1: honest July spend (~$26 real) is under the $30 cap, so with corrected pricing degraded mode would not be active at all. Residual open detail (noted in A1, not blocking): the $5.37 gap between DB-cumulative-at-entry ($35.37) and the cap ($30) is attributed to counter-vs-ledger accounting (successful-only `add_spend` vs all-rows ledger) — not fully traced; belongs to whoever picks up F-10-3-1.
 
 **Disposition:** Story 10-3 flipped review → done. Evidence verdict lines flipped PENDING → PASS (delegated walk). Recommendation unchanged from the flags: F-10-3-1 needs an Adam decision (`/budget reset` now vs accept degraded until Aug 1) — the Discord surface is degraded (F-10-3-2) until then.
+
+## Story 10-4 — 2026-07-06 10:45
+
+**Headline:** Read-family README perimeter walked live (hybrid: Adam typed all Discord turns, orchestrator captured provenance + evidence) — 11 cases, 6 PASS / 5 FAIL / 0 EXCLUDED proposed; 6 findings FILED per N.5 (3 HIGH), zero fixed; README read-family section made evidence-real with 7 verified tags; ~$0.11 haiku cents; story at `review` pending Adam-signed verdicts.
+
+**Run-mode + preconditions (both Adam-decided in-session at the pre-flight blocker gate):** degraded mode exited pre-run via reset_degraded_mode verb + mailbot-api restart ("Reset now"); walk surface = option (a) Adam-hands-on Discord. No prior run-mode binding existed on this story — the hybrid binding is now recorded in the story banner.
+
+**Review rounds:** 0 — CR skipped per cadence binding (AC-4; pre-review §5.12 GATE-COVERAGE-ELIGIBLE, zero code touched). Model-separation contract N/A (no reviewer spawned).
+
+**Deferred items:** none tagged `[deferred:*]`. One §4 ESCALATE-TO-REVIEWER routed to Adam at Phase 3.5 (README sanitization level on C1/C2 real content — lighter than the AC pin's default masking).
+
+**Gate verdicts:**
+- 2.3.5 Pre-review self-audit: PASS — 5 sections + 11 posture checks (mostly N/A, zero-code walk story); 1 HIGH self-caught (C3 verdict issued before provenance sweep — fixed in-session, correction appended), 2 MEDIUM, 2 LOW
+- 2.4.4 Dev Agent Record completeness: PASS — model, per-AC completion notes, File List, change log all filled; story-file Status flips to done on Adam signature (10-1/10-2/10-3 walk-story precedent)
+- 2.4.5 UI-scope pre-flight: N/A — no graphical frontend; UI ACs satisfied by non-graphical surfaces
+- 2.4.6 File-List-vs-git: PASS — all File List paths tracked/staged post-2.6; no untracked story-scope files
+- 2.4.7 Middleware-real-bootstrap: N/A — zero code (markdown/evidence only); the walk itself WAS the real-stack integration exercise
+- 2.4.8 Verbose-row truncation: PASS — sprint row carries headline + pointers; full narrative lives in walk evidence + run-flags
+- 2.5 Dev-env verification: N/A — no dev-env skill defined; stack health verified live throughout the walk (docker ps / /health / sync heartbeat)
+
+**Staged (7 files):** README.md, story file, pre-review, 10-4-walk-evidence.md, epic-10-run-flags.md, sprint-status.yaml, this file. Nothing committed.
+
+**Flags raised:** 6 findings FILED per N.5 (F-10-4-1..6: 3 HIGH / 2 MEDIUM / 1 LOW — see epic-10-run-flags.md § Story 10-4 Run 1). Zero CRITICAL process flags. INFO: walk traffic tripped the hourly anomaly detector (expected, captured as live evidence); Anthropic 529 burst during the digest window absorbed by Hermes retries.
+
+**Permission prompts:** zero during the run (no permission log configured — count from session observation).
+
+### Story 10-4 Manual Verification
+**Verdict (2026-07-06): PASS WITH FINDINGS — Adam-delegated** ("Drive the manual verification yourself", 10-3 precedent). Delegated adversarial pass = walk evidence Amendment A1: CP-1/2/3/5 re-verified clean against primary sources (fresh read-only queries, staged-diff sweep, tag count); CP-4 caught **WALK-10-4-F1** — the README carried a real third-party personal identifier set (client's gmail address in the C5b row, real first name in the C1 example) against the AC pin's masking default — corrected in-walk (placeholder address + masked name); Adam-scoped content (Stripe amount, CEA line, corporate senders) kept deliberately, Adam may overrule at commit. No changes to the 6 PASS / 5 FAIL case table or the 4 AC PASS verdicts. Story flipped to done.
