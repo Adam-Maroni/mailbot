@@ -2,6 +2,39 @@
 
 This file collects flags raised by `autonomous-story-run` runs. One block per invocation.
 
+## Story 10-6 — 2026-07-06 18:05
+
+**Headline:** All 16 README common-error rows fault-injected against the live local stack (pure-autonomous, Adam-authorized full risk envelope) — R15's 3 codes as R15a/b/c → 18 verdict rows: **13 PASS / 5 FAIL / 0 EXCLUDED**. Every FAIL is a documentation-contract defect (dead/mislabeled codes, a broken fix clause); zero product-capability regressions — every surfaceable error code surfaced with a stable string, every state recovered, baseline fully restored.
+
+**Dev model:** claude-fable-5
+**Review model:** N/A — CR skipped per cadence (§5.12 GATE-COVERAGE-ELIGIBLE, AC-4; zero production code)
+
+**Review rounds + applied rate:** N/A — no code-review subagent dispatched (zero of 6 CR criteria fire).
+
+**Gate verdicts:**
+- 2.3.5 Pre-Review Self-Audit — PASS (all 5 sections + 11 posture checks; §5.9 caught + corrected a self-inflicted PASS/FAIL tally drift in my own draft → propagated fix to 6 cite sites)
+- 2.4.4 Dev Agent Record completeness — PASS
+- 2.4.5 UI-scope — N/A (no graphical frontend)
+- 2.4.6 File-List-vs-git — PASS (File List "None — docs" + artifact paths all present)
+- 2.4.7 Middleware-real-bootstrap — N/A (zero `mailbot_api/` files touched)
+- 2.4.8 Verbose-row truncation — PASS (sprint-status row is headline + pointer to story Completion Notes + evidence)
+- 2.5 dev-env verification — N/A (docs-only File List)
+
+**Findings FILED per N.5 (7, zero fixed):** F-10-6-3 HIGH (`mailbot rederive` crashes every invocation — no adapter bootstrap in the CLI subcommand; README recovery fix dead); F-10-6-2 MEDIUM (`mailbot replay` inert for move-induced `target_deleted`); F-10-6-4 MEDIUM (`state_drift_noop` unreachable dead code); F-10-6-5 LOW (`monthly_budget_exceeded` unreachable dead code); F-10-6-6 LOW (paused refusal is `provider_error`, no `PAUSED` code); F-10-6-7 LOW (`mailbot logs` crashes on Windows cp1252 console); F-10-6-1 INFO (charter said 17 rows; table has 16). These are Epic 10.5 triage inputs (F-10-6-3 is the standout, HIGH user-facing recovery path dead).
+
+**Deferred items:** none — all findings FILED per N.5 (not deferred), zero fixed in-story.
+
+**Spend:** $0.0109 estimator-attributable (84 walk router_calls; Haiku recovery micro-calls + R7/R8 crossing calls), zero Opus. Under the Console-read threshold per 10-3 $0-story precedent; F-10-3-1 estimator inflation corroborated (month ~$70 forced R7 simulation).
+
+**Gates:** ruff clean on tracked tree (6 pre-existing T201 in untracked `scratch/`), mypy --strict clean (129 files), boundaries exit 0, pytest **1708 passed + 2 skipped + 3 deselected** — byte-identical to baseline (docs+evidence only).
+
+**Restoration:** degraded OFF, pause OFF, oauth counter 0, all synthetic rows deleted, sacrificial email E118 back in Inbox, E117 marker restored, no open pending actions, 3 containers healthy (mailbot-api restarted ×3 for BudgetGuard re-seed, all recovered). Genuinely-failed sends (actions 18, 37) retained as audit truth per AR-D5-2.
+
+**Permission-prompt summary:** zero permission prompts during the run (no permission log hook configured on this project — count is from live observation: every command shape was within the settings.json envelope).
+
+**Staging:** 6 story artifacts staged explicitly (README + story file + pre-review + evidence + epic-10-run-flags + sprint-status); `.claude/settings.json` (pre-existing background) + `scratch/` (untracked scaffolding) + `.autonomous-run-active.json` (run-state memo) left unstaged. **Nothing committed.**
+
+
 ## Story 9-11 — 2026-06-28 16:55
 
 **Headline:** Anchor stability audit one-shot CLI (`python -m benchmark.anchor_stability_audit`) + baseline persistence (`evals/anchor_baselines/v1.json` + JSON Schema draft 2020-12) + drift helper (`benchmark.compare_against_current`) shipped. Krippendorff α gates Epic 9 done-flip clause #9 (α<0.6 → blocks until reconciliation OR Adam retro-signs the OR-branch).
