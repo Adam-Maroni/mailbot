@@ -168,3 +168,24 @@ Corroborated not re-filed: 10-1 F1 (pause kills chat — reproduced S5/S6), 9.5.
 **CR-cadence determination (story AC-4):** zero of the 6 criteria fire — zero production code touched (README + evidence/tracking only; `scratch/mcp_walk_106.py` untracked, never staged). **CR skipped per cadence binding.**
 
 **Epic 10.5 triage inputs from this run:** F-10-6-3 (broken rederive CLI — user-facing recovery path dead, HIGH) is the standout for 10.5; F-10-6-2 (replay-inert target_deleted) is adjacent to the 10-2 move-family seam; F-10-6-4/5/6 are dead/mislabeled-code cleanups (cheap, batchable); F-10-6-7 is a host-specific CLI polish. Combined with 10-4's 3 HIGH + 10-5's 7 HIGH, Epic 10's FILED-defect backlog is now substantial — the retrospective's Epic 10.5 spawn decision has strong signal.
+
+---
+
+## Story 10-7 Run 1 — 2026-07-06 — EXECUTED (autonomous docs-closure sweep; $0; COMPLETE pending Adam verdicts)
+
+**Invocation:** Adam typed `autonomous story run 10-7`. Pre-flight clean (0 blockers: deps 10-1..10-6 all done; no run-mode binding — docs-closure story; UI gate N/A; $0). Story file inline-authored from epics.md § Story 10.7 (Step 2.2 Branch A). Repo-only sweep — zero live-stack interaction, zero Router/API calls.
+
+**What shipped (full detail in `10-7-walk-evidence.md`):**
+
+- **AC-1 verified-tag sweep:** 29 walked example anchors + 18 error rows inventoried from the six walk-evidence files and checked against the README. 41 tag sites pre-existing; **3 back-filled** (README:56 thread-summary FAIL note → `10-4-c3+c3b` tag; :194 sensitive-escalation FAIL note → `10-5-w3` tag; :200 slash-table header → `10-5-s1+s4` tag — all citing already-captured evidence, zero invented output). **0 walked examples remain illustrative.** The 4 unwalked anchors (Tier-1 undo chat form, Tier-3 delete, `cost` row, status sample board) explicitly *illustrative*-marked with reasons — never retro-tagged.
+- **AC-2 limitations honesty:** the section had zero coverage of the 10-3/10-4/10-6 findings. 4 bullets added: read-family gaps (F-10-4-1/3/4/5/6), estimator inflation + degraded-mode reality (F-10-3-1/2), free-tier classification quality edges (F-10-3-4/5/6), operator recovery-tooling gaps (F-10-6-2/3/7 + dead codes 4/5). Nothing still-true removed.
+- **AC-3 verdict table:** **`epic-10-verdict-table.md` published as epic evidence** — Section 1: 29 walked README-example rows (18 PASS / 11 FAIL); Section 1b: 4 EXCLUDED-with-reason; Section 2: 18 error-table rows (13 PASS / 5 FAIL / 0 EXCLUDED) with induced-vs-simulated tags verbatim from 10-6. Roll-up: **31 PASS / 16 FAIL / 4 EXCLUDED across 51 rows**; every row cites its walk-evidence file § + run_id; verdicts transcribed, none re-adjudicated; completeness check both directions clean (discrepancy list empty).
+- **Done-flip clauses 2/3/4 DISCHARGED.** Clause 1 completes when 10-7 flips done on Adam-signed verdicts; clause 5 held epic-wide (38 findings FILED, zero absorbed beyond 10-2's pre-declared scope).
+
+**Findings:** zero new findings — transcription-only story; the one self-caught issue (tag-count imprecision 42→41 pre-existing sites) was corrected in-evidence before review.
+
+**CR-cadence determination (AC-4):** zero of 6 criteria fire (README + `_bmad-output/` only, zero code). **CR skipped per cadence; ships under §5.12 self-audit** (pre-review artifact + verdict-table completeness check).
+
+**Gates:** ruff clean on tracked tree (6 pre-existing T201 in untracked `scratch/`), mypy --strict clean (129 files), boundaries exit 0, pytest **1708 passed + 2 skipped + 3 deselected in 217.66s** — byte-identical to baseline.
+
+**Spend:** $0 (no Router/API/container interaction).

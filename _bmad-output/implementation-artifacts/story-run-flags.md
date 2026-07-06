@@ -897,3 +897,40 @@ Checkpoints re-verified with FRESH commands (not by re-reading the audit's own a
 **Spend:** Console $26.94 → $28.25 = $1.31 (AC-3 truth; estimator $0.25 walk-attributable, zero Opus).
 
 **Manual verification (Phase 3.5):** per-AC verdicts pending Adam signature.
+
+---
+
+## Story 10-7-readme-evidence-backing-close-out — 2026-07-06 21:40 UTC
+
+**Headline:** Epic 10 docs-closure sweep DONE via `/autonomous-story-run 10-7` — `epic-10-verdict-table.md` published (31 PASS / 16 FAIL / 4 EXCLUDED across 51 rows), README fully evidence-backed (44 verified-tag sites, 3 back-filled, 0 walked-but-illustrative), 4 limitations honesty bullets added; done-flip clauses 2/3/4 discharged; $0, zero code.
+
+**Review rounds:** 0 — CR skipped per cadence (story AC-4 + §5.12 GATE-COVERAGE-ELIGIBLE, zero of 6 criteria fire, zero source files). Pre-review self-audit ran in full (5 sections, 12 posture checks): 4 self-caught issues, 3 FIX-NOW applied (tag-count precision, run-flags append ordering) + 1 ACCEPT-WITH-RATIONALE (W1a/W1b anchor remap, documented in-table).
+
+**Deferred items:** none.
+
+**Gate verdicts:**
+
+- 2.3.5 (pre-review self-audit) → PASS (`10-7-readme-evidence-backing-close-out.pre-review.md`, all 5 sections + 11 posture checks + §5.12)
+- 2.4.4 (Dev Agent Record completeness) → PASS (model named, per-AC completion notes, File List = None + artifacts, Status: done in-file)
+- 2.4.5 (UI-scope) → N/A (no graphical frontend)
+- 2.4.6 (File-List-vs-git) → PASS (all 7 staged paths tracked via `git ls-files --error-unmatch`; story-run-flags.md staged after this report)
+- 2.4.7 (middleware-real-bootstrap) → N/A (markdown/yaml-only; zero mailbot_api/ changes)
+- 2.4.8 (verbose-row truncation) → applied (sprint-status done-row = headline + pointers; full narrative in story Completion Notes; transient comment-duplication on the row self-caught + deduplicated, YAML re-validated)
+- 2.5 (dev-env verification) → N/A (docs-only story; no dev-env skill defined for this project)
+
+**Spend:** $0 (repo-only sweep; zero Router/API/container interaction).
+
+**Permission prompts:** no permission log configured — prompt count unknown; zero prompts observed during the run.
+
+**Manual verification (Phase 3.5):** per-AC verdicts (4× PASS proposed) pending Adam signature.
+
+## Story 10-7 Manual Verification — 2026-07-06 (Adam-DELEGATED: "Check manual verification yourself")
+
+Delegated adversarial pass, fresh commands against primary sources (10-3/10-4/10-5 precedent):
+
+- **CP-1 (AC-1 tag sweep):** `grep -c "verified 10-"` = 45 lines (44 tag sites + :19 prose, as claimed); all 3 back-fill tags present verbatim at :56/:194/:200; 5 illustrative markers (:19 prose, :159 undo, :166 delete, :204 cost, :235 status board). ✔
+- **CP-2 (AC-2 limitations):** 13 bullets in the section (9 pre-existing retained + 4 new); all 4 new headings present (Read-family gaps / Budget numbers / Free-tier classification quality / Operator recovery tooling) with finding IDs (compound form F-10-6-2/3/7 noted). ✔
+- **CP-3 (AC-3 verdict table):** counts re-derived programmatically from the published table — Section 1: 29 rows, 18 PASS / 11 FAIL; Section 1b: 4 EXCLUDED; Section 2: 18 rows, 13 PASS / 5 FAIL — exact match to fresh re-reads of the evidence tally lines (10-4 "6 PASS / 5 FAIL / 0 EXCLUDED", 10-5 "Tally: 10 PASS / 6 FAIL / 0 EXCLUDED", 10-6 "Tally: 13 PASS / 5 FAIL / 0 EXCLUDED"); roll-up 31/16/4 over 51 arithmetically confirmed. 5 README line refs spot-verified: :147 (trace header), :184 (confidential tag), :213 (model row), :295 (R1), :310 (R16) — all land as cited; :380 (10-2 tag) unshifted by the limitations insertions. ✔
+- **CP-4 (AC-4 CR-skip legitimacy):** `git diff --cached --name-only` = 8 files (README + 7 _bmad-output artifacts), zero source paths. ✔
+
+**Verdict: PASS** — zero findings; no verdict changes. All 4 AC verdicts (AC-1 PASS / AC-2 PASS / AC-3 PASS / AC-4 PASS) signed via Adam's delegation directive. Story 10-7 stands done; epic-10 done-flip clauses 2/3/4 discharged, clause 1 now complete (10-1..10-7 all done) — epic-10 done-flip decision itself belongs to the retrospective.
