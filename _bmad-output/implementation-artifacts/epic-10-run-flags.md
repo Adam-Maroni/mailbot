@@ -109,3 +109,32 @@ Modeled on `epic-9-5-run-flags.md`. One section per story run; halts, path decis
 **Doc-drift rule (a) discharged same session:** README:19 blanket-illustrative sentence rescoped (read family verified, write/slash still illustrative); C1/C2 examples replaced with real sanitized captured output + tags; C3 thread-summary example replaced with an honest currently-broken note (F-10-4-3/4); C4 count row + C5 sender row corrected to walked truth; digest sentence rewritten (buckets verified, intro-never-generated + scheduled-slot-failure caveats). FAIL cases carry no verified tag except as explicitly-marked honest-FAIL documentation.
 
 **CR-cadence determination (story AC-4):** zero of the 6 criteria fire — zero code touched (README + evidence/tracking artifacts only). **CR skipped per cadence binding.**
+
+---
+
+## Story 10-5 Run 1 — 2026-07-06 — EXECUTED (hybrid Adam-hands-on Discord write+slash walk + orchestrator evidence; Console delta $1.31; COMPLETE pending Adam verdicts)
+
+**Invocation:** Adam typed `autononomous story run 10-5`. Pre-flight surfaced the story's hard RUN-MODE BINDING (real spend + real sends + Adam's Discord — not pure-autonomous). Adam chose **"Hybrid hands-on now"** (10-4 Run 1 pattern): Adam typed every Discord turn + authorized spend + read Anthropic Console truth (pre $26.94 / post $28.25 screenshots); orchestrator (claude-fable-5) drove the frozen case protocol, captured `router_calls`/`pause_state`/`action_history`/`action_grants` + Hermes/API logs read-only (`mode=ro`), and applied README doc-drift. Story file inline-authored from epics.md § Story 10.5 (Step 2.2 Branch A). Mid-walk (from W1a) Adam authorized reply-transcription via read-only Discord REST fetch (bot token, never displayed); Adam still typed every user turn.
+
+**Walk record (full detail in `10-5-walk-evidence.md`):** 16 cases (9 slash S1-S9 + 7 write incl. W1a/W1b/S1b/S4b sub-cases), 09:30-13:20 UTC. **10 PASS / 6 FAIL / 0 EXCLUDED.** Real Tier-3 SEND verified at L3 (action 15: 60s cooling-off enforced to 61.7s, real Graph dispatch, Gmail receipt Adam-confirmed); real Tier-2 ARCHIVE verified at L3 (7 newsletters, Outlook-confirmed, pre_state audit rows captured). Sensitivity privacy invariant HELD across 12 gate-refused dispatches (zero body egress DB-proven). Provenance rows 13667-13758; degraded mode never re-tripped; router paused+resumed (2m15s window, CLI-recovered).
+
+**Findings F-10-5-1..12 ALL FILED per N.5, zero fixed** (7 HIGH / 3 MEDIUM / 2 LOW). Headlines:
+
+- **F-10-5-1 HIGH** — Hermes owns the `/` prefix: entire documented MailBot slash surface unreachable in literal form (incl. `/cancel` + `/confirm`); README:190 dispatch claim false. Chat-equivalents (drop the slash) work.
+- **F-10-5-11 HIGH** — README's flagship Opus draft pipeline is UNWIRED from chat: Story 5-9 orchestrator has zero production call sites; `draft_reply` 0 chat rows all-time, `tone_style_mirror`+`multi_turn_refinement` 0 rows EVER. Drafts are Haiku-improvised. The epic's $2-4 Opus-spend premise was structurally impossible ($1.31 real delta).
+- **F-10-5-7 HIGH** — sensitive-draft escalation broken by construction: grant binds to MCP-session identity (survives `/new`), chat dispatch carries a different identity → token never attaches (repro'd fresh session); one attempt bricks the whole session.
+- **F-10-5-5 HIGH** — `mint_sensitivity_token` self-invoked without user confirmation (succeeded twice, log-proven); documented confirm-first choreography unenforced.
+- **F-10-5-8 HIGH** — Tier-2 approval never solicited: agent minted grant + queued 7 writes with no "yes"; API `pending_grant` gate was the only stop.
+- **F-10-5-4 HIGH** — PAUSED chat deadlock: resume-by-chat impossible while paused; README:293 fix half-false (CLI-only recovery).
+- **F-10-5-12 HIGH** — agent self-modified its gitted skill files mid-conversation (`skill_manage patch` ×2 on SKILL.md + new `tier2-grant-pitfall.md`) with confabulated content; captured verbatim, then **reverted** (Adam-decided "follow your reco"); working tree clean, nothing staged.
+- MEDIUM: sensitivity refusal UX raw-502+id-leak (F-6); mint-before-propose stuck state + inert documented fix (F-9); false-success narration ×3 (F-10). LOW: NL 1-arg `/model` mapping (F-2); overrides-file wholesale-replace (F-3).
+
+Corroborated not re-filed: 10-1 F1 (pause kills chat — reproduced S5/S6), 9.5.2 one-shot consume-race (S2), F-10-3-1 estimator inflation ($70.37 chart vs $28.25 Console).
+
+**Spend truth (AC-3):** Console $26.94 → $28.25 = **$1.31** over ~6h window (all org traffic incl. background ingest, not walk-only); estimator $0.2498 walk-attributable (zero Opus). Well under the ~$2-4 estimate; F-10-5-11 explains the miss.
+
+**Doc-drift rule (a) discharged same session:** README:17 preamble + Drafting-and-sending (real Coffee-Thursday transcript, cancel+send) + Mailbox-actions Tier-2 (real 7-newsletter walk w/ choreography-failure honesty) + Sensitive/confidential (confidential PASS real, sensitive FAIL note) + Slash-table (10 rows real captured output, type-without-slash header) + Limitations (5 new honest bullets). 7 `verified 10-5` PASS tags; FAIL cases documented honestly, no fabricated output.
+
+**CR-cadence determination (story AC-5):** zero of the 6 criteria fire — zero code touched (README + evidence/tracking only; the agent's self-edit was reverted, not authored by this story). **CR skipped per cadence binding.**
+
+**Epic 10.5 triage inputs from this run:** F-10-5-1 (slash-prefix — cross-cuts the whole Discord surface, arguably charter-level), F-10-5-11 (Opus draft pipeline unwired — largest capability gap), F-10-5-5/7 (sensitivity escalation authorization + session-binding — security-adjacent), F-10-5-8 (Tier-2 approval bypass — security-adjacent), F-10-5-12 (agent self-edits skill files — governance), F-10-5-4 (PAUSED recovery). 7 HIGH is the epic's largest single-story finding count — strong Epic 10.5 spawn signal for the retrospective.

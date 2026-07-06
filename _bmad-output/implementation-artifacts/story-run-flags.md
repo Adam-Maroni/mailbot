@@ -827,3 +827,40 @@ Checkpoints re-verified with FRESH commands (not by re-reading the audit's own a
 
 ### Story 10-4 Manual Verification
 **Verdict (2026-07-06): PASS WITH FINDINGS — Adam-delegated** ("Drive the manual verification yourself", 10-3 precedent). Delegated adversarial pass = walk evidence Amendment A1: CP-1/2/3/5 re-verified clean against primary sources (fresh read-only queries, staged-diff sweep, tag count); CP-4 caught **WALK-10-4-F1** — the README carried a real third-party personal identifier set (client's gmail address in the C5b row, real first name in the C1 example) against the AC pin's masking default — corrected in-walk (placeholder address + masked name); Adam-scoped content (Stripe amount, CEA line, corporate senders) kept deliberately, Adam may overrule at commit. No changes to the 6 PASS / 5 FAIL case table or the 4 AC PASS verdicts. Story flipped to done.
+
+## Story 10-5 — 2026-07-06 13:30
+
+**Headline:** README write+slash-family perimeter walked live (hybrid Adam-hands-on Discord, 10-4 pattern). 16 cases, **10 PASS / 6 FAIL / 0 EXCLUDED**. Real Tier-3 send + Tier-2 archive both verified at L3 (Gmail + Outlook confirmed); sensitivity privacy invariant HELD (12 refusals, 0 body egress). 12 findings FILED per N.5 (7 HIGH), zero fixed. Console spend $26.94→$28.25 ($1.31 delta, zero Opus — the flagship draft pipeline is unwired from chat).
+
+**Dev/orchestrator model:** claude-fable-5 (walk story — no separate dev vs review model; CR skipped per cadence)
+
+**Review rounds + applied rate:** N/A — CR skipped per cadence binding (story AC-5: zero of 6 criteria fire; zero code touched). The agent's uncommanded SKILL.md self-edit (F-10-5-12) was captured then reverted — not story-authored code.
+
+**Findings raised (all FILED per N.5, none fixed):**
+
+- F-10-5-1 HIGH — Hermes owns `/` prefix; entire documented slash surface unreachable literally (incl. `/cancel`, `/confirm`)
+- F-10-5-4 HIGH — PAUSED chat deadlock; resume-by-chat impossible; README fix half-false (CLI-only)
+- F-10-5-5 HIGH — sensitivity token self-minted without user confirmation
+- F-10-5-7 HIGH — sensitive escalation broken by construction (session-binding mismatch); session-bricking
+- F-10-5-8 HIGH — Tier-2 approval never solicited; API gate is the only stop
+- F-10-5-11 HIGH — Opus draft pipeline unwired from chat (draft_reply/tone/refinement 0 chat rows)
+- F-10-5-12 HIGH — agent self-edits its gitted skill files mid-turn with confabulated content (reverted)
+- F-10-5-6 MEDIUM — sensitivity refusal UX raw-502 + Graph-id leak
+- F-10-5-9 MEDIUM — mint-before-propose strands actions in pending_grant; documented approve-in-chat fix inert
+- F-10-5-10 MEDIUM — repeated false/premature success narration
+- F-10-5-2 LOW — NL 1-arg `/model` form doesn't map to one-shot
+- F-10-5-3 LOW — set_model_persistent wholesale-replaces overrides file (docs header lost)
+
+**Gate verdicts:**
+
+- 2.3.5 (pre-review self-audit) → N/A (walk story, zero code; §5.12 GATE-COVERAGE-ELIGIBLE not triggered)
+- 2.4.4 (Dev Agent Record completeness) → PASS (model named, per-AC completion notes, File List = None + artifacts)
+- 2.4.5 (UI-scope) → N/A (no graphical frontend)
+- 2.4.6 (File-List-vs-git) → PASS (File List = docs/evidence only; all tracked or new-untracked-staged)
+- 2.4.7 (middleware-real-bootstrap) → N/A (zero mailbot_api/ changes)
+- 2.4.8 (verbose-row truncation) → applied (sprint-status headline + pointer to story Completion Notes)
+- 2.5 (dev-env verification) → N/A (docs/walk story; stack was live-exercised BY the walk itself)
+
+**Spend:** Console $26.94 → $28.25 = $1.31 (AC-3 truth; estimator $0.25 walk-attributable, zero Opus).
+
+**Manual verification (Phase 3.5):** per-AC verdicts pending Adam signature.
