@@ -272,3 +272,45 @@ async def test_dispatch_embedding_email_id_none_bypasses_precondition(
     result = await dispatch_embedding(text="hello world", db_path=db_path, email_id=None)
     assert result.ok is True
     assert result.dim == 768
+
+
+async def test_dispatch_embedding_paused_refuses_cross_process(
+    tmp_path: Path, _clean_state: Any
+) -> None:
+    """Story 10.5.1 (AC-2 CLASS + AC-4, CR fix) — the third pause site.
+
+    A pause written to the DB by "process A" (no `initialize()` on the checking
+    instance) must refuse the embedding dispatch via the authoritative
+    cross-process read (`is_paused_now`), not the stale `is_paused()` mirror,
+    and must leave a `pause_gate:refused` audit row.
+    """
+    from mailbot_api.db.connection import fetchall
+    from mailbot_api.router.pause import PauseState, _reset_pause_state_for_test
+
+    db_path = _setup(tmp_path)
+    register_adapter(_NOMIC, _FakeEmbeddingAdapter([0.1] * 768))
+
+    # "Process A" pauses (writes the DB row); reset the singleton so the
+    # checking path has a stale/False in-memory mirror.
+    api_state = PauseState()
+    await api_state.initialize(db_path)
+    await api_state.pause(db_path, reason="operator-pause")
+    _reset_pause_state_for_test()
+
+    result = await dispatch_embedding(
+        text="hello world", db_path=db_path, email_id=None
+    )
+    assert result.ok is False
+    assert result.error is not None
+    assert "paused" in result.error.message
+
+    rows = await fetchall(
+        db_path,
+        "SELECT model_chosen_reason, outcome FROM router_calls "
+        "WHERE model_chosen_reason = ?",
+        ("pause_gate:refused",),
+    )
+    assert len(rows) == 1
+    assert rows[0][1] == "failed"
+
+    _reset_pause_state_for_test()

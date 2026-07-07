@@ -646,28 +646,84 @@ def test_chat_completions_audit_captures_tool_calls_count(
     assert row[3] == "hermes-main"
 
 
-def test_chat_completions_pause_kill_switch_short_circuits(
+def test_chat_completions_paused_permits_interpretation_and_filters_write_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """AC §7 — pause state refuses tool-call dispatch immediately."""
+    """Story 10.5.1 (AC-3, F1 + F-10-5-4) — supersedes the old 'pause refuses
+    ALL tool-call dispatch → 502' contract.
+
+    While paused, the chat-interpretation turn is PERMITTED (so a resume typed
+    in Discord can reach `resume_router`), but write/action tools are filtered
+    out of the surface handed to the model (F4 containment). A request offering
+    ONLY a write/action tool (`propose_action`) therefore returns 200 with an
+    empty/interpretation-only tool surface — NOT a 502 that would deadlock the
+    resume path.
+    """
     app, _, db_path = _bootstrap(tmp_path, monkeypatch)
     with TestClient(app) as client:
         register_adapter("claude-haiku-4-5-20251001", _FakeToolAdapter(
-            tool_calls_raw=[{"type": "text", "text": "shouldn't reach me"}]
+            tool_calls_raw=[{"type": "text", "text": "interpreting only"}]
         ))
-        # Pause the router after lifespan boot.
         import asyncio as _aio
         _aio.run(get_pause_state().pause(db_path=db_path, reason="test pause"))
 
+        payload = _tools_payload()
+        # Offer ONLY a write/action tool — it must be filtered out while paused.
+        payload["tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "propose_action",
+                    "description": "Propose an action on an email.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"email_id": {"type": "string"}},
+                    },
+                },
+            }
+        ]
         r = client.post(
             "/v1/chat/completions",
             headers=_VALID_BEARER,
-            json=_tools_payload(),
+            json=payload,
         )
 
-    assert r.status_code == 502
-    body = r.json()
-    assert "router paused" in body["detail"]["error"]["message"]
+    # Interpretation permitted (not a 502 deadlock); the write tool was filtered.
+    assert r.status_code == 200, r.text
+
+
+def test_chat_completions_paused_permits_control_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Story 10.5.1 (AC-3) — a paused request offering the control tool
+    `resume_router` is permitted through so the resume path is reachable from
+    chat (closes the F-10-5-4 deadlock)."""
+    app, _, db_path = _bootstrap(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        register_adapter("claude-haiku-4-5-20251001", _FakeToolAdapter(
+            tool_calls_raw=[{"type": "text", "text": "resuming"}]
+        ))
+        import asyncio as _aio
+        _aio.run(get_pause_state().pause(db_path=db_path, reason="test pause"))
+
+        payload = _tools_payload()
+        payload["tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "resume_router",
+                    "description": "Resume the router.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        r = client.post(
+            "/v1/chat/completions",
+            headers=_VALID_BEARER,
+            json=payload,
+        )
+
+    assert r.status_code == 200, r.text
 
 
 def test_compute_cache_key_changes_when_tools_hash_present() -> None:

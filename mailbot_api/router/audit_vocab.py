@@ -9,7 +9,7 @@ refuses any raw string literal matching this module's stable prefixes
 outside the allowlist (``audit_vocab.py`` itself + ``audit.py`` for
 validator documentation).
 
-Contract — nine literal members, three templated members (12 total):
+Contract — ten literal members, three templated members (13 total):
 
 Literal members (``.value`` is the exact string written to the DB):
     OVERRIDE_API                       "override:api:force_model"
@@ -21,6 +21,7 @@ Literal members (``.value`` is the exact string written to the DB):
     CACHE_HIT                          "cache:response_cache_hit"
     SENSITIVITY_GATE_REFUSED           "sensitivity_gate:refused"
     SENSITIVITY_GATE_NORMAL            "sensitivity_gate:normal"
+    PAUSE_GATE_REFUSED                 "pause_gate:refused"
 
 Templated members (``.value`` is the TEMPLATE; helpers produce the actual write):
     POLICY_DEFAULT                     "policy:<task>:default"
@@ -129,6 +130,14 @@ class ModelChosenReason(str, Enum):
     SENSITIVITY_GATE_NORMAL = "sensitivity_gate:normal"
     """The sensitivity gate validated a confirmation token and allowed
     the dispatch to proceed for a sensitive email."""
+
+    PAUSE_GATE_REFUSED = "pause_gate:refused"
+    """Story 10.5.1 (AC-4, F3) — the pause kill-switch refused a dispatch or a
+    drainer tick/row because the system was paused. Previously paused refusals
+    (router-dispatch 502s AND drainer skips) left NO audit row, so a
+    paused-window incident was not reconstructable from ``router_calls``.
+    Emitted with ``outcome="failed"``, zero tokens/cost — no adapter call
+    happened. Mirrors ``SENSITIVITY_GATE_REFUSED``'s refusal-audit shape."""
 
     # ---- Templated members (use helpers; .value is documentation only) --
 

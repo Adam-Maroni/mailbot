@@ -410,7 +410,7 @@ def test_runner_aborts_on_degraded_mode_blocked(
     header but missing as a test function — this consolidates F1+F4 into one
     real exercise of the cap-abort path.
     """
-    from mailbot_api.router.budget import get_guard
+    import sqlite3
 
     db_path, corpus_path, anchors_dir = _setup_test_env(tmp_path, n_items=3)
 
@@ -421,9 +421,21 @@ def test_runner_aborts_on_degraded_mode_blocked(
     })
     register_adapter("claude-opus-4-7", opus_adapter)
 
-    # Trip degraded mode directly (Layer 3 active flag).
-    guard = get_guard()
-    guard._degraded_mode_active = True  # noqa: SLF001 — test fixture access
+    # Trip degraded mode via the DB row (Story 10.5.1: the router degraded gate
+    # now reads the authoritative `degraded_mode_state` row cross-process, not
+    # the in-memory `_degraded_mode_active` mirror — so the row must be written,
+    # which is also the production reality when the cap trips in another
+    # process). This test body is sync, so write the singleton row directly.
+    _conn = sqlite3.connect(db_path)
+    try:
+        _conn.execute(
+            "UPDATE degraded_mode_state SET active = 1, entered_at = ?, "
+            "exited_at = NULL WHERE id = 1",
+            ("2026-07-07T00:00:00Z",),
+        )
+        _conn.commit()
+    finally:
+        _conn.close()
 
     exit_code = _run_cli(
         db_path, corpus_path, anchors_dir, monkeypatch,

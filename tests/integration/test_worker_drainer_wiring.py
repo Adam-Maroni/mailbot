@@ -177,6 +177,76 @@ async def test_tier_2_archive_drainer_dispatches_to_real_adapter(
     assert "/me/messages/e-arch-1/move" in captured["url"]
 
 
+async def test_cross_process_pause_stops_worker_drainer_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 10.5.1 (F4, CRITICAL) — the two-instance regression.
+
+    "The API process" pauses by writing the pause_state DB row via its own
+    PauseState instance; the worker/drainer instance NEVER calls initialize().
+    Before the fix, the drainer's gate read the worker's stale in-memory
+    `is_paused()` mirror (False) and dispatched the REAL Graph move while the
+    system was paused (the 259ms-after-propose F4 evidence). After the fix, the
+    drainer reads the authoritative DB row and refuses to dispatch — zero Graph
+    HTTP calls — and the queued row stays pending for the post-resume tick.
+    """
+    from mailbot_api.router.pause import (
+        PauseState,
+        _reset_pause_state_for_test,
+    )
+
+    db_path = _setup(tmp_path, monkeypatch)
+    await _seed_email(db_path, graph_id="e-paused-1")
+
+    out = await propose_action("e-paused-1", ActionType.ARCHIVE, db_path=db_path)
+    assert out.ok
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE pending_actions SET status = 'pending' WHERE id = ?",
+            (out.action_id,),
+        )
+        conn.commit()
+
+    from mailbot_api.actions.authorization import mint_grant
+
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    grant_out = await mint_grant(
+        ActionType.ARCHIVE, ["e-paused-1"], expires_at, db_path=db_path,
+    )
+    assert grant_out.ok
+
+    # "API process" pauses (writes the DB row). Reset the module singleton so
+    # the drainer's in-memory mirror is unambiguously stale/False — the
+    # worker-process reality that let F4 through.
+    api_state = PauseState()
+    await api_state.initialize(db_path)
+    await api_state.pause(db_path, reason="operator-pause")
+    _reset_pause_state_for_test()
+
+    captured: dict[str, Any] = {"called": False}
+    adapter = OutlookGraphWriteAdapter(
+        access_token_provider=lambda: "fake-token",
+        transport=_make_mock_transport(captured),
+    )
+
+    shutdown = asyncio.Event()
+
+    async def _trigger_shutdown() -> None:
+        await asyncio.sleep(0.3)
+        shutdown.set()
+
+    asyncio.create_task(_trigger_shutdown())
+    await drainer_run_loop(
+        db_path, adapter=adapter, interval_seconds=0.05, shutdown_event=shutdown,
+    )
+
+    # No Graph dispatch happened; the row is still pending.
+    assert captured["called"] is False
+    assert _read_status(db_path, out.action_id) == "pending"
+
+    _reset_pause_state_for_test()
+
+
 async def test_drainer_heartbeat_writable_via_scheduler_helper(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

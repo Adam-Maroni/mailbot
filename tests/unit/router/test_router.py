@@ -946,8 +946,11 @@ async def test_ask_router_degraded_mode_blocks_force_opus(
 async def test_ask_router_paused_returns_provider_error(
     tmp_path: Path, _clean_state: None
 ) -> None:
-    """When the kill-switch is active, ask_router short-circuits with
-    PROVIDER_ERROR message='router paused' retryable=True. No router_calls row written."""
+    """When the kill-switch is active, ask_router short-circuits an
+    action/ingest task with PROVIDER_ERROR message='router paused'
+    retryable=True. Story 10.5.1 (AC-4): the paused refusal now writes a
+    `pause_gate:refused` audit row (previously it wrote nothing, leaving a
+    paused-window incident untraceable — F3)."""
     db_path = _setup_db_and_policy(tmp_path)
     adapter = _FakeAdapter([_adapter_response(_good_output_json())])
     register_adapter("fake-qwen", adapter)
@@ -960,11 +963,68 @@ async def test_ask_router_paused_returns_provider_error(
     assert result.error.code == ErrorCode.PROVIDER_ERROR
     assert result.error.retryable is True
     assert "paused" in result.error.message
-    # Adapter NOT called.
+    # Adapter NOT called (no dispatch happened).
     assert len(adapter.call_log) == 0
-    # No router_calls row written (pause short-circuits before dispatch).
-    rows = await fetchall(db_path, "SELECT 1 FROM router_calls", ())
-    assert rows == []
+    # Story 10.5.1 AC-4: exactly one `pause_gate:refused` audit row, and no
+    # real dispatch row (outcome-bearing model dispatch). Assert the FULL
+    # zero-cost refusal shape — this is what guarantees paused-refusal rows
+    # cannot pollute spend aggregations (ROUTER_CALLS_SPEND_SINCE sums
+    # cost_usd_estimated, which must be 0.0 here).
+    rows = await fetchall(
+        db_path,
+        "SELECT model_chosen_reason, outcome, cost_usd_estimated, tokens_in, "
+        "tokens_out, cached_tokens_in FROM router_calls",
+        (),
+    )
+    assert len(rows) == 1
+    reason, outcome, cost, t_in, t_out, cached = rows[0]
+    assert reason == "pause_gate:refused"
+    assert outcome == "failed"
+    assert cost == 0.0
+    assert t_in == 0
+    assert t_out == 0
+    assert cached == 0
+
+
+async def test_ask_router_paused_permits_hermes_aux_interpretation(
+    tmp_path: Path, _clean_state: None
+) -> None:
+    """Story 10.5.1 (AC-3, F1 + F-10-5-4): while paused, the chat-interpretation
+    task `hermes_aux` is PERMITTED (so a resume typed in chat can be
+    interpreted and reach the resume control path) — it is not 502'd like the
+    action/ingest tasks. The interpretation turn only produces text; it cannot
+    itself dispatch a mailbox action."""
+    db_path = str(tmp_path / "test.db")
+    apply_pending_migrations(db_path)
+    # A policy whose hermes_aux task resolves to the fake adapter. hermes_aux
+    # output is free text (no JSON schema), so the fake returns any string.
+    policy_yaml = tmp_path / "policy.yaml"
+    policy_yaml.write_text(
+        'version: "test-hermes-aux-v1"\n'
+        "tasks:\n"
+        "  hermes_aux:\n"
+        '    model: "fake-qwen"\n'
+        '    prompt_version: "v1"\n'
+        "    escalate: false\n"
+        "    max_tokens_out: 1024\n"
+        '    lane: "interactive"\n'
+        '    sensitivity: "any"\n',
+        encoding="utf-8",
+    )
+    set_policy_snapshot(load_policy(policy_yaml))
+
+    adapter = _FakeAdapter([_adapter_response("resuming now")])
+    register_adapter("fake-qwen", adapter)
+
+    await get_pause_state().pause(db_path, reason="manual test")
+
+    result = await ask_router(
+        "hermes_aux", {"messages": "please resume"}, db_path=db_path
+    )
+    # Permitted — NOT a 'router paused' refusal.
+    assert not (result.error is not None and "paused" in (result.error.message or ""))
+    # The adapter WAS reached (the interpretation turn ran).
+    assert len(adapter.call_log) == 1
 
 
 async def test_ask_router_loop_detected_after_11_identical_calls(

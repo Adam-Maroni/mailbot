@@ -246,6 +246,52 @@ async def _emit_sensitivity_refusal_audit_row(
     )
 
 
+# Story 10.5.1 (AC-3) — task types permitted through the `ask_router` text
+# gate WHILE PAUSED. `hermes_aux` is the Hermes chat-interpretation lane (the
+# resume-by-chat path); it only produces text and cannot itself dispatch a
+# mailbox action. Every other task type (ingest classifiers, draft_reply,
+# action_extraction, etc.) is action/derivation-producing and stays refused
+# while paused.
+_PAUSE_ALLOWED_TASK_TYPES: frozenset[str] = frozenset({"hermes_aux"})
+
+
+async def _emit_pause_refusal_audit_row(
+    *,
+    db_path: str,
+    model: str,
+    caller_verb: str | None,
+    caller_origin: str,
+    email_id: str | None,
+) -> None:
+    """Story 10.5.1 (AC-4, F3) — emit a `pause_gate:refused` audit row when the
+    pause kill-switch refuses a dispatch (an action/ingest `ask_router` task,
+    or a write/action tool filtered out of `dispatch_tool_call` while paused).
+
+    Previously paused refusals returned a `RouterError` WITHOUT writing a
+    `router_calls` row, so a paused-window incident left no trail. Mirrors
+    `_emit_sensitivity_refusal_audit_row`: `outcome="failed"`, zero
+    tokens/cost, `model_chosen_reason=PAUSE_GATE_REFUSED`. Uses the synthetic
+    tool-call task identity since the refused surface is the chat/tool
+    dispatcher.
+    """
+    await _record(
+        db_path=db_path,
+        task_type=_TOOL_CALL_TASK_TYPE,
+        prompt_version=_TOOL_CALL_PROMPT_VERSION,
+        model_chosen=model,
+        model_chosen_reason=ModelChosenReason.PAUSE_GATE_REFUSED.value,
+        tokens_in=0,
+        tokens_out=0,
+        cached_tokens_in=0,
+        cost_usd_estimated=0.0,
+        latency_ms=0,
+        outcome="failed",
+        caller_verb=caller_verb,
+        caller_origin=caller_origin,
+        email_id=email_id,
+    )
+
+
 async def ask_router(
     task_type: str,
     content: dict[str, Any],
@@ -279,16 +325,43 @@ async def ask_router(
         ``RouterError(code=LOOP_DETECTED)``.
     """
 
-    # Story 2-9: kill-switch. Pause check fires first so a paused router
-    # short-circuits ALL incoming calls before any other work.
-    if get_pause_state().is_paused():
-        return RouterResult(
-            ok=False,
-            error=RouterError(
-                code=ErrorCode.PROVIDER_ERROR,
-                message="router paused",
-                retryable=True,
-            ),
+    # Story 2-9 kill-switch, made CONDITIONAL by Story 10.5.1 (AC-3, F1 +
+    # F-10-5-4). The mirror of the `dispatch_tool_call` gate for the text
+    # chat path: Hermes routes a plain (tool-less) chat turn through
+    # `ask_router("hermes_aux", ...)`. The old unconditional 502 bricked that
+    # turn while paused, so a "resume" typed in Discord could never be
+    # interpreted (deadlock). While paused, PERMIT the chat-interpretation
+    # task (`hermes_aux`) — it only produces text, it cannot itself dispatch a
+    # mailbox action (actions go via propose_action → drainer or via
+    # dispatch_tool_call, both still gated) — and REFUSE every action/ingest
+    # task type. Read the AUTHORITATIVE cross-process pause row so this gate
+    # agrees with the drainer + dispatch_tool_call gates.
+    if await get_pause_state().is_paused_now(db_path):
+        if task_type not in _PAUSE_ALLOWED_TASK_TYPES:
+            await _emit_pause_refusal_audit_row(
+                db_path=db_path,
+                model="none",
+                caller_verb=caller_verb,
+                caller_origin=caller_origin,
+                email_id=email_id,
+            )
+            return RouterResult(
+                ok=False,
+                error=RouterError(
+                    code=ErrorCode.PROVIDER_ERROR,
+                    message="router paused",
+                    retryable=True,
+                ),
+            )
+        # task_type is an interpretation/status task — fall through and let the
+        # turn run so the resume control path is reachable from chat.
+        _logger.info(
+            "router paused — permitting interpretation task",
+            extra={
+                "event": "router.paused.interpretation_permitted",
+                "task_type": task_type,
+                "caller_verb": caller_verb,
+            },
         )
 
     # Story 9-3 — `/model <model>` one-shot override peek.
@@ -386,8 +459,16 @@ async def ask_router(
     )
 
     # Story 2-8 Layer 3 — degraded mode gate.
+    # Story 10.5.1 (AC-2, the CLASS): read the AUTHORITATIVE cross-process
+    # degraded flag from the `degraded_mode_state` row, not the per-process
+    # in-memory mirror. A degraded-mode entry that fired in another process
+    # (or was set via a verb in the API process before the worker booted) was
+    # invisible to this decision under `is_degraded()` — the same per-process
+    # singleton landmine as pause (F4). SCOPE FENCE: only the flag READ becomes
+    # authoritative here; the spend-counter inflation / July re-derive is
+    # Cluster E (story 10-5-5), untouched.
     guard = get_guard()
-    if guard.is_degraded():
+    if await guard.is_degraded_now(db_path):
         if force_model == "claude-opus-4-7":
             # Block force-opus in degraded mode without a confirmation token.
             # Token mint flow lands in Epic 5; for now the error path is what's tested.
@@ -1118,7 +1199,22 @@ async def dispatch_embedding(
     Errors-as-data per AR-PAT-4: never raises.
     """
     # Pause kill-switch.
-    if get_pause_state().is_paused():
+    # Story 10.5.1 (AC-2, the CLASS): the third pause-enforcement site (with
+    # ask_router :284 + dispatch_tool_call) reads the AUTHORITATIVE
+    # cross-process pause row, not the stale per-process `is_paused()` mirror —
+    # AC-2 governs "a decision that governs mailbox writes OR dispatch," and
+    # embedding dispatch is a dispatch. Embeddings are local-only/$0 with no
+    # resume-path concern, so this stays an unconditional refuse (no
+    # interpretation/allowlist branch like the chat gates) — just made
+    # cross-process-honest + audited (AC-4).
+    if await get_pause_state().is_paused_now(db_path):
+        await _emit_pause_refusal_audit_row(
+            db_path=db_path,
+            model="none",
+            caller_verb=caller_verb,
+            caller_origin=caller_origin,
+            email_id=email_id,
+        )
         return EmbeddingDispatchResult(
             ok=False,
             error=RouterError(
@@ -1316,6 +1412,93 @@ _TOOL_CALL_TASK_TYPE = "chat_completions_tool_call"
 _TOOL_CALL_PROMPT_VERSION = "v1"
 
 
+# Story 10.5.1 (AC-3, F1 + F-10-5-4) — the tool surface permitted WHILE PAUSED.
+#
+# Pause must remain a real kill-switch (F4 containment): a paused system must
+# STILL refuse write/action-producing tool-calls. But the previous gate was
+# content-blind — it 502'd the whole interpretation turn, so a "resume" typed
+# in Discord chat could never reach `resume_router` (F-10-5-4 deadlock), and
+# `hermes_aux` chat ingress was fully bricked (F1). The fix: while paused,
+# PERMIT the interpretation turn but restrict the offered `tools` to this
+# control + status + read-only allowlist. Any write/action verb
+# (`propose_action`, mint/grant, cancel/revert, send/move/delete, mutating
+# slash verbs, safety-state mutations like `reset_degraded_mode`) is filtered
+# OUT of the tools list before adapter dispatch, so the model cannot invoke it
+# while paused — actions stay suppressed, the resume CONTROL path stays
+# reachable.
+#
+# Trap guarded (per the finding): we do NOT remove the pause gate — that would
+# let the LLM be driven to propose/apply actions while paused, re-opening F4
+# from the other direction. We keep the gate and make it selective.
+_PAUSE_ALLOWED_TOOLS: frozenset[str] = frozenset(
+    {
+        # Control — the resume path itself must be reachable (the whole point).
+        "resume_router",
+        "pause_router",
+        # Status / read-only — safe to inspect while paused; no mailbox writes.
+        "inspect_policy",
+        "cost_breakdown",
+        "render_spend_chart",
+        "find_emails",
+        "hydrate_email",
+        "get_thread",
+        "count_emails",
+        "get_sender_summary",
+        "pull_pending_notifications",
+        "ack_notification",
+    }
+)
+
+
+def _tool_name(tool: Any) -> str | None:
+    """Best-effort extraction of a tool's function name from either the
+    Pydantic `ChatCompletionToolDef` shape (`tool.function.name`) or a raw
+    dict shape (`tool["function"]["name"]`). Returns None if neither resolves
+    — such a tool is treated as NOT on the allowlist (fail-safe: an
+    unidentifiable tool is filtered out while paused)."""
+    fn = getattr(tool, "function", None)
+    if fn is not None:
+        name = getattr(fn, "name", None)
+        if isinstance(name, str):
+            return name
+    if isinstance(tool, dict):
+        fn_d = tool.get("function")
+        if isinstance(fn_d, dict):
+            name = fn_d.get("name")
+            if isinstance(name, str):
+                return name
+    return None
+
+
+def _tool_on_pause_allowlist(tool: Any) -> bool:
+    """Story 10.5.1 (F-10-5-4 live-walk fix) — does this tool's verb match the
+    paused control/status allowlist, accounting for the MCP namespace prefix?
+
+    Hermes exposes every MCP verb to the model under a namespaced name like
+    ``mcp_mailbot_api_resume_router`` — NOT the bare ``resume_router`` the
+    allowlist stores. The original gate compared the raw name against the
+    allowlist, so in production EVERY tool (including the resume control verb)
+    was filtered out (``allowed_count: 0``), leaving the model no way to resume
+    and re-opening the F-10-5-4 deadlock from a new angle. Caught by the live
+    Discord walk 2026-07-07.
+
+    Match strategy: accept the tool if EITHER the full name is on the allowlist
+    (bare shape, used in unit tests + direct callers) OR the name ends with
+    ``_<allowlisted_verb>`` after any ``mcp_<server>_`` namespace prefix (the
+    Hermes production shape). We match on the trailing verb segment(s) so
+    ``mcp_mailbot_api_resume_router`` resolves to ``resume_router``. An
+    unidentifiable / non-matching tool is filtered out (fail-safe: unknown
+    tools are refused while paused)."""
+    name = _tool_name(tool)
+    if name is None:
+        return False
+    if name in _PAUSE_ALLOWED_TOOLS:
+        return True
+    # Suffix match against the namespaced form: any allowlisted verb that the
+    # tool name ends with, preceded by a namespace separator ('_'), counts.
+    return any(name.endswith(f"_{verb}") for verb in _PAUSE_ALLOWED_TOOLS)
+
+
 def _resolve_email_ids_from_messages(messages: list[dict[str, Any]]) -> set[str]:
     """Story 6-20 (F28 closure) — resolve the union of email_ids referenced
     anywhere in a chat-completions request payload, by walking:
@@ -1493,16 +1676,41 @@ async def dispatch_tool_call(
         sanitize_error,
     )
 
-    # ---- Pause kill-switch ----
-    if get_pause_state().is_paused():
-        return ToolCallResult(
-            ok=False,
-            error=RouterError(
-                code=ErrorCode.PROVIDER_ERROR,
-                message="router paused",
-                retryable=True,
-            ),
+    # ---- Pause kill-switch (Story 10.5.1 AC-3 — conditional) ----
+    # Read the AUTHORITATIVE cross-process pause row (not the per-process
+    # in-memory mirror) so this gate agrees with the drainer's Task-1 gate.
+    # While paused: PERMIT the interpretation turn but restrict `tools` to the
+    # control/status allowlist so no write/action tool-call can be dispatched
+    # (F4 containment) — while `resume_router` stays reachable (F1 + F-10-5-4).
+    if await get_pause_state().is_paused_now(db_path):
+        allowed_tools = [t for t in tools if _tool_on_pause_allowlist(t)]
+        refused = sorted(
+            {n for t in tools if not _tool_on_pause_allowlist(t) and (n := _tool_name(t)) is not None}
         )
+        _logger.info(
+            "router paused — restricting tool surface to control/status allowlist",
+            extra={
+                "event": "router.paused.tools_restricted",
+                "allowed_count": len(allowed_tools),
+                "refused_tools": refused,
+                "caller_verb": caller_verb,
+            },
+        )
+        # Audit the paused refusal (AC-4, F3) whenever the caller offered any
+        # write/action tool that we filtered out — a paused-window incident is
+        # then reconstructable from router_calls.
+        if refused:
+            await _emit_pause_refusal_audit_row(
+                db_path=db_path,
+                model=model,
+                caller_verb=caller_verb,
+                caller_origin=caller_origin,
+                email_id=email_id,
+            )
+        # Narrow the tool surface for the rest of this dispatch. The model can
+        # still be interpreted and can call a control/status verb (e.g.
+        # resume_router); it simply has no write/action tool to reach for.
+        tools = allowed_tools
 
     # ---- Policy snapshot ----
     try:
@@ -1588,8 +1796,10 @@ async def dispatch_tool_call(
         model_chosen_reason = policy_default("hermes_aux")
 
     # ---- Story 2-8 Layer 3 — degraded mode gate ----
+    # Story 10.5.1 (AC-2, the CLASS): authoritative cross-process degraded read
+    # (see the ask_router gate above for the full rationale + scope fence).
     guard = get_guard()
-    if guard.is_degraded():
+    if await guard.is_degraded_now(db_path):
         # CR-4 (Story 6-9 review 2026-06-04): only block opus when it was
         # explicitly user-forced. A policy-resolved opus (unlikely today but
         # possible if hermes_aux policy flips) should be demoted like any

@@ -36,6 +36,55 @@ class PauseState:
     def reason(self) -> str | None:
         return self._reason
 
+    async def snapshot_now(self, db_path: str) -> tuple[bool, str | None]:
+        """Story 10.5.1 (F4, CRITICAL) — authoritative CROSS-PROCESS pause read
+        as ONE atomic (paused, reason) pair from a SINGLE ``fetchone``.
+
+        ``is_paused()`` returns the per-process in-memory mirror seeded once at
+        ``initialize()``. That mirror is stale in any process that did not run
+        the pause verb: the worker-process drainer seeded ``_paused=False`` at
+        its own boot and never re-read the DB, so an API-process pause left the
+        drainer dispatching Graph writes while "paused" (259ms-after-propose
+        F4). This reader hits the ``pause_state`` singleton row (migration 010)
+        — the cross-process source of truth — at decision time.
+
+        Returning both values from one read closes the CR-13 inconsistency
+        window: separate ``is_paused``+``reason`` reads could straddle a resume
+        and log ``paused=True`` with ``reason=None``. Callers that need both
+        (the drainer gate + its audit row) MUST use this single-read snapshot.
+
+        Fail-closed: any read failure is treated as PAUSED (with ``reason=None``)
+        so a DB hiccup can never silently re-open the write path. The pause gate
+        exists precisely to stop writes; erring toward "paused" is the safe
+        direction.
+        """
+        try:
+            row = await connection.fetchone(db_path, queries.PAUSE_STATE_SELECT, ())
+        except Exception:  # noqa: BLE001 — fail-closed: a read error must not re-open writes
+            _log.exception(
+                "pause_state authoritative read failed — failing closed (treating as paused)",
+                extra={"event": "router.pause.read_failed"},
+            )
+            return True, None
+        if row is None or not bool(row[0]):
+            return False, None
+        reason = row[1]
+        return True, (str(reason) if reason is not None else None)
+
+    async def is_paused_now(self, db_path: str) -> bool:
+        """Authoritative cross-process pause boolean (single-value convenience
+        over :meth:`snapshot_now`). Use ``snapshot_now`` when the reason is also
+        needed so both come from one read."""
+        paused, _reason = await self.snapshot_now(db_path)
+        return paused
+
+    async def reason_now(self, db_path: str) -> str | None:
+        """Authoritative cross-process pause reason (single-value convenience
+        over :meth:`snapshot_now`). Returns ``None`` when not paused or
+        unreadable — the reason is advisory (log/audit context)."""
+        _paused, reason = await self.snapshot_now(db_path)
+        return reason
+
     async def pause(self, db_path: str, *, reason: str) -> None:
         now_iso = utc_z_now()
         await connection.execute_write(

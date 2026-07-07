@@ -26,6 +26,10 @@ async def reset_degraded_mode(*, db_path: str, reason: str = "manual_reset") -> 
     can render it as chat output without parsing free-form strings.
     """
     guard = get_guard()
+    # Story 10.5.1 scope: `previously_active` is a report field, not a
+    # dispatch-governing read — keeps the in-memory `is_degraded()`. The
+    # exit_degraded_mode call below is the authoritative DB write; the
+    # cross-process degraded READ that matters is on the router dispatch gates.
     previously = guard.is_degraded()
     await guard.exit_degraded_mode(db_path, reason=reason)
     return BudgetResetOut(

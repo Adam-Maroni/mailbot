@@ -481,7 +481,7 @@ def _read_override_models() -> dict[str, str]:
 
 async def inspect_policy(
     *,
-    db_path: str,  # noqa: ARG001 — unused (no DB writes); kept for verb-signature parity
+    db_path: str,  # noqa: ARG001 — status report; degraded read stays in-memory (Story 10.5.1 scope)
     session_id: str | None = None,  # noqa: ARG001 — single-user; audit-only
 ) -> InspectPolicyOut:
     """Story 9-4 AC-2: render the current effective policy as a markdown
@@ -538,6 +538,13 @@ async def inspect_policy(
         )
 
     # Degraded-mode + one-shot lines.
+    # Story 10.5.1 scope note: AC-2 makes the DISPATCH-GOVERNING degraded reads
+    # authoritative (the two router.py gates). `inspect_policy` is a pure status
+    # REPORT — it does not govern any mailbox write — so it keeps the in-memory
+    # `is_degraded()` read. Making a report read fail-closed would LIE ("Active")
+    # on a transient DB-read error, which is worse for an operator than a
+    # momentarily-stale mirror. The authoritative cross-process degraded read
+    # lives where it changes a dispatch decision, not on the display path.
     degraded_line = (
         "Current degraded mode state: "
         + ("Active" if get_guard().is_degraded() else "Not active")

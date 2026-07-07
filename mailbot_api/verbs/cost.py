@@ -88,6 +88,10 @@ async def cost_breakdown(period: Literal["today", "month"], *, db_path: str) -> 
         per_caller_origin={row[0]: float(row[1]) for row in per_origin_rows},
         cache_hit_rate=cache_hit_rate,
         call_count=call_count,
+        # Story 10.5.1 scope: `cost_breakdown` is a status REPORT, not a
+        # dispatch-governing read — it keeps the in-memory `is_degraded()`.
+        # The authoritative cross-process read lives on the router dispatch
+        # gates (AC-2), where the flag actually gates a mailbox write.
         degraded_mode_active=get_guard().is_degraded(),
     )
 

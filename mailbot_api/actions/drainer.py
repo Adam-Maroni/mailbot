@@ -67,9 +67,49 @@ from mailbot_api.db.queries import (
     SEND_FAMILY_BUDGET_CONSUMED_TODAY_COUNT,
 )
 from mailbot_api.notifications import tiers as notification_tiers
+from mailbot_api.observability.audit import RouterCallRow, record_router_call
+from mailbot_api.router.audit_vocab import ModelChosenReason
 from mailbot_api.router.pause import get_pause_state
 
 _logger = logging.getLogger(__name__)
+
+# Story 10.5.1 (AC-4): synthetic audit-row identity for a drainer paused-skip.
+# The drainer is not an LLM dispatch — there is no task_type/model — so the
+# router_calls refusal row carries a synthetic task_type + the sentinel model
+# id "none" purely so a paused-window incident is reconstructable from the
+# audit table (F3). outcome="failed", zero tokens/cost (no adapter call).
+_PAUSE_SKIP_TASK_TYPE = "drainer_tick"
+_PAUSE_SKIP_PROMPT_VERSION = "v1"
+_PAUSE_SKIP_MODEL = "none"
+
+
+async def _emit_pause_skip_audit_row(db_path: str, *, reason: str | None) -> None:
+    """Story 10.5.1 (AC-4, F3) — record a paused-skip audit row.
+
+    Reuses the Rule-C `record_router_call` writer (the ONLY sanctioned path
+    into `router_calls`) so no new raw-SQL writer is introduced and
+    `scripts/check_boundaries.py` stays green. Mirrors the router's
+    `_emit_sensitivity_refusal_audit_row` refusal shape: `outcome="failed"`,
+    zero tokens/cost, `model_chosen_reason=PAUSE_GATE_REFUSED`. Defensive: the
+    writer already logs-and-swallows a DB-write failure, so an audit-trail loss
+    on a paused skip never blocks the (safe) skip itself.
+    """
+    row = RouterCallRow(
+        task_type=_PAUSE_SKIP_TASK_TYPE,
+        prompt_version=_PAUSE_SKIP_PROMPT_VERSION,
+        model_chosen=_PAUSE_SKIP_MODEL,
+        model_chosen_reason=ModelChosenReason.PAUSE_GATE_REFUSED.value,
+        tokens_in=0,
+        tokens_out=0,
+        cached_tokens_in=0,
+        cost_usd_estimated=0.0,
+        latency_ms=0,
+        outcome="failed",
+        caller_verb="drainer",
+        caller_origin="worker-drainer",
+        email_id=None,
+    )
+    await record_router_call(row, db_path=db_path)
 
 DEFAULT_BATCH_SIZE = 25
 TIER_3_GRANT_WAIT_WINDOW = timedelta(minutes=30)
@@ -485,15 +525,31 @@ async def run_tick(
     # Story 6-15 CR-13: snapshot pause state once so the log `reason` matches
     # the `is_paused` we acted on (a concurrent resume between the two calls
     # would otherwise log reason=None while still returning 0).
+    #
+    # Story 10.5.1 (F4, CRITICAL): read the AUTHORITATIVE cross-process pause
+    # state from the `pause_state` DB row, NOT the per-process in-memory
+    # `is_paused()` mirror. The worker process seeds its `_PAUSE_STATE` at ITS
+    # own boot and never re-reads the DB, so an API-process pause (`mailbot
+    # pause` → `/admin/pause`) was invisible here — the drainer dispatched the
+    # real Graph write while "paused". `is_paused_now(db_path)` hits the
+    # migration-010 singleton row (the cross-process truth) and fails closed on
+    # read error. Snapshot ONCE per tick (below) so the tick-entry gate and the
+    # mid-tick re-check agree and the log `reason` is consistent (CR-13 intent).
     pause_state = get_pause_state()
-    if pause_state.is_paused():
+    paused_now, pause_reason = await pause_state.snapshot_now(db_path)
+    if paused_now:
         _logger.info(
             "drainer tick skipped — router paused",
             extra={
                 "event": "action.drainer.tick.skipped",
-                "reason": pause_state.reason(),
+                "reason": pause_reason,
             },
         )
+        # Story 10.5.1 (AC-4, F3): paused refusals must leave an audit trail so
+        # a paused-window incident is reconstructable. Emit the shared
+        # pause-refusal audit row (router_calls, outcome="failed") — same Rule-C
+        # writer as router-dispatch refusals; no new raw-SQL writer.
+        await _emit_pause_skip_audit_row(db_path, reason=pause_reason)
         return 0
     rows_data = await fetchall(db_path, PENDING_ACTIONS_SELECT_DRAINABLE, (batch_size,))
     # CR-4-4-3: emit prefetch_count at tick.start so the metric name is honest;
@@ -514,17 +570,27 @@ async def run_tick(
         # stops further Graph dispatches in the same batch. Already-claimed
         # rows are flipped back to `pending` so the post-resume tick picks
         # them up cleanly.
-        if pause_state.is_paused():
+        #
+        # Story 10.5.1 (F4): re-read the AUTHORITATIVE DB row here too. A
+        # mid-tick auto-pause (OAuth path) or a cross-process API pause that
+        # landed after tick entry writes the migration-010 row; reading the
+        # per-process `is_paused()` mirror would miss both. This is a
+        # deliberate fresh read (not the tick-entry snapshot) because the whole
+        # point of the mid-tick gate is to observe a pause that AROSE during
+        # the tick.
+        mid_tick_paused, mid_tick_reason = await pause_state.snapshot_now(db_path)
+        if mid_tick_paused:
             _logger.info(
                 "drainer mid-tick pause — releasing claimed row back to pending",
                 extra={
                     "event": "action.drainer.tick.mid_tick_paused",
                     "action_id": row.id,
-                    "reason": pause_state.reason(),
+                    "reason": mid_tick_reason,
                 },
             )
             await _release_claim(db_path, row)
             processed -= 1
+            await _emit_pause_skip_audit_row(db_path, reason=mid_tick_reason)
             break
         # CR-4-4-1: defensive catch-all so an unexpected exception in any of
         # the per-tier checks / history write / send-cap query does not leave

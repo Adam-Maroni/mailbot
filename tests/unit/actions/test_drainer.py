@@ -90,6 +90,142 @@ def _notifications_count(tmp_path: Path) -> int:
     return int(row[0]) if row is not None else 0
 
 
+def _router_calls_by_reason(db_path: str, reason: str) -> int:
+    """Count router_calls rows with a given model_chosen_reason (Story 10.5.1
+    AC-4 audit assertion)."""
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM router_calls WHERE model_chosen_reason = ?",
+            (reason,),
+        ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+# ---- Story 10.5.1 (F4, CRITICAL) — drainer cross-process pause gate ----------
+
+
+async def test_db_level_pause_short_circuits_run_tick_without_worker_initialize(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE F4 regression at the drainer level.
+
+    A pause written to the DB by "the API process" (here: a direct DB write /
+    a first PauseState instance) must be observed by the drainer's gate even
+    though the worker never called get_pause_state().initialize(). Before the
+    fix, run_tick read the stale in-memory `is_paused()` mirror (False) and
+    dispatched the Graph write 259ms after propose while "paused".
+    """
+    from mailbot_api.router.pause import (
+        PauseState,
+        _reset_pause_state_for_test,
+        get_pause_state,
+    )
+
+    db_path = _setup(tmp_path, monkeypatch)
+    await _seed_email(db_path, graph_id="e-1")
+    out = await propose_action("e-1", ActionType.MARK_READ, db_path=db_path)
+    assert out.ok
+
+    # "API process" pauses (writes the DB row). Then reset the module singleton
+    # so the drainer's in-memory mirror is unambiguously stale/False — exactly
+    # the worker-process reality that let F4 through.
+    api_state = PauseState()
+    await api_state.initialize(db_path)
+    await api_state.pause(db_path, reason="operator-pause")
+    _reset_pause_state_for_test()
+    assert get_pause_state().is_paused() is False  # stale mirror (the F4 bug)
+
+    processed = await run_tick(db_path, FakeGraphWriteAdapter())
+    assert processed == 0  # gate held — no Graph write dispatched while paused
+
+    # Row stays pending (not claimed/applied) so the post-resume tick gets it.
+    status, _reason, _budget = _read_status(db_path, out.action_id)
+    assert status == "pending"
+
+    # AC-4: the paused skip left an audit row.
+    assert _router_calls_by_reason(db_path, "pause_gate:refused") == 1
+
+    _reset_pause_state_for_test()
+
+
+async def test_paused_drainer_dispatches_after_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After resume writes the DB row, the very next tick drains the row — no
+    worker re-initialize needed (proves the gate reads live DB state)."""
+    from mailbot_api.router.pause import (
+        PauseState,
+        _reset_pause_state_for_test,
+    )
+
+    db_path = _setup(tmp_path, monkeypatch)
+    await _seed_email(db_path, graph_id="e-1")
+    out = await propose_action("e-1", ActionType.MARK_READ, db_path=db_path)
+
+    api_state = PauseState()
+    await api_state.initialize(db_path)
+    await api_state.pause(db_path, reason="operator-pause")
+    _reset_pause_state_for_test()
+
+    assert await run_tick(db_path, FakeGraphWriteAdapter()) == 0
+
+    # Resume via a DB-writing instance; drainer must now pick the row up.
+    await api_state.resume(db_path)
+    _reset_pause_state_for_test()
+    processed = await run_tick(db_path, FakeGraphWriteAdapter())
+    assert processed == 1
+    status, _reason, _budget = _read_status(db_path, out.action_id)
+    assert status == "applied"
+
+    _reset_pause_state_for_test()
+
+
+async def test_mid_tick_pause_releases_claimed_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pause that lands AFTER tick entry but before a row dispatches must
+    release the claimed row back to pending and stop further dispatch — via the
+    authoritative DB read, and it audits the skip."""
+    from mailbot_api.router import pause as pause_mod
+    from mailbot_api.router.pause import (
+        PauseState,
+        _reset_pause_state_for_test,
+    )
+
+    db_path = _setup(tmp_path, monkeypatch)
+    await _seed_email(db_path, graph_id="e-1")
+    await _seed_email(db_path, graph_id="e-2")
+    out1 = await propose_action("e-1", ActionType.MARK_READ, db_path=db_path)
+    out2 = await propose_action("e-2", ActionType.MARK_READ, db_path=db_path)
+
+    _reset_pause_state_for_test()  # tick-entry gate sees unpaused (no DB row yet)
+
+    # Patch the authoritative snapshot reader to report: unpaused at tick
+    # entry, then paused on the mid-tick re-check (simulating an auto-pause
+    # landing mid-tick). The first call is the tick-entry gate; subsequent
+    # calls are the per-row mid-tick re-checks. The drainer reads (paused,
+    # reason) via snapshot_now.
+    calls = {"n": 0}
+
+    async def _fake_snapshot_now(self: PauseState, dbp: str) -> tuple[bool, str | None]:
+        calls["n"] += 1
+        paused = calls["n"] > 1  # first call False (entry), later True (mid-tick)
+        return paused, ("mid-tick" if paused else None)
+
+    monkeypatch.setattr(pause_mod.PauseState, "snapshot_now", _fake_snapshot_now)
+
+    processed = await run_tick(db_path, FakeGraphWriteAdapter())
+
+    # First row claimed then mid-tick pause fired → released → processed -= 1.
+    assert processed == 0
+    # The released row returns to pending; the other is never claimed.
+    s1 = _read_status(db_path, out1.action_id)[0]
+    s2 = _read_status(db_path, out2.action_id)[0]
+    assert "pending" in (s1, s2)
+
+    _reset_pause_state_for_test()
+
+
 # ---- Tier-1 happy + failure ---------------------------------------------------
 
 

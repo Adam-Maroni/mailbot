@@ -96,6 +96,38 @@ class BudgetGuard:
     def is_degraded(self) -> bool:
         return self._degraded_mode_active
 
+    async def is_degraded_now(self, db_path: str) -> bool:
+        """Story 10.5.1 (AC-2, the CLASS) — authoritative CROSS-PROCESS
+        degraded-flag read.
+
+        ``is_degraded()`` returns the per-process ``self._degraded_mode_active``
+        mirror seeded once at ``initialize()`` — the identical per-process
+        in-memory singleton landmine as ``PauseState`` (F4). A degraded-mode
+        entry in the API process was invisible to any other process's
+        dispatch decision. This reader hits the ``degraded_mode_state``
+        singleton row (migration 008) — the cross-process truth — at decision
+        time, mirroring ``PauseState.is_paused_now``.
+
+        SCOPE FENCE (story 10-5-1): this fixes ONLY the cross-process staleness
+        of the degraded *flag read*. The spend-*counter* inflation / July
+        re-derive / pricing truth (``add_spend`` math, ``pricing.py``,
+        ``ROUTER_CALLS_SPEND_SINCE`` re-aggregation) is Cluster E / story
+        10-5-5 and is deliberately NOT touched here.
+
+        Fail-closed: a read failure is treated as DEGRADED (the cost-shedding
+        safety net) so a DB hiccup can never silently re-enable full-cost
+        dispatch.
+        """
+        try:
+            row = await connection.fetchone(db_path, queries.DEGRADED_MODE_SELECT, ())
+        except Exception:  # noqa: BLE001 — fail-closed: a read error must not re-enable full-cost dispatch
+            _log.exception(
+                "degraded_mode_state authoritative read failed — failing closed (treating as degraded)",
+                extra={"event": "budget.degraded.read_failed"},
+            )
+            return True
+        return bool(row[0]) if row else False
+
     async def add_spend(self, db_path: str, cost_usd: float) -> None:
         """Add a successful call's cost to both counters; trigger Layer 2
         warning + Layer 3 entry on threshold crossings."""

@@ -179,3 +179,54 @@ async def test_budget_guard_initialize_rolls_forward_router_calls_spend(
     # Both rows were within today + this month → both counters reflect them.
     assert guard.today_spend_usd == 0.75
     assert guard.this_month_spend_usd == 0.75
+
+
+# ---- Story 10.5.1 (AC-2, the CLASS) — cross-process authoritative read -------
+
+
+async def test_is_degraded_now_sees_bare_db_degraded_without_initialize(
+    _fresh_db: str,
+) -> None:
+    """The BudgetGuard twin of the F4 regression.
+
+    A degraded-mode entry that fired in "process A" (writes the
+    degraded_mode_state row) must be observed by "process B"'s
+    `is_degraded_now(db_path)` even though B never called initialize() — the
+    same per-process in-memory singleton landmine as PauseState. Before the
+    fix, `is_degraded()` returned B's stale mirror (False).
+    """
+    # Process A enters degraded mode (writes the DB row).
+    guard_a = BudgetGuard()
+    await guard_a.initialize(_fresh_db)
+    await guard_a.add_spend(_fresh_db, 35.0)  # crosses $30 → degraded
+    assert guard_a.is_degraded() is True
+
+    # Process B: fresh, never initialized → stale mirror says False.
+    guard_b = BudgetGuard()
+    assert guard_b.is_degraded() is False  # the pre-fix landmine
+    assert await guard_b.is_degraded_now(_fresh_db) is True
+
+
+async def test_is_degraded_now_false_when_not_degraded(_fresh_db: str) -> None:
+    guard = BudgetGuard()
+    assert await guard.is_degraded_now(_fresh_db) is False
+
+
+async def test_is_degraded_now_reflects_live_exit(_fresh_db: str) -> None:
+    """After a reset writes the DB row, the authoritative reader flips to False
+    on the next read — no re-initialize needed."""
+    guard_a = BudgetGuard()
+    await guard_a.initialize(_fresh_db)
+    await guard_a.add_spend(_fresh_db, 35.0)
+
+    reader = BudgetGuard()
+    assert await reader.is_degraded_now(_fresh_db) is True
+    await guard_a.exit_degraded_mode(_fresh_db, reason="manual_reset")
+    assert await reader.is_degraded_now(_fresh_db) is False
+
+
+async def test_is_degraded_now_fails_closed_on_read_error() -> None:
+    """Fail-closed contract: a DB read failure is treated as DEGRADED so a
+    hiccup can never silently re-enable full-cost dispatch."""
+    guard = BudgetGuard()
+    assert await guard.is_degraded_now("/nonexistent/dir/definitely-not-a.db") is True
