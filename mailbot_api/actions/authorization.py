@@ -51,6 +51,7 @@ MintGrantErrorCode = Literal[
     "GRANT_WINDOW_TOO_LARGE",
     "BATCH_TOO_LARGE",
     "GRANT_NOT_NEEDED",
+    "NEEDS_USER_CONFIRMATION",
 ]
 
 RevokeGrantErrorCode = Literal["GRANT_NOT_FOUND"]
@@ -152,6 +153,39 @@ async def mint_grant(
             "BATCH_TOO_LARGE",
             f"email_ids batch size {len(email_ids)} exceeds the {MAX_BATCH_SIZE} max "
             "(bulk operations beyond this require a fresh grant)",
+            action_type=action_type,
+        )
+
+    # Story 10.5.2 (F-10-5-8): a Tier-2 grant is NOT agent-assertable. A genuine
+    # user-gated confirmation record — created only at the chat boundary on a
+    # real user-role "yes" — must exist and is consumed single-use here, AFTER
+    # the structural gates so an agent can't probe the confirmation state past
+    # a cheaper refusal. An agent that only issues verb calls cannot manufacture
+    # the record, so it cannot self-authorize the grant.
+    from mailbot_api.actions.user_confirmation import (  # noqa: PLC0415
+        consume_grant_confirmation,
+    )
+
+    confirmed = await consume_grant_confirmation(
+        db_path, action_type=action_type.value, email_ids=email_ids,
+    )
+    if not confirmed:
+        # CR-7 (Story 10.5.2): audit the refused-mint path — an agent trying to
+        # mint a grant without a user approval is the security-relevant event.
+        _logger.info(
+            "grant mint refused — no user confirmation",
+            extra={
+                "event": "action.grant.mint_refused",
+                "reason": "needs_user_confirmation",
+                "action_type": action_type.value,
+                "email_count": len(email_ids),
+            },
+        )
+        return _refuse_mint(
+            "NEEDS_USER_CONFIRMATION",
+            f"minting a grant for {action_type.value!r} requires a user confirmation "
+            "for this exact email set (the user must approve in chat); the agent "
+            "cannot self-authorize this grant",
             action_type=action_type,
         )
 

@@ -771,6 +771,100 @@ ACTION_GRANT_REVOKE = (
 )
 
 
+# --- user confirmations (Story 10.5.2, Epic 10.5 Cluster B) ---
+#
+# The API-layer user-gated approval record. Created ONLY by the
+# /v1/chat/completions boundary on a genuine user-role confirmation phrase;
+# consumed single-use by the mint verbs. An agent's MCP verb call cannot
+# produce these rows (F-10-5-5 / F-10-5-8 fix).
+
+USER_CONFIRMATION_INSERT = (
+    "INSERT INTO user_confirmations "
+    "(scope, email_id, task_type, action_type, email_ids, created_at) "
+    "VALUES (?, ?, ?, ?, ?, ?)"
+)
+
+# Newest un-consumed sensitivity-token confirmation for (email_id, task_type).
+USER_CONFIRMATION_FIND_SENSITIVITY = (
+    "SELECT id, created_at FROM user_confirmations "
+    "WHERE scope = 'sensitivity_token' AND email_id = ? AND task_type = ? "
+    "AND consumed_at IS NULL "
+    "ORDER BY id DESC LIMIT 1"
+)
+
+# Newest un-consumed grant confirmation for (action_type, exact email_ids JSON).
+# CR-4 (Story 10.5.2): match the EXACT email set the user approved, not just the
+# action_type — otherwise an agent could reuse a user's "yes" for a different
+# batch of the same action_type.
+USER_CONFIRMATION_FIND_GRANT = (
+    "SELECT id, created_at FROM user_confirmations "
+    "WHERE scope = 'grant' AND action_type = ? AND email_ids = ? AND consumed_at IS NULL "
+    "ORDER BY id DESC LIMIT 1"
+)
+
+# Single-use consume: mark consumed only if still un-consumed (rowcount=1 wins).
+USER_CONFIRMATION_CONSUME = (
+    "UPDATE user_confirmations SET consumed_at = ? "
+    "WHERE id = ? AND consumed_at IS NULL"
+)
+
+# pending_sensitive_refusal — correlate a bare "yes, escalate" back to the
+# (email_id, task) of the caller's most-recent sensitive refusal (F-10-5-7).
+PENDING_SENSITIVE_REFUSAL_UPSERT = (
+    "INSERT INTO pending_sensitive_refusal (caller_origin, email_id, task_type, created_at) "
+    "VALUES (?, ?, ?, ?) "
+    "ON CONFLICT(caller_origin) DO UPDATE SET "
+    "email_id = excluded.email_id, task_type = excluded.task_type, "
+    "created_at = excluded.created_at"
+)
+
+PENDING_SENSITIVE_REFUSAL_SELECT = (
+    "SELECT email_id, task_type, created_at FROM pending_sensitive_refusal "
+    "WHERE caller_origin = ?"
+)
+
+PENDING_SENSITIVE_REFUSAL_DELETE = (
+    "DELETE FROM pending_sensitive_refusal WHERE caller_origin = ?"
+)
+
+# CR-6 (Story 10.5.2): atomic claim — delete the pending row and RETURN it in
+# one statement so two concurrent "yes, escalate" turns for the same caller
+# can't both observe the row and both mint a confirmation. rowcount=1 wins.
+PENDING_SENSITIVE_REFUSAL_CLAIM = (
+    "DELETE FROM pending_sensitive_refusal WHERE caller_origin = ? "
+    "RETURNING email_id, task_type, created_at"
+)
+
+# pending_grant_approval — Tier-2 analog (CR-3/CR-4).
+PENDING_GRANT_APPROVAL_UPSERT = (
+    "INSERT INTO pending_grant_approval (caller_origin, action_type, email_ids, created_at) "
+    "VALUES (?, ?, ?, ?) "
+    "ON CONFLICT(caller_origin) DO UPDATE SET "
+    "action_type = excluded.action_type, email_ids = excluded.email_ids, "
+    "created_at = excluded.created_at"
+)
+
+# Atomic claim for the grant approval (same rationale as the sensitive claim).
+PENDING_GRANT_APPROVAL_CLAIM = (
+    "DELETE FROM pending_grant_approval WHERE caller_origin = ? "
+    "RETURNING action_type, email_ids, created_at"
+)
+
+# escalation_armed — Story 10.5.2 live-walk fix (F-10-5-2-W1). A "yes, escalate"
+# turn arms an escalation (singleton id=1); the mint_sensitivity_token verb
+# consumes it and auto-records a confirmation for its concrete (email, task).
+# Ordering-independent vs the pending_sensitive_refusal row.
+ESCALATION_ARMED_UPSERT = (
+    "INSERT INTO escalation_armed (id, armed_at) VALUES (1, ?) "
+    "ON CONFLICT(id) DO UPDATE SET armed_at = excluded.armed_at"
+)
+
+# Atomic consume — delete-returning so one arm authorizes exactly one mint.
+ESCALATION_ARMED_CLAIM = (
+    "DELETE FROM escalation_armed WHERE id = 1 RETURNING armed_at"
+)
+
+
 # --- drainer (Story 4-4) ---
 
 # Select up to N pending-status rows in priority order (tier ASC = Tier-1 first;

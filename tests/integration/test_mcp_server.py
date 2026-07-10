@@ -41,6 +41,10 @@ import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.types import TextContent
 
+from mailbot_api.actions.user_confirmation import (
+    record_grant_confirmation,
+    record_sensitivity_confirmation,
+)
 from mailbot_api.db.connection import execute_write
 from mailbot_api.db.migrations_runner import apply_pending_migrations
 from mailbot_api.mcp_server import (
@@ -531,6 +535,8 @@ async def test_propose_action_mark_read_happy_path(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_mint_grant_then_revoke_round_trip(tmp_path: Path) -> None:
     db_path = _setup_db(tmp_path)
+    # Story 10.5.2 (F-10-5-8): mint_grant requires a user-gated confirmation.
+    await record_grant_confirmation(db_path, action_type="archive", email_ids=["m1", "m2"])
     server = build_mcp_server(db_path=db_path)
     # 1h in the future, ISO-8601 Z.
     expires_at = (
@@ -632,6 +638,8 @@ async def test_mint_sensitivity_token_sensitive_success(tmp_path: Path) -> None:
     path for Story 5-9's draft-reply flow."""
     db_path = _setup_db(tmp_path)
     await _seed_email(db_path, graph_id="m1", sensitivity="sensitive")
+    # Story 10.5.2 (F-10-5-5): mint requires a user-gated confirmation.
+    await record_sensitivity_confirmation(db_path, email_id="m1", task_type="summary_short")
     server = build_mcp_server(db_path=db_path)
     async with create_connected_server_and_client_session(server) as client:
         await client.initialize()

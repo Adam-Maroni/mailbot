@@ -36,6 +36,11 @@ from mailbot_api.observability._redaction import (
     URL_TOKEN_QUERY_RE,
 )
 
+# Story 10.5.2: the sensitivity-refusal envelope carried on RouterError.
+# sensitivity_refusal.py is a leaf module (pydantic + hashlib only; no DB /
+# network / errors.py import) so this does not create a cycle.
+from mailbot_api.router.sensitivity_refusal import SensitivityRefusal
+
 
 class ErrorCode(str, Enum):
     """Stable, lowercase, snake_case error codes for the Router contract.
@@ -70,6 +75,12 @@ class RouterError(BaseModel):
     message: str
     model_attempted: list[str] = Field(default_factory=list)
     retryable: bool
+    # Story 10.5.2 (Epic 10.5 Cluster B, B7): sensitivity refusals carry a
+    # typed envelope so the chat boundary can render the four-beat graceful
+    # message (and NOT leak the Graph email id) instead of a raw HTTP-502.
+    # Optional + additive — every non-sensitivity error leaves it None, so the
+    # existing RouterError contract is unchanged. See router/sensitivity_refusal.py.
+    refusal_envelope: SensitivityRefusal | None = None
 
 
 class RouterResult(BaseModel):

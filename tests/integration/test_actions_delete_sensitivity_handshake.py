@@ -32,6 +32,7 @@ import pytest
 
 from mailbot_api.actions.sensitivity_tokens import _clear_registry_for_tests
 from mailbot_api.actions.types import ActionType
+from mailbot_api.actions.user_confirmation import record_sensitivity_confirmation
 from mailbot_api.db.connection import execute_write
 from mailbot_api.db.migrations_runner import apply_pending_migrations
 from mailbot_api.mcp_server import build_mcp_server
@@ -108,6 +109,8 @@ async def test_mint_sensitivity_token_succeeds_for_delete_task_on_sensitive_emai
     apply_pending_migrations(db_path)
     await _seed_email(db_path, graph_id="e-sens-del", sensitivity="sensitive")
 
+    # Story 10.5.2 (F-10-5-5): mint requires a user-gated confirmation.
+    await record_sensitivity_confirmation(db_path, email_id="e-sens-del", task_type="delete")
     mint_out = await mint_sensitivity_token(
         "e-sens-del", "delete", db_path=db_path,
     )

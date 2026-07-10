@@ -35,6 +35,8 @@
 | [`pending_actions`](#pending_actions) | [015](#015_pending_actions) | Action proposal queue — Tier-1/2/3 lifecycle (`pending` → `cooling_off`/`pending_grant`/`draining` → `applied`/`failed`/`cancelled`). |
 | [`action_grants`](#action_grants) | [016](#016_action_grants) | Scoped time-bounded authorization grants (FR-5.2). |
 | [`action_history`](#action_history) | [017](#017_action_history) | Pre-state audit snapshot written before Graph dispatch; `reverted_at` populated by Tier-1 24h reverter (Story 4-8). |
+| [`user_confirmations`](#user_confirmations) | [026](#026_user_confirmations) | API-layer user-gated approval record — makes token/grant minting non-agent-assertable (Story 10.5.2, F-10-5-5/F-10-5-8). |
+| [`pending_sensitive_refusal`](#pending_sensitive_refusal) | [026](#026_user_confirmations) | Correlates a bare "yes, escalate" to the caller's last sensitive refusal (Story 10.5.2, F-10-5-7). |
 
 System tables:
 
@@ -65,6 +67,8 @@ System tables:
 | 015 | `015_pending_actions.sql` | 4 | 4-2 | `pending_actions` + 18-action-type CHECK + tier-1/2/3 CHECK + 7-state CHECK |
 | 016 | `016_action_grants.sql` | 4 | 4-2 | `action_grants` |
 | 017 | `017_action_history.sql` | 4 | 4-2 | `action_history` |
+| … | _(018–025: notifications/posture/oauth-failures/benchmark tables — index row back-fill owed; not touched by this story)_ | — | — | — |
+| <a id="026_user_confirmations"></a>026 | `026_user_confirmations.sql` | 10.5 | 10-5-2 | `user_confirmations` + `pending_sensitive_refusal` (API-layer user-gated mint approval; F-10-5-5/F-10-5-8/F-10-5-7) |
 
 **Cumulative renumber chain:** Epic 2 specs shifted by +1 (1-10 consumed 005); Epic 3 specs shifted by +1 (Epic 2's 010 was originally spec'd as 009 etc.); Epic 4's specs landed at 015–017 cleanly (no further shift). See architecture.md "Migration numbering policy" for the renumber discipline.
 
@@ -432,6 +436,67 @@ Pre-state snapshot for Tier-1 24h reverter (Story 4-8) + forensic audit. One row
 | `pre_state` | TEXT | `NOT NULL` | JSON snapshot. Empty `{}` for actions where pre-state isn't meaningful for revert (DELETE; SEND family). For Tier-1 actions, future migrations may populate `is_read` / `folder_id` / `categories` from the live email row at propose time. |
 | `applied_at` | TEXT | `NOT NULL` | UTC ISO-8601 Z when the history row was inserted (immediately before dispatch). |
 | `reverted_at` | TEXT | YES | Populated by `revert_action` (Story 4-8). NULL = not reverted. |
+
+---
+
+<a id="user_confirmations"></a>
+
+### `user_confirmations`
+
+**Purpose:** the API-layer user-gated approval record (Story 10.5.2, Epic 10.5 Cluster B). Makes token/grant minting a genuinely user-gated event — a row is created ONLY at the `/v1/chat/completions` boundary on a real user-role confirmation phrase, NEVER by an MCP verb call. The mint verbs (`mint_sensitivity_token`, `mint_grant`) consume a matching un-consumed row single-use, so an agent that only issues verb calls cannot self-authorize (fixes F-10-5-5 self-mint sensitivity token + F-10-5-8 self-mint Tier-2 grant).
+
+| Column | Type | Null | Notes |
+|---|---|---|---|
+| `id` | INTEGER | PK AUTOINCREMENT | — |
+| `scope` | TEXT | `NOT NULL` + CHECK | `sensitivity_token` \| `grant`. |
+| `email_id` | TEXT | YES | For `sensitivity_token` scope: the target email. NULL for `grant`. |
+| `task_type` | TEXT | YES | For `sensitivity_token` scope: the task. NULL for `grant`. |
+| `action_type` | TEXT | YES | For `grant` scope: the grant action_type. NULL otherwise. |
+| `email_ids` | TEXT | YES | JSON array for `grant` scope; NULL otherwise. |
+| `created_at` | TEXT | `NOT NULL` | UTC ISO-8601 Z. TTL (10 min) enforced in code at consume time, not in SQL. |
+| `consumed_at` | TEXT | YES | Set on single-use consume (rowcount-1 atomic). NULL = un-consumed. |
+
+Indexes: `ix_user_confirmations_sensitivity` (scope, email_id, task_type), `ix_user_confirmations_grant` (scope, action_type).
+
+**Data classification:** non-PII (references only email/action ids, no body). **Lifecycle:** append-on-user-confirm, single-use-consume (mark `consumed_at`); short-TTL (stale confirmations rejected at consume). Sole writer: `mailbot_api/actions/user_confirmation.py`.
+
+---
+
+<a id="pending_sensitive_refusal"></a>
+
+### `pending_sensitive_refusal`
+
+**Purpose:** correlate a bare "yes, escalate" reply (which carries no email id) back to the `(email_id, task)` of the caller's most-recent **sensitive** refusal (Story 10.5.2, fixes F-10-5-7). The correlation key is `caller_origin` (the Discord caller), NOT a session id — the divergent session-identity binding WAS the F-10-5-7 bug. One row per caller, upserted on each new sensitive refusal, cleared on confirm.
+
+| Column | Type | Null | Notes |
+|---|---|---|---|
+| `caller_origin` | TEXT | PK | The Discord caller; one pending refusal per caller. |
+| `email_id` | TEXT | `NOT NULL` | The sensitive email awaiting escalation. |
+| `task_type` | TEXT | `NOT NULL` | The task the user asked for. |
+| `created_at` | TEXT | `NOT NULL` | UTC ISO-8601 Z. Reuses the confirmation TTL — a stale pending refusal cannot be escalated. |
+
+Indexes: PK on `caller_origin`. Only `sensitive` refusals are recorded (confidential offers no escalation; not-classified has nothing to escalate).
+
+**Data classification:** non-PII (email id + task only). **Lifecycle:** upsert-per-refusal, atomic delete-returning-on-confirm (CR-6); short-TTL. Sole writer: `mailbot_api/actions/user_confirmation.py`.
+
+---
+
+<a id="pending_grant_approval"></a>
+
+### `pending_grant_approval`
+
+**Purpose:** the Tier-2 analog of `pending_sensitive_refusal` (Story 10.5.2, CR-3/CR-4). When the agent proposes a grant-requiring action, the chat boundary records what a user "yes"/"approve" would authorize — the EXACT `(action_type, email_ids)` — keyed by `caller_origin`. On the user's approval phrase the boundary records a scoped grant confirmation for those exact email_ids (never an agent-chosen batch), then clears the row. Without it, `record_grant_confirmation` has no production caller and every Tier-2 grant is permanently blocked (CR-3).
+
+| Column | Type | Null | Notes |
+|---|---|---|---|
+| `caller_origin` | TEXT | PK | The Discord caller; one pending approval per caller. |
+| `action_type` | TEXT | `NOT NULL` | The Tier-2/3 action awaiting approval. |
+| `email_ids` | TEXT | `NOT NULL` | Canonical JSON (sorted) of the exact approved email set (CR-4 blast-radius scope). |
+| `created_at` | TEXT | `NOT NULL` | UTC ISO-8601 Z. Reuses the confirmation TTL. |
+
+Indexes: PK on `caller_origin`.
+
+**Data classification:** non-PII (action + email ids). **Lifecycle:** upsert-per-proposal, atomic delete-returning-on-approve; short-TTL. Sole writer: `mailbot_api/actions/user_confirmation.py`.
 
 ---
 

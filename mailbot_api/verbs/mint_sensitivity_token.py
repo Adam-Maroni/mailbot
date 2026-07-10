@@ -17,6 +17,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from mailbot_api.actions.sensitivity_tokens import mint
+from mailbot_api.actions.user_confirmation import consume_sensitivity_confirmation
 from mailbot_api.db.connection import fetchone
 from mailbot_api.db.queries import EMAIL_SENSITIVITY_SELECT
 
@@ -28,6 +29,7 @@ MintSensitivityTokenErrorCode = Literal[
     "EMAIL_NOT_SENSITIVE",
     "SENSITIVITY_BLOCKS_API",
     "SENSITIVITY_NOT_CLASSIFIED",
+    "NEEDS_USER_CONFIRMATION",
 ]
 
 
@@ -93,6 +95,54 @@ async def mint_sensitivity_token(
                     "pipeline's sensitivity_class step first"
                     if sensitivity_value is None
                     else f"unexpected sensitivity value {sensitivity_value!r}"
+                ),
+            ),
+        )
+
+    # Story 10.5.2 (F-10-5-5): minting is NOT agent-assertable. A genuine
+    # user-gated confirmation record — created only at the chat boundary on a
+    # real user-role "yes, escalate" — must exist and is consumed single-use
+    # here. An agent that only issues verb calls cannot manufacture it, so it
+    # cannot self-authorize the escalation.
+    confirmed = await consume_sensitivity_confirmation(
+        db_path, email_id=email_id, task_type=task_type,
+    )
+    if not confirmed:
+        # Live-walk fix (F-10-5-2-W1): in the real Discord flow the persona
+        # self-refuses and the agent's mint attempt lands in the SAME turn as
+        # the user's "yes, escalate", so the boundary couldn't pre-record a
+        # confirmation for this exact (email, task). If the caller armed an
+        # escalation this turn, consume it here — the mint verb IS where the
+        # concrete (email_id, task_type) is known — and proceed. The arm is
+        # still a genuine user-gated event (only the boundary sets it on a real
+        # user-role phrase); the agent cannot arm itself.
+        from mailbot_api.actions.user_confirmation import (  # noqa: PLC0415
+            consume_escalation_arm,
+        )
+        confirmed = await consume_escalation_arm(
+            db_path, email_id=email_id, task_type=task_type,
+        )
+    if not confirmed:
+        # CR-7 (Story 10.5.2): audit the refused-mint path so self-mint attempts
+        # are observable (the security-relevant event is "an agent tried to mint
+        # without a user confirmation").
+        _logger.info(
+            "sensitivity token mint refused — no user confirmation",
+            extra={
+                "event": "sensitivity.token.mint_refused",
+                "reason": "needs_user_confirmation",
+                "email_id": email_id,
+                "task_type": task_type,
+            },
+        )
+        return MintSensitivityTokenOut(
+            ok=False,
+            error=MintSensitivityTokenError(
+                code="NEEDS_USER_CONFIRMATION",
+                message=(
+                    "sensitivity escalation requires a user confirmation "
+                    "(reply 'yes, escalate' in chat); the agent cannot "
+                    "self-authorize this mint"
                 ),
             ),
         )

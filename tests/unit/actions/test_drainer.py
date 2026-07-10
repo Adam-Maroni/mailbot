@@ -28,10 +28,34 @@ from mailbot_api.actions.graph_write import (
 )
 from mailbot_api.actions.propose import propose_action
 from mailbot_api.actions.types import ActionType
+from mailbot_api.actions.user_confirmation import record_grant_confirmation
 from mailbot_api.db.connection import execute_write, get_connection
 from mailbot_api.db.migrations_runner import apply_pending_migrations
 
 # ---- fixtures ----------------------------------------------------------------
+
+
+# Story 10.5.2 (F-10-5-8): mint_grant now requires a user-gated confirmation.
+# These Story-4-4-era tests mint a grant purely as setup to reach the drainer;
+# auto-seed a fresh single-use confirmation before each mint so their intent is
+# preserved (the confirmation gate itself is covered by
+# tests/integration/test_mint_requires_user_confirmation.py).
+@pytest.fixture(autouse=True)
+def _auto_confirm_grants(monkeypatch: pytest.MonkeyPatch) -> None:
+    import mailbot_api.actions.authorization as _authz
+
+    _real_mint = _authz.mint_grant
+
+    async def _mint_with_confirmation(action_type, email_ids, expires_at, *, db_path):  # type: ignore[no-untyped-def]
+        await record_grant_confirmation(
+            db_path, action_type=action_type.value, email_ids=list(email_ids),
+        )
+        return await _real_mint(action_type, email_ids, expires_at, db_path=db_path)
+
+    monkeypatch.setattr(_authz, "mint_grant", _mint_with_confirmation)
+    monkeypatch.setattr(
+        "tests.unit.actions.test_drainer.mint_grant", _mint_with_confirmation
+    )
 
 
 def _setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:

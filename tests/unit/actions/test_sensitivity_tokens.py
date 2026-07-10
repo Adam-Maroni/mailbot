@@ -21,6 +21,7 @@ from mailbot_api.actions.sensitivity_tokens import (
     mint,
     sweep,
 )
+from mailbot_api.actions.user_confirmation import record_sensitivity_confirmation
 from mailbot_api.db.connection import execute_write
 from mailbot_api.db.migrations_runner import apply_pending_migrations
 from mailbot_api.verbs.mint_sensitivity_token import mint_sensitivity_token
@@ -178,6 +179,8 @@ async def test_mint_verb_refuses_for_normal(tmp_path: Path) -> None:
 async def test_mint_verb_succeeds_for_sensitive(tmp_path: Path) -> None:
     db_path = _setup_db(tmp_path)
     await _seed_email_with_sensitivity(db_path, graph_id="e-sens", sensitivity="sensitive")
+    # Story 10.5.2 (F-10-5-5): mint now requires a user-gated confirmation.
+    await record_sensitivity_confirmation(db_path, email_id="e-sens", task_type="draft_reply")
     out = await mint_sensitivity_token("e-sens", "draft_reply", db_path=db_path)
     assert out.ok is True
     assert out.token is not None
@@ -200,6 +203,7 @@ async def test_mint_log_line_carries_grant_id_not_token(
 ) -> None:
     db_path = _setup_db(tmp_path)
     await _seed_email_with_sensitivity(db_path, graph_id="e-log", sensitivity="sensitive")
+    await record_sensitivity_confirmation(db_path, email_id="e-log", task_type="draft_reply")
     with caplog.at_level(logging.INFO, logger="mailbot_api.verbs.mint_sensitivity_token"):
         out = await mint_sensitivity_token("e-log", "draft_reply", db_path=db_path)
     assert out.ok

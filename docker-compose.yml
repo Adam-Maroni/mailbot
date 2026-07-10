@@ -30,6 +30,18 @@ services:
       # skills/). Hermes-written runtime files are gitignored via
       # hermes-config/.gitignore.
       - ./hermes-config:/opt/data
+      # Story 10.5.2 AC-2 (F-10-5-12 closure): the mailbot skill files are
+      # gitted source-of-truth, NOT agent-writable state. Epic 10's walk found
+      # the agent self-editing SKILL.md via `skill_manage patch` / `file write`
+      # mid-turn with confabulated content, landing in the working tree through
+      # this RW bind-mount. A nested read-only mount on just skills/mailbot makes
+      # those writes structurally impossible at the filesystem boundary while
+      # /opt/data stays RW for Hermes's legitimate runtime dirs (cron/, sessions/,
+      # .cache, .skills_prompt_snapshot.json, etc.). Defense-at-the-boundary,
+      # independent of Hermes tool-config (which this image exposes no toolset-
+      # restriction key for). Verified live: a write probe inside the container
+      # is rejected.
+      - ./hermes-config/skills/mailbot:/opt/data/skills/mailbot:ro
     environment:
       # The bearer key mailbot-api validates on /v1/chat/completions and /mcp.
       - MAILBOT_ROUTER_KEY=${MAILBOT_ROUTER_KEY:-}

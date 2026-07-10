@@ -536,6 +536,57 @@ async def chat_completions(
 
     caller_origin = x_mailbot_caller_origin if x_mailbot_caller_origin else "unknown-external"
 
+    # Story 10.5.2 (F-10-5-7): if the latest user-role message is an explicit
+    # escalation confirmation ("yes, escalate"), record a genuine user-gated
+    # confirmation for the caller's pending sensitive refusal BEFORE dispatch,
+    # so the agent's subsequent mint_sensitivity_token attempt finds a valid
+    # confirmation. This is the ONLY place a sensitivity confirmation is created
+    # — from a real user turn, never from an agent verb call — which is what
+    # makes minting non-agent-assertable (F-10-5-5). Deterministic phrase match
+    # (recognized-phrase layer per retro §8.7), not LLM interpretation.
+    from mailbot_api.actions.user_confirmation import (
+        confirm_pending_escalation as _confirm_escalation,
+    )
+    from mailbot_api.actions.user_confirmation import (
+        confirm_pending_grant as _confirm_grant,
+    )
+    from mailbot_api.actions.user_confirmation import (
+        is_escalation_confirmation as _is_escalation_confirmation,
+    )
+    from mailbot_api.actions.user_confirmation import (
+        is_grant_approval as _is_grant_approval,
+    )
+
+    # Story 10.5.2 (F-10-5-8, CR-3/CR-4): record what a Tier-2 approval WOULD
+    # authorize by scanning the conversation for the agent's own
+    # `propose_action(<grant-requiring action>)` tool call — the exact
+    # (action_type, email_ids) the user is being asked to approve. Recorded from
+    # the genuine conversation transcript at the boundary, never mintable by an
+    # agent verb. Then, on a user approval phrase, confirm it (scoped to that
+    # exact email set).
+    await _record_pending_grant_approvals_from_messages(
+        request=request, caller_origin=caller_origin, db_path=db_path,
+    )
+
+    _latest_user_text = next(
+        (m.content for m in reversed(request.messages) if m.role == "user" and m.content),
+        None,
+    )
+    if _latest_user_text is not None:
+        if _is_escalation_confirmation(_latest_user_text):
+            # Try the immediate confirm (pending refusal from a PRIOR turn), AND
+            # arm the caller so the router's next sensitivity refusal in THIS
+            # turn auto-confirms (live-walk fix F-10-5-2-W1: the persona
+            # self-refuses, so the pending refusal is written later in the same
+            # turn than this check runs — the arm is ordering-independent).
+            from mailbot_api.actions.user_confirmation import (  # noqa: PLC0415
+                arm_escalation as _arm_escalation,
+            )
+            await _confirm_escalation(db_path, caller_origin=caller_origin)
+            await _arm_escalation(db_path)
+        elif _is_grant_approval(_latest_user_text):
+            await _confirm_grant(db_path, caller_origin=caller_origin)
+
     # Story 6-9 (F11 closure): branch on tools presence. When the caller
     # supplies `tools=[...]`, dispatch via the dispatch_tool_call sibling
     # rather than ask_router. The two paths share sensitivity-gate, pause,
@@ -554,6 +605,22 @@ async def chat_completions(
             caller_origin=caller_origin,
             db_path=db_path,
         )
+
+        # Story 10.5.2 (B7 / F-10-5-6): a sensitivity refusal carrying a typed
+        # envelope renders as a graceful message, NOT a 502. Honor the stream
+        # flag so Hermes's streaming main-inference path still gets SSE chunks.
+        _refusal = _sensitivity_refusal_completion(result, raw_request)
+        if _refusal is not None:
+            if request.stream:
+                return StreamingResponse(
+                    _plain_text_completion_sse_chunks(
+                        completion=_refusal,
+                        raw_request=raw_request,
+                    ),
+                    media_type="text/event-stream",
+                )
+            return _refusal
+
         _raise_router_error_if_failed(result)
 
         # F13 (Story 6-9 CP-2 walk attempt #4): branch on `stream` field.
@@ -615,6 +682,11 @@ async def chat_completions(
     )
 
     if not result.ok or result.output is None:
+        # Story 10.5.2 (B7 / F-10-5-6): render a sensitivity refusal gracefully
+        # (four-beat message, no leaked id) instead of a raw 502.
+        _refusal = _sensitivity_refusal_completion(result, raw_request)
+        if _refusal is not None:
+            return _refusal
         detail = "router refused" if result.error is None else result.error.message
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -709,8 +781,104 @@ async def _chat_completions_tools_dispatch(
     )
 
 
+# Story 10.5.2 (Epic 10.5 Cluster B, B7 / F-10-5-6): sensitivity refusals must
+# reach Discord as the graceful four-beat message carried on the RouterError's
+# `refusal_envelope`, NOT as a raw HTTP-502 retry ladder that also leaks the
+# Graph email id. The router already produces these as errors-as-data
+# (AR-PAT-4); the ONLY thing that turned them into a 502 was this boundary
+# re-raising every non-ok result. We intercept refusals carrying an envelope
+# and render `user_facing_guidance` as a normal 200-shape completion. Every
+# OTHER failure (provider error, timeout, budget) keeps its 502 behavior.
+def _sensitivity_refusal_completion(
+    result: Any, raw_request: Request,
+) -> dict[str, Any] | None:
+    """If `result` is a sensitivity refusal carrying a typed envelope, return
+    an OpenAI 200-shape chat.completion whose content is the four-beat
+    `user_facing_guidance`. Otherwise return None (caller falls through to the
+    normal 502 path)."""
+    if result.ok or result.error is None:
+        return None
+    envelope = getattr(result.error, "refusal_envelope", None)
+    if envelope is None:
+        return None
+    # The envelope's user_facing_guidance is the ONLY user-visible string.
+    # It carries no Graph id by construction (see router/sensitivity_refusal.py).
+    return {
+        "id": f"chatcmpl-mailbot-{id(raw_request):x}",
+        "object": "chat.completion",
+        "created": 0,
+        "model": getattr(result, "model_used", "") or "",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": envelope.user_facing_guidance,
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cached_input_tokens": 0,
+        },
+    }
+
+
+async def _record_pending_grant_approvals_from_messages(
+    *, request: _ChatCompletionsRequest, caller_origin: str, db_path: str,
+) -> None:
+    """Story 10.5.2 (CR-3/CR-4): scan the request's assistant tool_calls for a
+    `propose_action` naming a grant-requiring (Tier-2/3) action_type, and record
+    a pending grant approval carrying the EXACT (action_type, email_ids). This
+    is what a later user "yes" confirms — scoped to the user-visible set, never
+    an agent-chosen batch. Read-only over the transcript; safe to run every turn.
+    """
+    from mailbot_api.actions.types import ActionType, requires_grant  # noqa: PLC0415
+    from mailbot_api.actions.user_confirmation import (  # noqa: PLC0415
+        record_pending_grant_approval,
+    )
+
+    for m in request.messages:
+        if m.role != "assistant" or not m.tool_calls:
+            continue
+        for tc in m.tool_calls:
+            fn = tc.function
+            if fn is None or fn.name != "propose_action":
+                continue
+            try:
+                args = json.loads(fn.arguments) if isinstance(fn.arguments, str) else fn.arguments
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(args, dict):
+                continue
+            raw_action = args.get("action_type")
+            email_id = args.get("email_id")
+            if not isinstance(raw_action, str) or not isinstance(email_id, str):
+                continue
+            try:
+                action_type = ActionType(raw_action)
+            except ValueError:
+                continue
+            if not requires_grant(action_type):
+                continue
+            await record_pending_grant_approval(
+                db_path,
+                caller_origin=caller_origin,
+                action_type=action_type.value,
+                email_ids=[email_id],
+            )
+
+
 def _raise_router_error_if_failed(result: Any) -> None:
-    """Helper: raise HTTPException(502) for a failed ToolCallResult."""
+    """Helper: raise HTTPException(502) for a failed ToolCallResult.
+
+    NOTE: sensitivity refusals carrying a `refusal_envelope` are handled by the
+    caller via `_sensitivity_refusal_completion` BEFORE this is reached — they
+    must render gracefully, not 502. This helper is the fallthrough for every
+    other failure (provider error, timeout, budget, etc.)."""
     if not result.ok:
         detail = "router refused" if result.error is None else result.error.message
         raise HTTPException(
@@ -855,6 +1023,51 @@ def _tool_call_completion_sse_chunks(
     yield "data: " + json.dumps(final_chunk) + "\n\n"
 
     # SSE terminator per OpenAI wire shape.
+    yield "data: [DONE]\n\n"
+
+
+def _plain_text_completion_sse_chunks(
+    *,
+    completion: dict[str, Any],
+    raw_request: Request,
+) -> Iterator[str]:
+    """Story 10.5.2 — emit OpenAI-shape SSE chunks for a plain-text completion
+    (used to stream a sensitivity-refusal message on the tool-calling path
+    when the caller requested `stream=True`).
+
+    `completion` is a non-streaming chat.completion dict (as built by
+    `_sensitivity_refusal_completion`); this re-expresses its single text
+    content as role → content → finish_reason chunks + the [DONE] sentinel,
+    matching the shape OpenAI client SDKs (incl. Hermes) expect.
+    """
+    chunk_id = f"chatcmpl-mailbot-{id(raw_request):x}"
+    model_name = completion.get("model", "") or ""
+    content = completion["choices"][0]["message"].get("content") or ""
+    base = {
+        "id": chunk_id,
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": model_name,
+    }
+
+    # Chunk 1: role-only delta.
+    yield "data: " + json.dumps({
+        **base,
+        "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+    }) + "\n\n"
+
+    # Chunk 2: the full content in one delta.
+    yield "data: " + json.dumps({
+        **base,
+        "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
+    }) + "\n\n"
+
+    # Chunk 3: terminator with finish_reason=stop.
+    yield "data: " + json.dumps({
+        **base,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+    }) + "\n\n"
+
     yield "data: [DONE]\n\n"
 
 

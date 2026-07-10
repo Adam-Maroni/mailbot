@@ -19,6 +19,7 @@ from mailbot_api.actions.authorization import (
     revoke_grant,
 )
 from mailbot_api.actions.types import ActionType
+from mailbot_api.actions.user_confirmation import record_grant_confirmation
 from mailbot_api.db.connection import get_connection
 from mailbot_api.db.migrations_runner import apply_pending_migrations
 from mailbot_api.verbs.mint_grant import mint_grant as mint_grant_shim
@@ -28,6 +29,41 @@ def _setup(tmp_path: Path) -> str:
     db_path = str(tmp_path / "test.db")
     apply_pending_migrations(db_path)
     return db_path
+
+
+async def _confirm(db_path: str, action_type: ActionType) -> None:
+    """Story 10.5.2: seed the user-gated confirmation that mint_grant now
+    requires (F-10-5-8). The boundary creates this on a real user 'yes'; tests
+    that exercise a SUCCESSFUL mint seed it explicitly."""
+    await record_grant_confirmation(db_path, action_type=action_type.value, email_ids=[])
+
+
+# Story 10.5.2 (F-10-5-8): mint_grant now requires a user-gated confirmation.
+# These Story-4-3-era tests predate that gate and exercise the mint as a
+# structural operation. Patch `mint_grant` in this module so every call first
+# seeds a fresh single-use confirmation for its action_type — preserving each
+# test's original intent (they are NOT testing the confirmation gate; the
+# dedicated gate tests live in test_mint_requires_user_confirmation.py).
+@pytest.fixture(autouse=True)
+def _auto_confirm_grants(monkeypatch: pytest.MonkeyPatch) -> None:
+    import mailbot_api.actions.authorization as _authz
+
+    _real_mint = _authz.mint_grant
+
+    async def _mint_with_confirmation(action_type, email_ids, expires_at, *, db_path):  # type: ignore[no-untyped-def]
+        # Seed a confirmation for THIS action_type immediately before minting so
+        # the structural refusal tests (past/window/batch/tier) still refuse on
+        # their own gate (which fires before the confirmation consume).
+        await record_grant_confirmation(
+            db_path, action_type=action_type.value, email_ids=list(email_ids),
+        )
+        return await _real_mint(action_type, email_ids, expires_at, db_path=db_path)
+
+    monkeypatch.setattr(_authz, "mint_grant", _mint_with_confirmation)
+    # The names imported at module top bind to the original; rebind them too.
+    monkeypatch.setattr(
+        "tests.unit.actions.test_authorization.mint_grant", _mint_with_confirmation
+    )
 
 
 def _hours_from_now(n: int) -> datetime:

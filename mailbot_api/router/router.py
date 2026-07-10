@@ -68,6 +68,7 @@ from mailbot_api.router.response_cache import (
 from mailbot_api.router.response_cache import (
     lookup as response_cache_lookup,
 )
+from mailbot_api.router.sensitivity_refusal import build_refusal
 
 _logger = logging.getLogger(__name__)
 
@@ -531,6 +532,12 @@ async def ask_router(
                     code=ErrorCode.SENSITIVITY_NOT_CLASSIFIED,
                     message="email sensitivity must be classified before any other Router task",
                     retryable=False,
+                    refusal_envelope=build_refusal(
+                        email_id=email_id,
+                        task=task_type,
+                        classification="not_classified",
+                        reason=ErrorCode.SENSITIVITY_NOT_CLASSIFIED.value,
+                    ),
                 ),
             )
         sensitivity_value, _sensitivity_at = sensitivity_row
@@ -552,6 +559,12 @@ async def ask_router(
                     message="confidential emails admit no API override",
                     retryable=False,
                     model_attempted=[model],
+                    refusal_envelope=build_refusal(
+                        email_id=email_id,
+                        task=task_type,
+                        classification="confidential",
+                        reason=ErrorCode.SENSITIVITY_BLOCKS_API.value,
+                    ),
                 ),
                 model_used=model,
             )
@@ -567,6 +580,16 @@ async def ask_router(
                     caller_origin=caller_origin,
                     email_id=email_id,
                 )
+                # CR-1 (Story 10.5.2): record the pending sensitive refusal on
+                # the ask_router path too so a later "yes, escalate" correlates
+                # — parity with dispatch_tool_call. The envelope offers escalate
+                # regardless of which path produced the refusal.
+                from mailbot_api.actions.user_confirmation import (  # noqa: PLC0415
+                    record_pending_sensitive_refusal as _rec_pending,
+                )
+                await _rec_pending(
+                    db_path, caller_origin=caller_origin, email_id=email_id, task_type=task_type,
+                )
                 return RouterResult(
                     ok=False,
                     error=RouterError(
@@ -574,6 +597,12 @@ async def ask_router(
                         message="sensitive email requires per-session confirmation token to escalate to API",
                         retryable=False,
                         model_attempted=[model],
+                        refusal_envelope=build_refusal(
+                            email_id=email_id,
+                            task=task_type,
+                            classification="sensitive",
+                            reason=ErrorCode.SENSITIVITY_BLOCKS_API.value,
+                        ),
                     ),
                     model_used=model,
                 )
@@ -597,6 +626,15 @@ async def ask_router(
                 )
                 consume_result = None
             if consume_result is None:
+                # CR-1/CR-2 (Story 10.5.2): the invalid/expired-token refusal
+                # also renders a "sensitive → yes, escalate" envelope; record a
+                # pending refusal so the offer is genuine on this branch too.
+                from mailbot_api.actions.user_confirmation import (  # noqa: PLC0415
+                    record_pending_sensitive_refusal as _rec_pending,
+                )
+                await _rec_pending(
+                    db_path, caller_origin=caller_origin, email_id=email_id, task_type=task_type,
+                )
                 return RouterResult(
                     ok=False,
                     error=RouterError(
@@ -607,6 +645,12 @@ async def ask_router(
                         ),
                         retryable=False,
                         model_attempted=[model],
+                        refusal_envelope=build_refusal(
+                            email_id=email_id,
+                            task=task_type,
+                            classification="sensitive",
+                            reason=ErrorCode.NEEDS_SENSITIVITY_CONFIRMATION.value,
+                        ),
                     ),
                     model_used=model,
                 )
@@ -1882,6 +1926,12 @@ async def dispatch_tool_call(
                         code=ErrorCode.SENSITIVITY_NOT_CLASSIFIED,
                         message=msg,
                         retryable=False,
+                        refusal_envelope=build_refusal(
+                            email_id=eid,
+                            task=_TOOL_CALL_TASK_TYPE,
+                            classification="not_classified",
+                            reason=ErrorCode.SENSITIVITY_NOT_CLASSIFIED.value,
+                        ),
                     ),
                 )
             sensitivity_value, _ = sensitivity_row
@@ -1913,6 +1963,12 @@ async def dispatch_tool_call(
                         message=msg,
                         retryable=False,
                         model_attempted=[model],
+                        refusal_envelope=build_refusal(
+                            email_id=eid,
+                            task=_TOOL_CALL_TASK_TYPE,
+                            classification="confidential",
+                            reason=ErrorCode.SENSITIVITY_BLOCKS_API.value,
+                        ),
                     ),
                     model_used=model,
                 )
@@ -1945,6 +2001,19 @@ async def dispatch_tool_call(
                         caller_origin=caller_origin,
                         email_id=eid,
                     )
+                    # Story 10.5.2 (F-10-5-7): remember this sensitive refusal
+                    # so a later bare "yes, escalate" from the same caller can
+                    # be correlated back to (eid, task) — keyed by caller_origin,
+                    # not a divergent session id.
+                    from mailbot_api.actions.user_confirmation import (  # noqa: PLC0415
+                        record_pending_sensitive_refusal,
+                    )
+                    await record_pending_sensitive_refusal(
+                        db_path,
+                        caller_origin=caller_origin,
+                        email_id=eid,
+                        task_type=_TOOL_CALL_TASK_TYPE,
+                    )
                     return ToolCallResult(
                         ok=False,
                         error=RouterError(
@@ -1952,6 +2021,12 @@ async def dispatch_tool_call(
                             message=msg,
                             retryable=False,
                             model_attempted=[model],
+                            refusal_envelope=build_refusal(
+                                email_id=eid,
+                                task=_TOOL_CALL_TASK_TYPE,
+                                classification="sensitive",
+                                reason=ErrorCode.SENSITIVITY_BLOCKS_API.value,
+                            ),
                         ),
                         model_used=model,
                     )
@@ -1981,6 +2056,19 @@ async def dispatch_tool_call(
                     )
                     consume_result = None
                 if consume_result is None:
+                    # CR-2 (Story 10.5.2): this invalid/expired-token branch also
+                    # renders a "sensitive → yes, escalate" envelope; record a
+                    # pending refusal so the offer is genuine here too (only the
+                    # sibling no-token branch did before).
+                    from mailbot_api.actions.user_confirmation import (  # noqa: PLC0415
+                        record_pending_sensitive_refusal as _rec_pending,
+                    )
+                    await _rec_pending(
+                        db_path,
+                        caller_origin=caller_origin,
+                        email_id=eid,
+                        task_type=_TOOL_CALL_TASK_TYPE,
+                    )
                     return ToolCallResult(
                         ok=False,
                         error=RouterError(
@@ -1991,6 +2079,12 @@ async def dispatch_tool_call(
                             ),
                             retryable=False,
                             model_attempted=[model],
+                            refusal_envelope=build_refusal(
+                                email_id=eid,
+                                task=_TOOL_CALL_TASK_TYPE,
+                                classification="sensitive",
+                                reason=ErrorCode.NEEDS_SENSITIVITY_CONFIRMATION.value,
+                            ),
                         ),
                         model_used=model,
                     )

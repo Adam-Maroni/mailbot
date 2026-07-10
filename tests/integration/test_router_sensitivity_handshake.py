@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from mailbot_api.actions.sensitivity_tokens import _clear_registry_for_tests
+from mailbot_api.actions.user_confirmation import record_sensitivity_confirmation
 from mailbot_api.db.connection import execute_write, fetchall
 from mailbot_api.db.migrations_runner import apply_pending_migrations
 from mailbot_api.router import ask_router
@@ -157,6 +158,8 @@ async def test_sensitive_email_with_valid_token_succeeds_and_writes_grant_id(
     db_path = _setup(tmp_path)
     register_adapter(_HAIKU, _FakeAdapter(_HAIKU, {"summary": "ok"}))
     await _seed_email(db_path, graph_id="e-sens", sensitivity="sensitive")
+    # Story 10.5.2 (F-10-5-5): mint requires a user-gated confirmation.
+    await record_sensitivity_confirmation(db_path, email_id="e-sens", task_type="summary_short")
     # Mint the matching token.
     mint_out = await mint_sensitivity_token("e-sens", "summary_short", db_path=db_path)
     assert mint_out.ok
@@ -215,6 +218,7 @@ async def test_token_single_use_second_ask_router_with_same_token_refused(
     db_path = _setup(tmp_path)
     register_adapter(_HAIKU, _FakeAdapter(_HAIKU, {"summary": "ok"}))
     await _seed_email(db_path, graph_id="e-sens", sensitivity="sensitive")
+    await record_sensitivity_confirmation(db_path, email_id="e-sens", task_type="summary_short")
     mint_out = await mint_sensitivity_token("e-sens", "summary_short", db_path=db_path)
 
     first = await ask_router(
@@ -245,6 +249,7 @@ async def test_mismatched_task_type_token_refused(
     db_path = _setup(tmp_path)
     register_adapter(_HAIKU, _FakeAdapter(_HAIKU, {"summary": "ok"}))
     await _seed_email(db_path, graph_id="e-sens", sensitivity="sensitive")
+    await record_sensitivity_confirmation(db_path, email_id="e-sens", task_type="different_task")
     mint_out = await mint_sensitivity_token("e-sens", "different_task", db_path=db_path)
 
     result = await ask_router(
