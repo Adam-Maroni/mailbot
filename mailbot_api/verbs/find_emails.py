@@ -103,6 +103,7 @@ def row_to_projection(row: tuple[Any, ...]) -> EmailProjection:
         importance_score=row[7],
         sensitivity=row[8],
         has_attachments=bool(row[9]),
+        thread_id=row[10],  # Story 10.5.3 (F-10-4-3) — appended to EMAIL_PROJECTION_COLUMNS.
     )
 
 

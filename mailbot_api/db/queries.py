@@ -393,6 +393,10 @@ EMAILS_BY_THREAD_SELECT = (
     "LIMIT 20"
 )
 
+# Story 10.5.3 (F-10-4-4): the ingest pipeline's trailing enrichment step reads
+# the email's sender_id + thread_id to fire enrich_sender / enrich_thread.
+EMAIL_SENDER_THREAD_SELECT = "SELECT sender_id, thread_id FROM emails WHERE graph_id = ?"
+
 THREAD_CONTINUITY_UPDATE = (
     "UPDATE threads SET "
     "  thread_continuity_note = ?, "
@@ -991,7 +995,12 @@ ACTION_HISTORY_MARK_REVERTED = (
 # both to the same EmailProjection Pydantic model.
 EMAIL_PROJECTION_COLUMNS = (
     "graph_id, received_at, from_address, from_display_name, subject, "
-    "summary_short, class_coarse, importance_score, sensitivity, has_attachments"
+    "summary_short, class_coarse, importance_score, sensitivity, has_attachments, "
+    # Story 10.5.3 (F-10-4-3): thread_id surfaced so get_thread is reachable
+    # from chat — the model reads it off a find_emails row and passes it to
+    # get_thread. Appended LAST to keep row_to_projection's positional mapping
+    # stable for the existing columns (row[0]..row[9]; thread_id = row[10]).
+    "thread_id"
 )
 
 # Base SELECT for find_emails — WHERE clause is built dynamically by the verb,

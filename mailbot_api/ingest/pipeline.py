@@ -40,6 +40,7 @@ from mailbot_api.db.queries import (
     EMAIL_CLASS_COARSE_UPDATE,
     EMAIL_CLASS_FINE_UPDATE,
     EMAIL_IMPORTANCE_SCORE_UPDATE,
+    EMAIL_SENDER_THREAD_SELECT,
     EMAIL_SENSITIVITY_DETAIL_SELECT,
     EMAIL_SENSITIVITY_OVERRIDE_REWRITE,
     EMAIL_SUMMARY_SHORT_UPDATE,
@@ -534,8 +535,92 @@ async def process_email(
         )
         result.steps_run.append("embedding")
 
+    # ----- Trailing step: sender + thread enrichment (Story 10.5.3, F-10-4-4) -----
+    # Wire the shipped-but-dead enrichment (Story 3-7) to the ingest path. Both
+    # enrich_sender + enrich_thread are Qwen-only (Rule F.1, free) and cached
+    # forever (Rule A), so per-email firing is cost-safe — a second email from
+    # the same sender / in the same thread short-circuits on the cache.
+    #
+    # BEST-EFFORT: enrichment is NOT a pipeline correctness gate. A NULL
+    # thread_id, a single-message thread, a sender whose only emails are
+    # confidential, or a Router refusal must NOT fail the email's derivation —
+    # they are logged and swallowed. The email is already fully derived above;
+    # result.ok is set True regardless of the enrichment outcome.
+    await _run_enrichment_step(db_path=db_path, email_id=email_id, caller_origin=caller_origin)
+
     result.ok = True
     return result
+
+
+async def _run_enrichment_step(
+    *,
+    db_path: str,
+    email_id: str,
+    caller_origin: str,
+) -> None:
+    """Fire sender + thread enrichment for a fully-derived email. Best-effort:
+    every failure mode is logged and swallowed so enrichment never fails the
+    pipeline (Story 10.5.3, F-10-4-4).
+
+    Lazy import avoids a module-load cycle (sender_enrichment imports ask_router
+    which imports pipeline-adjacent modules).
+    """
+    from mailbot_api.ingest.sender_enrichment import enrich_sender, enrich_thread
+
+    row = await fetchone(db_path, EMAIL_SENDER_THREAD_SELECT, (email_id,))
+    if row is None:
+        return
+    sender_id, thread_id = row
+
+    # CR-10-5-3: collapse the near-identical sender/thread branches into one
+    # best-effort runner so the two can't drift apart on future edits.
+    async def _best_effort(kind: str, target_id: str, coro: Any) -> None:
+        try:
+            enrich_result = await coro
+            if not enrich_result.ok:
+                logger.info(
+                    f"{kind} enrichment skipped on ingest (non-fatal)",
+                    extra={
+                        "event": f"ingest.enrichment.{kind}_skipped",
+                        "email_id": email_id,
+                        f"{kind}_id": target_id,
+                        "error_code": (
+                            enrich_result.error.code.value if enrich_result.error else "unknown"
+                        ),
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001 — best-effort; never fail the pipeline
+            logger.warning(
+                f"{kind} enrichment crashed on ingest (swallowed)",
+                extra={
+                    "event": f"ingest.enrichment.{kind}_crash",
+                    "email_id": email_id,
+                    f"{kind}_id": target_id,
+                    "exc_type": type(exc).__name__,
+                },
+            )
+
+    if sender_id:
+        await _best_effort(
+            "sender",
+            sender_id,
+            enrich_sender(
+                sender_id=sender_id,
+                db_path=db_path,
+                caller_origin=f"{caller_origin}-sender-enrichment",
+            ),
+        )
+
+    if thread_id:
+        await _best_effort(
+            "thread",
+            thread_id,
+            enrich_thread(
+                thread_id=thread_id,
+                db_path=db_path,
+                caller_origin=f"{caller_origin}-thread-enrichment",
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------

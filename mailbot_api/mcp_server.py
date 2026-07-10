@@ -79,6 +79,12 @@ from mailbot_api.actions.types import (
     ActionType,
     is_send_family,
 )
+from mailbot_api.chat.orchestrator import (
+    DraftReplyRequest as _DraftReplyRequest,
+)
+from mailbot_api.chat.orchestrator import (
+    handle_draft_reply as _handle_draft_reply,
+)
 from mailbot_api.verbs import (
     count_emails as _count_emails,
 )
@@ -718,6 +724,68 @@ def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
             _log_ok("finalize_digest_delivery", sid, latency_ms)
         return out
 
+    # ---- Story 10.5.3 (F-10-5-11): draft_reply chat call site ----
+    #
+    # The flagship Opus draft pipeline (Story 5-9's `handle_draft_reply`)
+    # shipped with L2-green tests but ZERO chat call sites — it was never
+    # registered as a tool, so `draft_reply` produced no `router_calls` chat
+    # rows ever. Registering it here is the mailbot_api-side fix that makes it
+    # reachable: Hermes discovers verbs via MCP and offers them as OpenAI
+    # tools, so an MCP-registered `draft_reply` is a real chat call site.
+    #
+    # The orchestrator owns all the logic (sensitivity gate + tone + Opus
+    # draft + accept-draft → SEND_REPLY proposal); this wrapper is a thin
+    # adapter mapping agent kwargs → DraftReplyRequest → a serializable dict.
+    # `state` is the load-bearing field the chat surface inspects.
+
+    async def draft_reply(
+        target_email_id: str,
+        user_message: str,
+        ctx: Context[Any, Any, Any],
+        tone_signals_blob: str | None = None,
+        confirmation_token: str | None = None,
+    ) -> dict[str, Any]:
+        sid = _session_id_from_ctx(ctx)
+        t0 = time.perf_counter()
+        try:
+            outcome = await _handle_draft_reply(
+                _DraftReplyRequest(
+                    user_message=user_message,
+                    target_email_id=target_email_id,
+                    tone_signals_blob=tone_signals_blob,
+                    confirmation_token=confirmation_token,
+                ),
+                db_path=server_ctx.require_db_path(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log_crash("draft_reply", sid, exc, int((time.perf_counter() - t0) * 1000))
+            raise
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        # `router_error` (a state) is the error-as-data path; every other
+        # non-draft state (confidential_refused / needs_sensitivity_token /
+        # invalid_email / missing_recipient) is a graceful defender outcome,
+        # not a crash. Log the router_error case as error_as_data for parity.
+        if outcome.state == "router_error":
+            code = outcome.router_error.code.value if outcome.router_error else "PROVIDER_ERROR"
+            _log_error_as_data("draft_reply", sid, code, latency_ms)
+        else:
+            _log_ok("draft_reply", sid, latency_ms)
+        # Serialize the frozen dataclass to a clean JSON-able dict. router_error
+        # is a Pydantic model — dump it explicitly (dataclasses.asdict would
+        # choke on the nested BaseModel).
+        return {
+            "state": outcome.state,
+            "draft_body": outcome.draft_body,
+            "suggested_subject": outcome.suggested_subject,
+            "tone_signals_used": list(outcome.tone_signals_used),
+            "defender_warnings": list(outcome.defender_warnings),
+            "defender_message": outcome.defender_message,
+            "proposed_action_id": outcome.proposed_action_id,
+            "router_error": (
+                outcome.router_error.model_dump() if outcome.router_error else None
+            ),
+        }
+
     # ---- Story 6-4: /unmute companion to Story 5-6's /mute ----
 
     async def unmute_category(
@@ -885,6 +953,8 @@ def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
         # Story 6-5 — daily digest assembly + delivery sweep.
         "compose_digest": compose_digest,
         "finalize_digest_delivery": finalize_digest_delivery,
+        # Story 10.5.3 (F-10-5-11) — flagship Opus draft pipeline chat call site.
+        "draft_reply": draft_reply,
     }
 
 
@@ -1026,10 +1096,20 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
         "digest (delivery_status='ok_via_digest'). Called by Hermes after "
         "posting the digest. Idempotent. Story 6-5."
     ),
+    "draft_reply": (
+        "Draft a reply to an email by `target_email_id` (the flagship Opus "
+        "draft pipeline). Runs the sensitivity gate (confidential refused; "
+        "sensitive requires a confirmation_token), an optional tone-mirror "
+        "pass, then the Opus draft. Returns `state` (draft_presented / "
+        "confidential_refused / needs_sensitivity_token / router_error / "
+        "invalid_email) plus the draft body + defender warnings. This is the "
+        "action-side draft; the user's send confirmation proposes SEND_REPLY "
+        "under cooling-off. Story 10.5.3 (F-10-5-11)."
+    ),
 }
 
 
-_EXPECTED_TOOL_COUNT = 25  # Story 9-4 added set_model_persistent + inspect_policy
+_EXPECTED_TOOL_COUNT = 26  # Story 10.5.3 added draft_reply (F-10-5-11 chat call site)
 
 
 # ---------------------------------------------------------------------------

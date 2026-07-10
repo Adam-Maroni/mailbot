@@ -281,3 +281,42 @@ migration 027 escalation_armed singleton) shipped + live-verified. F-10-5-2-W3
 (migration-edit-after-apply) + CR-8 (caller_origin=unknown-external, sidestepped
 by singleton arm) recorded. Suite 1779+2+3 (+51 net). Staged, nothing committed.
 Live stack runs this story's code (image ed18774792db). See 10-5-2-walk-evidence.md.
+
+## Story 10-5-3 — 2026-07-10 (autonomous-story-run dev pass)
+
+**Dev model:** claude-opus-4-8[1m] · **Review model:** claude-sonnet-5 (MANDATORY-CR, AC-4).
+**Run-mode:** HYBRID (Tasks 1-6 autonomous; Task 7 live draft walk = Adam-hands-on HALT, small real Opus spend). baseline_commit 7864de4.
+
+### Dev-pass summary — never-wired capabilities wired / boundary-honestly re-documented
+
+- **AC-1 (F-10-5-11) — Opus draft pipeline chat call site: FIXED.** Registered `draft_reply` as MCP tool #26 wired to the real `handle_draft_reply` orchestrator. Integration test proves a REAL `router_calls` row for `task_type='draft_reply'` with a non-qwen Opus model via a registered fake adapter (NO monkeypatched ask_router — kills the L2-green illusion). Live real-Opus confirmation is Task 7 (Adam-hands-on).
+- **AC-2 (F-10-4-3) — get_thread reachable: FIXED (implement path).** Added `thread_id` to `EMAIL_PROJECTION_COLUMNS` + `EmailProjection` + `row_to_projection`. `find_emails` rows now carry the thread_id the model hands to `get_thread`; round-trip proven.
+- **AC-3 enrichment (F-10-4-4): FIXED (wire path).** `_run_enrichment_step` fires `enrich_sender`+`enrich_thread` as a best-effort trailing step in `process_email` (Qwen-only=free, cached-forever=cost-safe). Non-fatal by construction — failures logged + swallowed, `result.ok` unaffected.
+
+### F-10-4-6 (daily_digest_intro zero rows) — HERMES-SIDE FOLLOW-UP, boundary-honest re-doc — INFO
+
+**Disposition: honest re-documentation, NOT a fabricated mailbot_api fix** (per AC-3's "OR its non-wiring is honestly re-documented" clause + the 10-5-2 AC-2 boundary-honesty precedent).
+
+Root cause is OUTSIDE `mailbot_api`: the `daily_digest_intro` prompt module exists and is complete, but its ONLY intended call site is the **Hermes cron-with-agent step** — `hermes-config/scripts/digest_prepare.py:12` documents that "the cron job's agent step generates the intro via `ask_router(task_type='daily_digest_intro')`", but the script itself only calls `compose_digest` (which deliberately returns cached projections with NO LLM call per its Rule J/Rule A contract) and writes the payload. The agent step that would issue the intro `ask_router` call never fires → zero rows all-time. There is NO `mailbot_api` call site to add — fabricating one would violate the `compose_digest`-is-LLM-free contract.
+
+**Follow-up (Hermes-side, filed):** the Hermes daily-digest cron skill must actually issue the `daily_digest_intro` inference call from its agent step (or the intro claim is dropped). README limitations bullet updated to state this honestly (the intro is Hermes-runtime-issued, not a mailbot_api verb). Same class as F-10-5-2-W2 (persona/Hermes-runtime) — a Hermes-config gap, not a mailbot_api defect.
+
+### Gates + suite (post-dev, pre-CR)
+
+To be captured at Task 5 gate run.
+
+### Task 7 / Phase 3.5 — DELEGATED LIVE WALK EXECUTED (Adam-directed "do the manual verification yourself") — 2026-07-10
+
+Adam delegated the manual verification. Executed against the **live running stack** (mailbot-api restarted to load this story's code — bind-mount already on disk; `mailbot_api/` → `/app/mailbot_api`, so restart reloaded the working tree; stack healthy post-restart, Hermes reconnected + MCP serving 200 OK). All checkpoints driven against the **real production DB** (`/data/mailbot.db`) + real Ollama + real Opus.
+
+**Verdict: PASS (all 5 checkpoints).**
+
+- **AC-1 (F-10-5-11) — PASS (LIVE, real Opus).** Live MCP server registers **26 tools incl. `draft_reply`** (startup `_EXPECTED_TOOL_COUNT==len(wrappers)` assertion passed → healthy). F-10-5-11 baseline confirmed on real DB: 748 all-time `draft_reply` rows were **746 benchmark-runner + 2 cp-a-walk = ZERO chat-origin** (exactly the finding). Drove `handle_draft_reply(caller_origin='chat-orchestrator')` on a real normal email → `STATE: draft_presented` + the **first-ever chat-origin `router_calls` row**: `model_chosen=claude-opus-4-7` (non-qwen), 1133 in / 212 out, estimator **$0.0110** (Console is spend source-of-truth per `feedback_anthropic_spend_source_of_truth.md`; one sub-cent Opus call). Draft pipeline reaches chat for the first time.
+- **AC-1 privacy — PASS (LIVE).** Real confidential email → `confidential_refused`, **0 router_calls delta** (body never reached API), correct defender message. Real sensitive email (no token) → `needs_sensitivity_token`, **0 router_calls delta**. Gate holds at the new surface.
+- **AC-2 (F-10-4-3) — PASS (LIVE).** All 10 real `find_emails` projections carry populated `thread_id`; feeding one to `get_thread` → `ok=True`, no `THREAD_NOT_FOUND` (the broken chat round-trip now works).
+- **AC-3 enrichment (F-10-4-4) — PASS (LIVE).** F-10-4-4 baseline confirmed on real DB: **0/745 senders, 0/1830 threads**. After real `process_email`: sender enriched → real Qwen summary ("Client — recurring business calls and meetings", $0 local); a real multi-message thread enriched → real note ("Q3 budget review — awaiting CFO approval…"). Single-message thread correctly short-circuits (best-effort). Enrichment runs on the live ingest path.
+- **AC-3 digest (F-10-4-6) — PASS (honest re-doc verified).** `daily_digest_intro` rows still **0** on real DB → confirms it's genuinely a Hermes-cron-agent gap, NOT a mailbot_api-fixable capability. README bullet states this honestly ("issued by the Hermes-side cron agent step, not by mailbot_api…tracked as a follow-up").
+
+**Real side effects (legitimate production activations, not test pollution):** 2 senders + 1 thread enriched (from 0), 1 chat-origin draft row (from 0). Stack left healthy. mailbot-api now runs this story's code (restarted 2026-07-10T14:19Z).
+
+**Spend:** ~$0.011 estimator (one Opus draft call). Console-authoritative per durable memory; sub-cent, well within the "small real Opus spend" envelope.

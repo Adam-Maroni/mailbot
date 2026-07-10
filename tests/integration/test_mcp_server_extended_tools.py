@@ -37,13 +37,14 @@ def _reset_module_state():
     _reset_guard_for_test()
 
 
-def test_mcp_server_registers_25_tools(tmp_path: Path) -> None:
+def test_mcp_server_registers_26_tools(tmp_path: Path) -> None:
     """Story 9-3 raised the count to 23 with set_model_oneshot (was 22 after
     Story 6-5's compose_digest + finalize_digest_delivery); Story 9-4 raised
-    it to 25 with set_model_persistent + inspect_policy."""
+    it to 25 with set_model_persistent + inspect_policy; Story 10.5.3 raised
+    it to 26 with draft_reply (F-10-5-11 chat call site)."""
     server = build_mcp_server(db_path=_setup_db(tmp_path))
     tool_names = sorted(server._tool_manager._tools.keys())  # type: ignore[attr-defined]
-    assert len(tool_names) == 25, f"got {len(tool_names)}: {tool_names}"
+    assert len(tool_names) == 26, f"got {len(tool_names)}: {tool_names}"
 
 
 def test_mcp_server_lists_5_new_tools(tmp_path: Path) -> None:

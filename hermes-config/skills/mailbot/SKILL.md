@@ -1,6 +1,6 @@
 ---
 name: mailbot
-description: "MailBot verb surface — Outlook triage + draft-reply + cost reporting via 25 MCP tools."
+description: "MailBot verb surface — Outlook triage + draft-reply + cost reporting via 26 MCP tools."
 version: 1.0.0
 author: Adam Maroni
 license: MIT
@@ -460,6 +460,23 @@ so the next day's digest starts fresh.
 
 Called programmatically by Hermes's daily-digest cron skill (Story 6-10) right
 after posting the composed body to Discord. Not Adam-facing.
+
+### `draft_reply`
+
+Purpose: draft a reply to an email by `target_email_id` — the flagship Opus
+draft pipeline (Story 5-9, wired to chat in Story 10.5.3 / F-10-5-11). Runs the
+sensitivity gate first (confidential is refused; sensitive requires a
+`confirmation_token` minted via `mint_sensitivity_token`), then an optional
+tone-mirror pass, then the Opus draft. Returns `state` — one of
+`draft_presented` (draft + suggested subject + defender warnings populated),
+`confidential_refused`, `needs_sensitivity_token`, `invalid_email`, or
+`router_error`.
+
+This is the action-side draft only: it presents a draft for the user to
+[send / refine / cancel]. On the user's "send" the chat surface proposes a
+`SEND_REPLY` action which enters Story 4-6's 60s cooling-off before the drainer
+dispatches it. Adam-facing — invoked when the user asks the bot to draft or
+reply to an email.
 
 ## Router-internal — `ask_router` is intentionally NOT MCP-exposed
 

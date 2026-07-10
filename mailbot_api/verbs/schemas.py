@@ -80,6 +80,14 @@ class EmailProjection(BaseModel):
         description="One of normal / sensitive / confidential. Story 3-3 classifier.",
     )
     has_attachments: bool = Field(default=False, description="Whether the email has attachments.")
+    thread_id: str | None = Field(
+        default=None,
+        description=(
+            "Stable Graph conversation/thread id (emails.thread_id). Pass this "
+            "to get_thread to retrieve every message in the thread. Story 10.5.3 "
+            "(F-10-4-3) — surfaced so get_thread is reachable from chat."
+        ),
+    )
 
 
 # --- find_emails ---
