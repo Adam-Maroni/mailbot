@@ -7,6 +7,7 @@ Usage:
     python scripts/mailbot.py rederive --task=coarse_class --since=2026-04-01
     python scripts/mailbot.py replay 42
     python scripts/mailbot.py revert 42
+    python scripts/mailbot.py resurrect <graph_id>           # Story 10.5.4
     python scripts/mailbot.py status                       # Story 6-1
     python scripts/mailbot.py status --base-url http://mailbot-api:8000
     python scripts/mailbot.py pause [reason]               # Story 6-2
@@ -26,11 +27,7 @@ from datetime import date as date_type
 from mailbot_api.config import SecretMissing, get_secret, get_secret_optional
 from mailbot_api.db.migrations_runner import apply_pending_migrations
 from mailbot_api.observability.logging import configure_logging
-from mailbot_api.router.policy import (
-    PolicyValidationError,
-    load_policy,
-    set_policy_snapshot,
-)
+from mailbot_api.router.policy import PolicyValidationError
 from mailbot_api.sync.graph_client import GraphAuthError
 from mailbot_api.sync.sync_worker import run_once
 
@@ -74,22 +71,6 @@ async def _cmd_sync_now() -> int:
     return 0
 
 
-def _load_policy_for_cli() -> None:
-    """Load policy.yaml into the module-level snapshot (mirrors lifespan)."""
-    from pathlib import Path
-
-    policy_path = Path(get_secret_optional("MAILBOT_POLICY_PATH", "/app/router/policy.yaml"))
-    try:
-        policy = load_policy(policy_path)
-    except PolicyValidationError as exc:
-        print(  # noqa: T201
-            f"FATAL: policy.yaml failed to load: {exc.details}",
-            file=sys.stderr,
-        )
-        raise SystemExit(2) from exc
-    set_policy_snapshot(policy)
-
-
 async def _cmd_rederive(
     *,
     task: str,
@@ -127,8 +108,25 @@ async def _cmd_rederive(
             )
             return 2
 
-    # Load policy for plan_rederive's snapshot_for_dispatch call.
-    _load_policy_for_cli()
+    # F-10-6-3 (Story 10.5.4): bootstrap the FULL per-process runtime — policy
+    # snapshot AND the adapter registry AND budget/pause — exactly as the
+    # pipeline CLI (`pipeline.py:_cli_async_main`) and the worker do. The prior
+    # `_load_policy_for_cli()` loaded ONLY the policy snapshot, so
+    # `execute_rederive`'s first `ask_router`/`embed_email` dispatch crashed with
+    # `KeyError: no adapter registered` on EVERY invocation (Epic 10 fault walk,
+    # retro §7). Same bug CLASS as F17 (worker forgot to init the runtime).
+    # `init_pipeline_runtime` raises PolicyValidationError on a bad policy; map
+    # it to a clean exit-2 rather than a raw traceback.
+    from mailbot_api.ingest.pipeline import init_pipeline_runtime
+
+    try:
+        await init_pipeline_runtime(db_path)
+    except PolicyValidationError as exc:
+        print(  # noqa: T201
+            f"FATAL: policy.yaml failed to load: {exc.details}",
+            file=sys.stderr,
+        )
+        return 2
 
     try:
         plan = await plan_rederive(
@@ -272,6 +270,29 @@ def main() -> int:
         help="SQLite path. Defaults to $MAILBOT_DB_PATH.",
     )
 
+    # Story 10.5.4: resurrect a move-family soft-deleted local row (F5/F6).
+    resurrect = sub.add_parser(
+        "resurrect",
+        help="Clear a move-family soft-delete on a local emails row "
+             "(local-DB-only repair, no Graph write; Story 10.5.4)",
+    )
+    resurrect.add_argument(
+        "graph_id",
+        help="emails.graph_id of the soft-deleted move-family email to restore",
+    )
+    resurrect.add_argument(
+        "--force",
+        action="store_true",
+        help="Also resurrect rows soft-deleted with removed_reason != 'deleted' "
+             "(default only resurrects move-out 'deleted' removals)",
+    )
+    resurrect.add_argument(
+        "--db-path",
+        dest="db_path",
+        default=None,
+        help="SQLite path. Defaults to $MAILBOT_DB_PATH.",
+    )
+
     # Story 6-1: operator status board.
     status_parser = sub.add_parser(
         "status",
@@ -366,6 +387,12 @@ def main() -> int:
     if args.cmd == "revert":
         return asyncio.run(
             _cmd_revert(action_id=args.action_id, db_path_arg=args.db_path)
+        )
+    if args.cmd == "resurrect":
+        return asyncio.run(
+            _cmd_resurrect(
+                graph_id=args.graph_id, force=args.force, db_path_arg=args.db_path
+            )
         )
     if args.cmd == "status":
         return _cmd_status(base_url=args.base_url)
@@ -870,6 +897,31 @@ async def _cmd_replay(*, action_id: int, db_path_arg: str | None) -> int:
     result = await replay_action(action_id, db_path=db_path)
     if result.ok:
         print(f"action {action_id} re-queued for drain")  # noqa: T201
+        return 0
+    assert result.error is not None
+    print(f"REFUSED: {result.error.code}: {result.error.message}", file=sys.stderr)  # noqa: T201
+    return 2
+
+
+async def _cmd_resurrect(
+    *, graph_id: str, force: bool, db_path_arg: str | None
+) -> int:
+    """Clear a move-family soft-delete on a local emails row (Story 10.5.4, F5/F6).
+
+    Local-DB-only repair — no Graph write. The physical email is already in the
+    mailbox; only the stale local row (soft-deleted by the move-out delta) needs
+    clearing so MailBot's read verbs can see it again.
+    """
+    from mailbot_api.actions.resurrect import resurrect_email
+
+    db_path = db_path_arg or get_secret_optional("MAILBOT_DB_PATH")
+    if not db_path:
+        print("FATAL: --db-path or $MAILBOT_DB_PATH required", file=sys.stderr)  # noqa: T201
+        return 2
+
+    result = await resurrect_email(graph_id, db_path=db_path, allow_any_reason=force)
+    if result.ok:
+        print(f"email {graph_id} resurrected (local soft-delete cleared)")  # noqa: T201
         return 0
     assert result.error is not None
     print(f"REFUSED: {result.error.code}: {result.error.message}", file=sys.stderr)  # noqa: T201

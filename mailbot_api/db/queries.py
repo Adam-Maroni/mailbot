@@ -168,6 +168,28 @@ EMAIL_CLEAR_SOFT_DELETE = (
     "UPDATE emails SET deleted_at = NULL, removed_reason = NULL WHERE graph_id = ?"
 )
 
+# Story 10.5.4 (F5/F6 resurrection): read a row's soft-delete state so the
+# operator `resurrect` primitive can verify a row IS soft-deleted (and how)
+# before clearing it — never resurrect a live row silently, never guess.
+# Returns (deleted_at, removed_reason) or None if the graph_id doesn't exist.
+EMAIL_SOFT_DELETE_STATE_SELECT = (
+    "SELECT deleted_at, removed_reason FROM emails WHERE graph_id = ?"
+)
+
+# Story 10.5.4 (CR-10-5-4-1): corroborate that a move-family action actually
+# targeted this email before the default (non-force) `resurrect` path clears its
+# soft-delete. `removed_reason='deleted'` is written for BOTH a move-out AND a
+# permanent Graph delete (the delta `@removed.reason` doesn't distinguish), so
+# the reason string alone can't confirm a MOVE caused the removal. This query
+# returns >0 iff a move-family pending_actions row exists for the email — the
+# structural evidence a move happened. The `?` placeholder count is filled by
+# the caller (one per MOVE_FAMILY member value); no user input flows into the
+# IN-list (values are enum members, not request data), so the f-string is safe.
+EMAIL_HAS_MOVE_FAMILY_ACTION_COUNT = (
+    "SELECT COUNT(*) FROM pending_actions "
+    "WHERE email_id = ? AND action_type IN ({placeholders})"  # noqa: S608
+)
+
 EMAIL_EXISTS_WITH_MARKER = "SELECT 1 FROM emails WHERE graph_id = ? AND change_marker = ?"
 
 
@@ -984,6 +1006,20 @@ ACTION_HISTORY_SELECT_BY_ACTION_ID = (
 
 ACTION_HISTORY_MARK_REVERTED = (
     "UPDATE action_history SET reverted_at = ? WHERE action_id = ? AND reverted_at IS NULL"
+)
+
+# Story 10.5.4 (CR-10-2-D1 closure): claim-first for LEGACY rows that have no
+# action_history row (Story 4-4 wrote history only during drain; pre-4-4 rows
+# may lack one). `action_id` is the PRIMARY KEY, so INSERT OR IGNORE serializes
+# two concurrent reverters — exactly one inserts, the other is IGNOREd — after
+# which BOTH run ACTION_HISTORY_MARK_REVERTED and exactly one wins the
+# `reverted_at IS NULL` claim. This makes the double-revert guard uniform across
+# rows-with-history and legacy-rows-without, closing the residual TOCTOU. Only
+# static-map (non-move) Tier-1 inverses reach this path — move-family rows with
+# absent history already refuse PRE_STATE_MISSING earlier.
+ACTION_HISTORY_INSERT_IF_ABSENT = (
+    "INSERT OR IGNORE INTO action_history (action_id, pre_state, applied_at) "
+    "VALUES (?, ?, ?)"
 )
 
 

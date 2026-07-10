@@ -84,6 +84,47 @@ async def test_replay_pending_action_refused_with_not_failed(tmp_path: Path) -> 
     assert res.error.code == "ACTION_NOT_FAILED"
 
 
+async def test_replay_move_family_target_deleted_refuses_directs_to_revert(
+    tmp_path: Path,
+) -> None:
+    """Story 10.5.4 AC-3 / F-10-6-2: replaying a move-family row whose target
+    email is soft-deleted must NOT silently re-queue (the drainer would just
+    re-refuse target_deleted). It refuses with the distinct
+    REPLAY_MOVE_TARGET_DELETED code directing the operator to `mailbot revert`.
+    """
+    db_path = _setup(tmp_path)
+    await _seed_email(db_path, graph_id="mv-1")
+    out = await propose_action(
+        "mv-1",
+        ActionType.MOVE_TO_TRIAGE_FOLDER,
+        payload={"destination_folder_id": "folder-triage"},
+        db_path=db_path,
+    )
+    now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    await _mark_failed(db_path, out.action_id, terminal_at=now_iso)
+    # Simulate the move-induced soft-delete (10-1 walk F5): the move out of the
+    # synced folder set arrives as an @removed delta.
+    await execute_write(
+        db_path,
+        "UPDATE emails SET deleted_at = ?, removed_reason = 'deleted' WHERE graph_id = ?",
+        (now_iso, "mv-1"),
+    )
+
+    res = await replay_action(out.action_id, db_path=db_path)
+
+    assert res.ok is False
+    assert res.error is not None
+    assert res.error.code == "REPLAY_MOVE_TARGET_DELETED"
+    assert "revert" in res.error.message.lower()
+
+    # The row must NOT have been re-queued (still 'failed', not flipped to pending).
+    with get_connection(db_path) as conn:
+        status = conn.execute(
+            "SELECT status FROM pending_actions WHERE id = ?", (out.action_id,),
+        ).fetchone()[0]
+    assert status == "failed"
+
+
 async def test_replay_within_7_days_tier_1_happy_path(tmp_path: Path) -> None:
     db_path = _setup(tmp_path)
     await _seed_email(db_path)

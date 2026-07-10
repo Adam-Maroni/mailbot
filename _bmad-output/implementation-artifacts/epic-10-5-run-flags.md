@@ -320,3 +320,29 @@ Adam delegated the manual verification. Executed against the **live running stac
 **Real side effects (legitimate production activations, not test pollution):** 2 senders + 1 thread enriched (from 0), 1 chat-origin draft row (from 0). Stack left healthy. mailbot-api now runs this story's code (restarted 2026-07-10T14:19Z).
 
 **Spend:** ~$0.011 estimator (one Opus draft call). Console-authoritative per durable memory; sub-cent, well within the "small real Opus spend" envelope.
+
+---
+
+## Story 10-5-4 — Operator recovery tooling (rederive, replay, move-family resurrection) — 2026-07-10
+
+**Run-mode:** HYBRID (Tasks 1-5 + 7 autonomous; Task 6 live walk = Adam-hands-on HALT). Dev=opus-4-8, review=sonnet-5. baseline_commit 87baff8. Suite 1788+2+3 → **1798+2+3 (+10 net)**; ruff (--exclude scratch — 6 pre-existing scratch/ T201 debug scripts) / mypy-strict (133) / boundaries green.
+
+### Dev pass + MANDATORY-CR COMPLETE (autonomous)
+
+- **AC-1 (F-10-6-3 rederive crash) — FIXED code-L3.** `_cmd_rederive` (`scripts/mailbot.py`) now bootstraps the full runtime via `init_pipeline_runtime(db_path)` (was `_load_policy_for_cli()` → registered NO adapters → `KeyError: no adapter registered` on EVERY invocation; same bug CLASS as F17). Removed dead `_load_policy_for_cli`. Integration test drives the CLI with an empty registry → exit 0, real router_calls row, no KeyError. Live run against production DB = Task 6 (Adam-hands-on).
+- **AC-2 (F5/F6 resurrection) — FIXED code-L3 (out-of-window path).** New `mailbot resurrect <graph_id>` + `resurrect_email` (`mailbot_api/actions/resurrect.py`): clears local soft-delete via `EMAIL_CLEAR_SOFT_DELETE`, NO Graph write. Path (a) chosen because the retained 10-1 subject (2026-07-05) is OUTSIDE the 24h revert window → `revert` can't reach it. Repairing the retained subject verified in Outlook = Task 6 (Adam-hands-on).
+- **AC-3 (F-10-6-2 replay + CR-10-2-D1) — BOTH FIXED code-L3.** Replay of a genuinely-soft-deleted move-family target refuses `REPLAY_MOVE_TARGET_DELETED` + directs to revert/resurrect (no inert re-queue). CR-10-2-D1 CLOSED: claim-first for legacy no-history rows via `ACTION_HISTORY_INSERT_IF_ABSENT` (action_id PK serializes) → concurrent reverts queue exactly one inverse. `deferred-work.md` entry marked CLOSED.
+- **AC-4 MANDATORY-CR (sonnet-5 ≠ opus-4-8, 1 round):** 4 findings. **2 Decision → APPLIED:** CR-10-5-4-1 (resurrect default path now requires a corroborating move-family `pending_actions` row via `EMAIL_HAS_MOVE_FAMILY_ACTION_COUNT`, else `NO_MOVE_FAMILY_ACTION` — closes "resurrect a permanently-Graph-deleted email → phantom row"; `--force` bypasses); CR-10-5-4-2 (replay refusal scoped to `deleted_at IS NOT NULL` only, so the absent-row edge falls through cleanly instead of getting a misleading dual-recovery hint). **2 Defer:** placeholder `pre_state='{}'` future-consumer assumption (no reader exists today); N=3+ concurrent-revert coverage (correct-by-construction via PK serialization). Both applied fixes re-tested + gates re-green.
+
+### Task 6 HALT (Adam-hands-on live walk) — INFO
+
+Per the HYBRID binding (10-5-1/2/3 precedent), dev agents HALT at Task 6 and flip to `review`. The live walk clauses NOT executed autonomously:
+
+- **AC-1 live:** `mailbot rederive --task=<qwen-free task> --since=<recent> --yes` runs end-to-end against the REAL production DB with NO crash ($0 — prefer a qwen-only task). Confirms F-10-6-3 fix live + honests README:295/:305.
+- **AC-2 live:** RESURRECT the retained 10-1 walk subject via `mailbot resurrect <graph_id>` (it has a move-family action on record → default path applies), then Adam confirms in the Outlook client that the email is visible + the local DB row is consistent (F5/F6/B5 discharged — the retained subject is repaired as PART OF this fix, per retro B5).
+
+Evidence → `10-5-4-walk-evidence.md`. Done on Adam-signed AC-1/AC-2 live verdicts at Phase 3.5.
+
+### Story disposition
+
+Story stays **review** (NOT done): dev + CR complete, live walk (AC-1/AC-2 live clauses) pending Adam-hands-on. Staged, nothing committed. $0 autonomous spend (no real API calls — all tests use fake adapters / real SQLite).

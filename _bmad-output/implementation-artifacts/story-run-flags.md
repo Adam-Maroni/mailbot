@@ -2,6 +2,45 @@
 
 This file collects flags raised by `autonomous-story-run` runs. One block per invocation.
 
+## Story 10-5-4 — 2026-07-10
+
+**Headline:** Cluster D operator recovery tooling made real (F-10-6-3 rederive crash / F5+F6 move-family resurrection / F-10-6-2 replay inert / CR-10-2-D1 legacy double-revert). All 3 fixes + the deferred race closed at code-L3; suite 1788→**1798+2+3 (+10 net)**; MANDATORY-CR sonnet-5 2 Decision APPLIED + 2 Defer. Story stays **review** — the live walk (`mailbot rederive` no-crash against the real DB + resurrecting the retained 10-1 subject verified in Outlook) is the Adam-hands-on Task 6 per the HYBRID run-mode binding.
+
+**Dev model:** claude-opus-4-8
+**Review model:** claude-sonnet-5 (≠ dev; MANDATORY-CR per §5.12 criterion 3 + 6, AC-4)
+
+**Review rounds + applied rate:** 1 round. 4 findings → 2 Decision APPLIED (100% of actionable Decisions) + 2 Defer. CR-10-5-4-1 (resurrect move-family corroboration) + CR-10-5-4-2 (replay refusal scoping) both applied + re-tested. Round-2 not run (fixes were small refinements of the reviewer's own suggestions).
+
+**Aggregated `[deferred:*]` items:** 2 — placeholder `pre_state='{}'` future-consumer assumption (safe as of this diff, no reader exists); N=3+ concurrent-revert coverage gap (correct-by-construction via `action_id` PK serialization). Both recorded in story Review Findings; CR-10-2-D1's own `deferred-work.md` entry marked CLOSED.
+
+**Gate verdicts:**
+- 2.3.5 Pre-Review Self-Audit — PASS (all 5 sections + 11 posture checks; §5.11.b test-ratio 1.357, §5.12 MANDATORY-CR; §3 flagged 4 issues, all dispositioned in §4, 2 escalated to reviewer + confirmed by CR)
+- 2.4.4 Dev Agent Record completeness — PASS (model named, notes ≥1 per AC, full File List)
+- 2.4.5 UI-scope — N/A (no graphical frontend)
+- 2.4.6 File-List-vs-git — PASS (all 10 File List source/test paths TRACKED + staged; background files consciously excluded)
+- 2.4.7 Middleware-Real-Bootstrap (MailBot Router/DB reframing) — PASS (rederive-CLI test boots real init path + real Router + real SQLite, fake only at the adapter SDK boundary; resurrect/replay/reverter tests use real SQLite + real query constants, no mocked `queries.py`/`ask_router`)
+- 2.4.8 Verbose-row truncation — N/A (story stays `review`, no `done`-flip; sprint-status row is a concise dev-pass headline pointing to story Completion Notes)
+
+**Step 2.5 dev-env verification:** N/A deferred — the live-stack verification IS the Adam-hands-on Task 6 walk (rederive against the real DB + resurrect verified in Outlook); autonomous dev-env boot not run this pass.
+
+**Permission-prompt summary:** Zero permission prompts during the run — the envelope covered every command shape (git via `rtk git *`, pytest/ruff/mypy via `.venv/Scripts/python.exe *`, Glob/Grep/Read/Edit/Write tools). No permission log configured (no PreToolUse logging hook) — but zero prompts observed.
+
+**CRITICAL/WARNING flags:** None. Dev + CR clean.
+
+**Phase 3.5 Manual Verification — DELEGATED (Adam: "Can you run the manual verification yourself") — PASS WITH FINDINGS:**
+- CP-1 [AC-1 F-10-6-3] rederive no-crash — **PASS live** (real single-row `fine_class` dispatch through `init_pipeline_runtime`+`execute_rederive` against `/data/mailbot.db`: processed=1 succeeded=1, real `cli-rederive` router_calls row, $0 qwen; the exact pre-fix KeyError site now clean).
+- CP-2 [AC-2 F5/F6/B5] resurrect retained 10-1 Railway subject — **PASS** (local DB `deleted_at`/`removed_reason` cleared via default corroborated path, read-verb-visible; physical-Outlook eyeball is Adam's — physical email already confirmed in-Inbox per 10-1/10-2 walks, F6 residue was the stale local row, now repaired).
+- CP-3 [AC-2 neg] `NO_MOVE_FAMILY_ACTION` guard — **PASS live** (real deleted-no-move-action row refused; `--force` not passed → left soft-deleted).
+- CP-4 [AC-2 idempotency] `NOT_SOFT_DELETED` on live row — **PASS live** (no silent double-success).
+- CP-5 [AC-3 F-10-6-2] replay `REPLAY_MOVE_TARGET_DELETED` — **PASS code-L3 only** (all prod move rows are `applied` not `failed`; live repro would need a destructive prod status mutation — declined; integration-test-proven).
+- **WALK-10-5-4-F1 (INFO):** `scripts/` is NOT bind-mounted → the `mailbot rederive`/`mailbot resurrect` CLI verbs in-container still run the pre-fix baked `scripts/mailbot.py`. Fix verified via the bind-mounted `mailbot_api` modules + CLI unit tests; a `docker build` (or `scripts/` mount) is needed before the operator CLI verbs run the fix in-container. Deploy/mount gap, not a code defect — file for next image rebuild / CP-1.
+
+**Intended real side-effects:** 1 `fine_class` re-derivation ($0 qwen), 1 resurrection (retained Railway subject). No collateral. See `10-5-4-walk-evidence.md`.
+
+**Verdict:** AC-1 + AC-2 verified live by delegation → **pending Adam-signed done** (I verified; Adam signs the AC verdicts). Story stays `review` until signed.
+
+---
+
 ## Story 10-6 — 2026-07-06 18:05
 
 **Headline:** All 16 README common-error rows fault-injected against the live local stack (pure-autonomous, Adam-authorized full risk envelope) — R15's 3 codes as R15a/b/c → 18 verdict rows: **13 PASS / 5 FAIL / 0 EXCLUDED**. Every FAIL is a documentation-contract defect (dead/mislabeled codes, a broken fix clause); zero product-capability regressions — every surfaceable error code surfaced with a stable string, every state recovered, baseline fully restored.

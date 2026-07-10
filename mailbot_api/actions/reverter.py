@@ -43,6 +43,7 @@ from mailbot_api.db.connection import (
     fetchone,
 )
 from mailbot_api.db.queries import (
+    ACTION_HISTORY_INSERT_IF_ABSENT,
     ACTION_HISTORY_MARK_REVERTED,
     ACTION_HISTORY_SELECT_BY_ACTION_ID,
     PENDING_ACTION_INSERT,
@@ -256,23 +257,34 @@ async def revert_action(action_id: int, *, db_path: str) -> RevertOut:
     # duplicate inverse (for a move, a second real Graph dispatch). If the
     # insert below then fails, the row is marked reverted with no inverse
     # queued — recoverable and strictly safer than the duplicate dispatch.
-    # action_history may not exist for this action_id (Story 4-4 writes it
-    # during drain; legacy rows may lack one) — if absent, the revert still
-    # proceeds unclaimed as before (residual race deferred as CR-10-2-D1;
-    # move-family rows never reach here without history: PRE_STATE_MISSING).
-    if history_row is not None:
-        claimed = await execute_write(
-            db_path, ACTION_HISTORY_MARK_REVERTED, (proposed_at, action_id),
+    #
+    # CR-10-2-D1 closure (Story 10.5.4): action_history may not exist for this
+    # action_id (Story 4-4 writes it during drain; legacy pre-4-4 rows may lack
+    # one). Previously the revert proceeded UNCLAIMED for such rows, so two
+    # concurrent reverts of a legacy static-map row could both queue an inverse.
+    # We now INSERT OR IGNORE a placeholder history row first (action_id is the
+    # PK → serialized), making the subsequent MARK_REVERTED claim uniform for
+    # legacy rows too. Move-family rows never reach here without history — they
+    # refuse PRE_STATE_MISSING above — so this placeholder only ever backs a
+    # static-map (mark/category) inverse, whose pre_state is unused.
+    if history_row is None:
+        await execute_write(
+            db_path,
+            ACTION_HISTORY_INSERT_IF_ABSENT,
+            (action_id, "{}", proposed_at),
         )
-        if claimed == 0:
-            return RevertOut(
-                ok=False,
-                error=RevertError(
-                    code="ALREADY_REVERTED",
-                    message=f"action_id {action_id} was already reverted by a "
-                            "concurrent revert call",
-                ),
-            )
+    claimed = await execute_write(
+        db_path, ACTION_HISTORY_MARK_REVERTED, (proposed_at, action_id),
+    )
+    if claimed == 0:
+        return RevertOut(
+            ok=False,
+            error=RevertError(
+                code="ALREADY_REVERTED",
+                message=f"action_id {action_id} was already reverted by a "
+                        "concurrent revert call",
+            ),
+        )
 
     revert_action_id = await execute_insert_returning_id(
         db_path,

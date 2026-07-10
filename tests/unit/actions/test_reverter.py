@@ -54,6 +54,58 @@ async def _mark_applied_with_history(
     )
 
 
+async def _mark_applied_no_history(
+    db_path: str, action_id: int, *, terminal_at: str | None = None,
+) -> None:
+    """Simulate a LEGACY applied row: status='applied' with NO action_history
+    row (pre-Story-4-4 rows / rows where drain didn't write history). This is
+    the CR-10-2-D1 exposed surface."""
+    if terminal_at is None:
+        terminal_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    await execute_write(
+        db_path,
+        "UPDATE pending_actions SET status = 'applied', terminal_at = ? WHERE id = ?",
+        (terminal_at, action_id),
+    )
+
+
+async def test_revert_legacy_no_history_concurrent_reverts_queue_exactly_one_inverse(
+    tmp_path: Path,
+) -> None:
+    """Story 10.5.4 (CR-10-2-D1 closure): a legacy Tier-1 row with NO
+    action_history row must still be claim-guarded. Two concurrent reverts must
+    queue EXACTLY ONE inverse, not two. Pre-fix the no-history path proceeded
+    unclaimed → both racers queued an inverse.
+    """
+    import asyncio
+
+    db_path = _setup(tmp_path)
+    await _seed_email(db_path, "leg-1")
+    out = await propose_action("leg-1", ActionType.MARK_READ, db_path=db_path)
+    await _mark_applied_no_history(db_path, out.action_id)
+
+    # Fire two reverts concurrently.
+    r1, r2 = await asyncio.gather(
+        revert_action(out.action_id, db_path=db_path),
+        revert_action(out.action_id, db_path=db_path),
+    )
+
+    oks = [r for r in (r1, r2) if r.ok]
+    refused = [r for r in (r1, r2) if not r.ok]
+    assert len(oks) == 1, f"expected exactly one successful revert, got {len(oks)}"
+    assert len(refused) == 1
+    assert refused[0].error is not None
+    assert refused[0].error.code == "ALREADY_REVERTED"
+
+    # Exactly ONE inverse pending_actions row queued (the original MARK_READ +
+    # exactly one MARK_UNREAD inverse = 2 total rows).
+    with get_connection(db_path) as conn:
+        inverse_count = conn.execute(
+            "SELECT COUNT(*) FROM pending_actions WHERE action_type = 'mark_unread'",
+        ).fetchone()[0]
+    assert inverse_count == 1
+
+
 async def test_revert_mark_read_within_24h_succeeds_with_mark_unread_inverse(
     tmp_path: Path,
 ) -> None:
