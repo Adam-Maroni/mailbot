@@ -306,12 +306,26 @@ async def test_list_tools_returns_constraint_phrases(tmp_path: Path) -> None:
     assert "Rule J" in by_name["get_thread"].description
     assert "10-min" in by_name["mint_sensitivity_token"].description
     assert "Tier-1" in by_name["revert_action"].description
-    # Story 5-6 additions name their slash-command surface.
-    assert "/cost" in by_name["cost_breakdown"].description
-    assert "/budget reset" in by_name["reset_degraded_mode"].description
-    assert "/pause" in by_name["pause_router"].description
-    assert "/resume" in by_name["resume_router"].description
-    assert "/mute" in by_name["mute_category"].description
+    # Story 5-6 additions name their recognized-phrase / plain-NL intent
+    # surface (Story 10-5-6 dropped the '/command' metaphor — F-10-5-1).
+    assert "cost" in by_name["cost_breakdown"].description
+    assert "budget reset" in by_name["reset_degraded_mode"].description
+    assert "'pause'" in by_name["pause_router"].description
+    assert "'resume'" in by_name["resume_router"].description
+    assert "mute" in by_name["mute_category"].description
+    # And the dead slash forms are gone from these agent-facing descriptions.
+    _dead = {
+        "cost_breakdown": "/cost",
+        "reset_degraded_mode": "/budget",
+        "pause_router": "/pause",
+        "resume_router": "/resume",
+        "mute_category": "/mute",
+        "render_spend_chart": "/spend",
+    }
+    for _name, _slash in _dead.items():
+        assert _slash not in by_name[_name].description, (
+            f"{_name} description still carries the dead '{_slash}' form"
+        )
 
 
 @pytest.mark.asyncio

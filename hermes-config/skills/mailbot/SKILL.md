@@ -194,8 +194,12 @@ the same action, mint a fresh grant.
 Purpose: cancel a Tier-3 action that is currently in its 60-second cooling-off
 window (Story 4-6).
 
-Example: the user types `/cancel <action_id>` after seeing a "Cooling off for
-60 seconds" message. → call `cancel_action(action_id=<id>)`.
+Example: the user types `cancel <action_id>` (plain NL — no slash; the `/`
+prefix is owned by the Discord/Hermes layer and never reaches you, F-10-5-1)
+after seeing a "Cooling off for 60 seconds" message. → call
+`cancel_action(action_id=<id>)`. This is a **recognized control phrase** — see
+the Control-verb dispatch section below: on `cancel <id>` you MUST issue the
+verb, not narrate "Cancelled."
 
 Tier-handling responsibility: cancellation is only possible during cooling-off;
 once the drainer picks up the action, you use `revert_action` instead (and
@@ -225,67 +229,132 @@ precondition layer to allow a sensitive-email task that would otherwise be
 blocked.
 
 Example user turn: "yes, escalate this draft to Opus" on a `sensitive`-class
-email. → user types `/confirm <email_id> draft_reply` → you call
-`mint_sensitivity_token(email_id, "draft_reply")` → pass the returned token as
-`confirmation_token` to `ask_router(task_type="draft_reply", ...)`.
+email. → the user says **`yes, escalate`** (plain NL — no slash) → you MUST call
+`mint_sensitivity_token(email_id, "draft_reply")` (which consumes the
+`escalation_armed` arm from Story 10-5-2, migration 027) → pass the returned
+token as `confirmation_token` to `ask_router(task_type="draft_reply", ...)`.
+**`yes, escalate` is a recognized control phrase** (Control-verb dispatch
+section below): you MUST issue the mint verb, NOT re-emit the refusal template.
+Re-parroting the refusal instead of dispatching is F-10-5-2-W2 — the exact
+false-narration failure this contract exists to close.
 
 Tier-handling responsibility: the verb REFUSES on `confidential` emails (per
 AR-D12-1). Do not retry; surface the refusal with a defender-toned message:
 "Confidential emails admit no API override. The body stays on your VPS, period."
 
-## Slash-command verbs (MCP-exposed as of Story 5-6 + Story 6-8)
+## Control-verb dispatch (deterministic recognized phrases) — Story 10-5-6
 
-The slash-command surface (`/cost`, `/pause`, `/resume`, `/budget reset`,
-`/mute`, `/spend`) maps to MCP-exposed verbs. Adam types the slash command in
-Discord; Hermes routes via its slash dispatcher to the corresponding MCP tool.
+**There is no `/command` surface.** Epic 10's perimeter walk proved the entire
+documented MailBot slash table is architecturally unreachable: Discord reserves
+the `/` prefix for application commands and the Hermes runtime above MailBot
+owns that namespace (native `/model` opens Hermes's own picker; every other
+`/command` bounces "Unknown command"). It never reaches this agent (F-10-5-1).
+The user talks to MailBot in **plain natural language** — that is the contract,
+not a workaround.
+
+**Two-tier dispatch (retro §8.7):**
+
+- **Read / status / discovery intents** (cost, spend, the policy table, the
+  mute list, digest, find/summarize) go through **free NL** — parse the intent
+  and dispatch the matching read verb (`cost_breakdown`, `mute_category` list,
+  `inspect_policy`, etc.). Small ambiguity is fine here; nothing is destroyed.
+
+- **Control verbs that touch the mailbox or the kill-switch** dispatch via a
+  **deterministic recognized-phrase contract**. These are NOT interpreted
+  free-form. When the user's message matches a recognized phrase below, you
+  MUST issue the exact verb call — and report only what the verb actually
+  returned:
+
+  | Recognized phrase (plain NL, no slash)      | Verb you MUST issue                          |
+  |---------------------------------------------|----------------------------------------------|
+  | `cancel <id>`                               | `cancel_action(action_id=<id>)`              |
+  | `confirm <email_id> <task>` / `yes, escalate` | `mint_sensitivity_token(...)` (consumes the 10-5-2 `escalation_armed` arm) then re-dispatch |
+  | `pause [reason]`                            | `pause_router(reason=...)`                    |
+  | `resume`                                    | `resume_router()`                            |
+  | `use qwen` / `use haiku` / `use opus`       | `set_model_oneshot(model=...)`               |
+
+  **Prohibition (load-bearing).** Never narrate a control-verb outcome
+  **without issuing the verb**. Saying "Qwen is now armed…", "Escalation
+  confirmed", "Paused", or "Cancelled" *without* the corresponding tool call is
+  a defect — this is the false-narration class (F-10-5-6-W1, F-10-5-2-W2,
+  F-10-5-10). The two live-proven failures this contract closes:
+
+  - **F-10-5-6-W1:** "use qwen for next request" was answered "Qwen is now
+    armed… expires at 09:12:33Z" but `set_model_oneshot` was **never called**
+    and the expiry timestamp was confabulated. `use qwen`/`use haiku`/`use
+    opus` are now recognized phrases — issue `set_model_oneshot`, then state the
+    real TTL the verb returned.
+  - **F-10-5-2-W2:** after "yes, escalate", the agent re-emitted the SKILL.md
+    refusal template instead of calling `mint_sensitivity_token`, so the
+    (working) API-layer escalation authorization was never consumed. `yes,
+    escalate` is now a recognized phrase — issue the mint verb.
+
+  On a recognized control phrase: abort/pause/confirm must be **reliably**
+  understood, not *usually* understood. If unsure whether a message is a
+  recognized control phrase, ask the user to restate rather than guessing —
+  guessing here is exactly the F-10-5-10 failure mode.
+
+**Discoverability (Story 10-5-2 tie-in).** The exact working phrase reaches the
+user through the `user_facing_guidance` field of the RecoveryAction envelope
+(Rule S) at the moment of need — e.g. a cooling-off proposal's guidance reads
+"to abort this, type: cancel 14". The envelope is how users learn the syntax;
+it replaces the dead slash table.
+
+The verbs below are MCP-exposed (Story 5-6 + Story 6-8); the recognized phrases
+that trigger them are the plain-NL forms in the table above.
 
 ### `cost_breakdown`
 
 Purpose: return Router cost breakdown for the period (today | month). Per-task /
 per-model / per-caller_origin aggregations + cache hit rate.
 
-Slash command: `/cost [period]` (default: today).
+Recognized intent (free-NL, read-family): `cost [today|month]` (default: today).
 
 ### `reset_degraded_mode`
 
 Purpose: flip `degraded_mode_state` to inactive and clear the in-memory flag.
 
-Slash command: `/budget reset`.
+Recognized intent (free-NL): `budget reset`.
 
 ### `pause_router` / `resume_router`
 
 Purpose: pause the Router lane scheduler with a reason / resume it.
 
-Slash commands: `/pause [reason]`, `/resume`.
+Recognized control phrases (deterministic — see the Control-verb dispatch
+table above): `pause [reason]` → `pause_router`, `resume` → `resume_router`.
+Note: pausing gates ALL processes cross-process (Story 10-5-1 fixed the
+per-process-singleton class); `resume` is reachable from chat via the router's
+control allowlist even while paused (F-10-5-4 closed).
 
 ### `mute_category`
 
 Purpose: mute a notification category until a timestamp (or indefinitely).
 Epic 6's dispatcher reads from `notification_mutes`.
 
-Slash command: `/mute <category> [until]`.
+Recognized intent (free-NL): `mute <category> [until]` / `unmute <category>`.
 
 ### `set_model_oneshot` — Model override (Story 9-3)
 
 Purpose: arm a one-shot model override for the very next `ask_router` call.
-Adam types `/model qwen` (or `haiku` / `opus`) inline during a Discord
-conversation; the next chat turn dispatches against the chosen model. The
-override has a 5-minute TTL and is consumed on first effective use.
+Adam says **`use qwen`** (or `use haiku` / `use opus`) in plain NL during a
+Discord conversation; the next chat turn dispatches against the chosen model.
+The override has a 5-minute TTL and is consumed on first effective use.
 
-Slash command examples (Hermes-side registration is Story 9-10's scope per
-OQ-2; the verb itself is dispatchable via MCP today, so any slash handler
-Hermes wires up can call it directly):
+**These are recognized control phrases** (Control-verb dispatch table above):
+on `use qwen`/`use haiku`/`use opus` you MUST call `set_model_oneshot` and then
+report the real TTL the verb returned — do NOT narrate "armed… expires at …"
+without issuing the verb (F-10-5-6-W1):
 
-- `/model qwen` — next chat turn runs against `qwen2.5:3b-instruct-q4_K_M`
-- `/model haiku` — next chat turn runs against `claude-haiku-4-5-20251001`
-- `/model opus` — next chat turn runs against `claude-opus-4-7`
+- `use qwen` — next chat turn runs against `qwen2.5:3b-instruct-q4_K_M`
+- `use haiku` — next chat turn runs against `claude-haiku-4-5-20251001`
+- `use opus` — next chat turn runs against `claude-opus-4-7`
 
 Gates inherited (the override does NOT punch through):
 
 - **Sensitivity gate (NFR-PRIV-1/2):** confidential emails still refuse
   unconditionally; sensitive emails still require the
   `mint_sensitivity_token` handshake. The audit row carries
-  `model_chosen_reason=sensitivity_gate:refused` (not the OVERRIDE_SLASH_ONE_SHOT
+  `model_chosen_reason=sensitivity_gate:refused` (not the one-shot-override
   value), AND the override stays armed within its TTL since "gate refused" ≠
   "actual use."
 - **Budget gate ($0.20/call refusal threshold):** the override does NOT
@@ -299,11 +368,11 @@ Audit trail: every dispatch that consumed the one-shot writes
 `router_calls.model_chosen_reason = "slash_command:one_shot:adam"` per
 Story 9.2's closed-set vocabulary (`ModelChosenReason.OVERRIDE_SLASH_ONE_SHOT`).
 
-Story 9-4 forward-reference: `/model <task> <model>` (with both arguments
-provided) sets a PERSISTENT per-task override by writing to
+Story 9-4 forward-reference: the persistent form `set <task> to <model>` (task
++ model both named) sets a PERSISTENT per-task override by writing to
 `router/policy.user-overrides.yaml` (companion file from Story 9-1, hot-
-reloads within 1 second). The one-shot variant described here is when
-`/model <model>` is invoked with only the model argument.
+reloads within 1 second). The one-shot variant described here is when only the
+model is named (`use haiku`).
 
 ### `set_model_persistent` — Persistent per-task model override (Story 9-4)
 
@@ -312,23 +381,21 @@ the companion file `router/policy.user-overrides.yaml`. Survives image
 rebuilds (Story 9-1 contract — overrides file is bind-mounted RW from the
 host, not baked into the image). Hot-reloads within ~1 second.
 
-Slash command examples (Hermes-side registration is Story 9-10's scope per
-the Story 9-3 OQ-2 architectural-impossibility caveat that also applies
-here; the verb itself is dispatchable via MCP today):
+Recognized-intent examples (plain NL; the verb is dispatchable via MCP today):
 
-- `/model draft_reply opus` — all subsequent `draft_reply` dispatches go to
+- `set draft_reply to opus` — all subsequent `draft_reply` dispatches go to
   `claude-opus-4-7` until the override is reverted (delete the entry from
   `router/policy.user-overrides.yaml` or set it back to baseline).
-- `/model coarse_class haiku` — same shape, different task/model.
+- `set coarse_class to haiku` — same shape, different task/model.
 
-Arg-count dispatch table (single `/model` Discord command, three behaviors
-depending on argument count):
+Intent → verb dispatch table (model-override family, three behaviors depending
+on what the user names):
 
-| arg count | example                       | verb                  | behavior                              |
-|-----------|-------------------------------|-----------------------|---------------------------------------|
-| 0         | `/model`                      | `inspect_policy`      | render current effective policy table |
-| 1         | `/model haiku`                | `set_model_oneshot`   | arm one-shot for next call (5-min TTL)|
-| 2         | `/model draft_reply opus`     | `set_model_persistent`| persistent write to overrides file    |
+| user says                       | verb                  | behavior                              |
+|---------------------------------|-----------------------|---------------------------------------|
+| `model` / `show the policy`     | `inspect_policy`      | render current effective policy table |
+| `use haiku` (model only)        | `set_model_oneshot`   | arm one-shot for next call (5-min TTL)|
+| `set draft_reply to opus`       | `set_model_persistent`| persistent write to overrides file    |
 
 Atomic-write semantics: tempfile + `os.fsync` + `os.replace`. A crash
 mid-write leaves the original file unchanged (atomic by POSIX). Validates
@@ -368,9 +435,10 @@ Purpose: read-only render of the current effective routing policy as a
 markdown table. Composes baseline + overrides + degraded-mode + active
 one-shot state into a single "what is the router doing right now" view.
 
-Slash command: `/model` (with NO arguments). Same architectural-
-impossibility caveat — Hermes-side registration is Story 9-10's scope;
-the `inspect_policy` MCP tool is dispatchable today.
+Recognized intent (free-NL, read-family): `model` / `show the policy` (no
+model or task named). The `inspect_policy` MCP tool is dispatchable today;
+native Discord `/model` opens Hermes's own picker instead (F-10-5-1), so the
+plain-NL form is the one that reaches this agent.
 
 Output shape (markdown table + two status lines):
 
@@ -401,7 +469,7 @@ Purpose: render a 1200×800 PNG horizontal bar chart of cost-per-task over
 today/week/month. Returns the bytes ready to attach to a Discord message + a
 text summary line.
 
-Example user turn: `/spend month` → call `render_spend_chart(period="month")` →
+Example user turn: `spend month` (plain NL) → call `render_spend_chart(period="month")` →
 receive `RenderSpendChartOut(image_bytes=..., total_usd=..., top_task=...,
 task_count=...)` → post a single Discord message with the PNG as an attachment
 and the documented text summary: `"$X.XX spent month. Top task: {top_task}
@@ -421,7 +489,7 @@ Purpose: lift a notification-category mute set earlier via `mute_category`.
 Resets the per-category mute state immediately; subsequent Epic-6 dispatcher
 runs deliver normally for the unmuted category.
 
-Slash command: `/unmute <category>` (Story 6-4).
+Recognized intent (free-NL): `unmute <category>` (Story 6-4).
 
 ### `pull_pending_notifications`
 
@@ -633,10 +701,11 @@ Steps:
    - If `confidential`: refuse with the defender message: "Confidential emails
      admit no API override. The body stays on your VPS, period."
    - If `sensitive`: surface the escalation prompt to the user: "This email is
-     sensitive. Confirm via `/confirm <email_id> draft_reply` or say 'yes,
-     escalate'." Wait. On confirmation, call
-     `mint_sensitivity_token(email_id, "draft_reply")` and use the returned
-     token as `confirmation_token`.
+     sensitive. Say **`yes, escalate`** to authorize an API draft." Wait. On the
+     recognized phrase `yes, escalate` (or `confirm <email_id> draft_reply`, no
+     slash), you MUST call `mint_sensitivity_token(email_id, "draft_reply")`
+     (consuming the 10-5-2 arm) and use the returned token as
+     `confirmation_token` — do NOT re-emit this refusal template (F-10-5-2-W2).
    - If `normal`: proceed without a token.
 4. (Optional cache hit path) Call the Router with `task_type="tone_style_mirror"`
    and the recipient address. The response is 30-day cached per Story 5-3
@@ -702,9 +771,9 @@ Steps:
    SEND-family — the sensitivity-token handshake covers the
    destructive-touch invariant separately).
 4. Surface the proposed-action card to the user with reasoning ("you asked
-   me to delete this; here's what I'd delete; say `/confirm <email_id>
-   delete` to authorize"). The user typing `/confirm <email_id> delete`
-   routes (via the Story 5-6 slash dispatcher) to
+   me to delete this; here's what I'd delete; say `confirm <email_id>
+   delete` to authorize"). The recognized phrase `confirm <email_id> delete`
+   (plain NL, no slash) means you MUST call
    `mint_sensitivity_token(email_id, "delete")`. Receive token.
 5. Before `propose_action` runs, you must ALSO call `mint_grant(action_type="delete",
    email_ids=[email_id], expires_at=<ISO-8601-UTC + 60s>)` so the drainer
@@ -729,13 +798,14 @@ cannot delete an email you cannot identify; ask for clarification instead).
 Never call `mint_sensitivity_token` for a confidential email — it will
 refuse per NFR-PRIV-2. Surface the confidential-refusal to the user.
 
-### Turn structure 4 — `/spend month`
+### Turn structure 4 — `spend month`
 
-User: `/spend month` (or `/spend week` / `/spend today` — defaults to month).
+User: `spend month` (or `spend week` / `spend today` — defaults to month; plain
+NL, no slash).
 
 Steps:
 
-1. Slash-dispatcher routes the command to `render_spend_chart(period="month")`
+1. Parse the read-family intent and call `render_spend_chart(period="month")`
    via MCP. Receive `RenderSpendChartOut(image_bytes=<png>, total_usd=...,
    top_task=..., task_count=...)`.
 2. Post a single Discord message with the PNG as an attachment and the text
@@ -746,7 +816,7 @@ Steps:
 3. Done. Default notification tier (Rule R): inherits from the user's turn
    (the user asked; you reply in the same channel).
 
-Banned: never render a /spend chart for a period the verb doesn't accept (only
+Banned: never render a spend chart for a period the verb doesn't accept (only
 today / week / month — the verb raises `ValueError` on any other string).
 Never write the PNG to disk; the bytes go straight from the verb's BytesIO
 return to Discord's attachment upload.

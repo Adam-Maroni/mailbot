@@ -2093,6 +2093,79 @@ async def dispatch_tool_call(
                 # because the agent didn't supply a second token. The deferred
                 # multi-token handshake (list[str]) is the future expansion.
                 if confirmation_token is None or _consumed_for_eid is not None:
+                    # Story 10-5-6 (W2/W3 fix): before refusing a no-inline-token
+                    # sensitive dispatch, honor a genuine user-gated escalation
+                    # for exactly this (eid, task) — the SAME authorization
+                    # primitive `mint_sensitivity_token` uses, applied at the
+                    # DISPATCH seam. The live walk proved the persona reliably
+                    # says "yes, escalate" (arm gets set / a confirmation gets
+                    # recorded) but does NOT thread the minted token string back
+                    # into this tool call (F-10-5-2-W2), so the dispatch refused
+                    # forever and re-armed a pending_sensitive_refusal that
+                    # bricked the session (F-10-5-6-W3). Consuming the arm /
+                    # recorded confirmation here makes the "yes, escalate" the
+                    # user already gave authorize this exact dispatch, with no
+                    # token-relay step the persona can drop.
+                    # `authorize_sensitive_dispatch` records a TTL-windowed grant
+                    # scoped to (eid, task) on first authorization and peeks it on
+                    # the SEVERAL same-(eid, task) dispatches the persona fans out
+                    # in one escalation turn (hydrate -> propose -> draft) — so one
+                    # "yes, escalate" covers the whole turn without re-refusing
+                    # mid-flow (the residual W3 symptom the re-walk surfaced),
+                    # while a DIFFERENT email finds no grant and still refuses
+                    # (blast-radius invariant). Inputs are user-gated ONLY (the
+                    # agent verb surface cannot set the arm/confirmation), so the
+                    # non-agent-assertable NFR-PRIV-1 invariant is preserved;
+                    # confidential is refused unconditionally ABOVE this branch and
+                    # is never reachable here. Only fires when no inline token was
+                    # already consumed for a sibling id (`_consumed_for_eid is
+                    # None`) — a token-bearing multi-id call keeps its existing
+                    # first-id-wins semantics.
+                    if _consumed_for_eid is None:
+                        from mailbot_api.actions.user_confirmation import (  # noqa: PLC0415
+                            authorize_sensitive_dispatch,
+                        )
+                        # CR-10-5-6-1 (2026-07-11 MANDATORY-CR, sonnet-5):
+                        # mirror the token-consume path's defensive wrap
+                        # (router.py ~2205) — a transient DB error under
+                        # contention (e.g. BEGIN IMMEDIATE hitting busy_timeout)
+                        # must degrade to the existing fail-closed sensitivity
+                        # refusal, NOT propagate a 500 out of dispatch_tool_call.
+                        try:
+                            _authorized = await authorize_sensitive_dispatch(
+                                db_path, email_id=eid, task_type=_TOOL_CALL_TASK_TYPE,
+                            )
+                        except Exception as _exc:  # noqa: BLE001 — fail closed to refusal
+                            _logger.error(
+                                "escalation dispatch-authorize crashed; refusing",
+                                extra={
+                                    "event": "sensitivity.escalation.authorize_crash",
+                                    "email_id": eid,
+                                    "task_type": _TOOL_CALL_TASK_TYPE,
+                                    "exception_type": type(_exc).__name__,
+                                },
+                            )
+                            _authorized = False
+                        if _authorized:
+                            # Authorized via the user's "yes, escalate" — proceed
+                            # for this id exactly as a valid inline token would.
+                            from datetime import datetime as _dt  # noqa: PLC0415
+                            from datetime import timezone as _tz  # noqa: PLC0415
+                            _sensitivity_grant_id = "escalation-confirmed"
+                            # Same wire format as the token path (line ~2255).
+                            _sensitivity_grant_minted_at = _dt.now(_tz.utc).strftime(
+                                "%Y-%m-%dT%H:%M:%S.%fZ"
+                            )
+                            _consumed_for_eid = eid
+                            _logger.info(
+                                "sensitive dispatch authorized via escalation handshake",
+                                extra={
+                                    "event": "sensitivity.escalation.dispatch_authorized",
+                                    "email_id": eid,
+                                    "task_type": _TOOL_CALL_TASK_TYPE,
+                                },
+                            )
+                            continue
                     if eid == email_id and len(_audit_ids) == 1:
                         msg = (
                             "sensitive email requires per-session confirmation "

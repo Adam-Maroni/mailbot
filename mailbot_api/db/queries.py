@@ -862,6 +862,21 @@ USER_CONFIRMATION_CONSUME = (
     "WHERE id = ? AND consumed_at IS NULL"
 )
 
+# Story 10-5-6 refinement: a TTL-windowed, RE-READABLE escalation-dispatch grant
+# scoped to (email_id, task_type). Unlike the single-use `sensitivity_token`
+# confirmation, this marker is PEEKED (not consumed) so the several sensitive
+# dispatches the persona fans out in one escalation turn (hydrate -> propose ->
+# draft) for the SAME (email, task) all stay authorized for the window. It is
+# recorded once, when the arm / boundary confirmation is first consumed at the
+# dispatch seam. TTL is enforced in code at read time (same as the arm), so no
+# migration is needed and the window is testable/adjustable.
+USER_CONFIRMATION_FIND_ESCALATION_DISPATCH = (
+    "SELECT id, created_at FROM user_confirmations "
+    "WHERE scope = 'escalation_dispatch' AND email_id = ? AND task_type = ? "
+    "AND consumed_at IS NULL "
+    "ORDER BY id DESC LIMIT 1"
+)
+
 # pending_sensitive_refusal — correlate a bare "yes, escalate" back to the
 # (email_id, task) of the caller's most-recent sensitive refusal (F-10-5-7).
 PENDING_SENSITIVE_REFUSAL_UPSERT = (

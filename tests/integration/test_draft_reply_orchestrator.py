@@ -134,8 +134,10 @@ async def test_sensitive_without_token_returns_needs_sensitivity_token(
     )
     assert out.state == "needs_sensitivity_token"
     assert out.defender_message is not None
-    assert "/confirm" in out.defender_message
-    assert "draft_reply" in out.defender_message
+    # Story 10-5-6: recognized-phrase plain NL, not the dead '/confirm' slash
+    # form (F-10-5-1 — it never reached the agent).
+    assert "yes, escalate" in out.defender_message
+    assert "/confirm" not in out.defender_message
 
 
 @pytest.mark.asyncio

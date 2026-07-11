@@ -11,13 +11,15 @@ The 11 baseline tools (Story 5-2): ``find_emails``, ``hydrate_email``,
 ``mint_grant``, ``revoke_grant``, ``cancel_action``, ``revert_action``,
 ``mint_sensitivity_token``.
 
-The 5 slash-command surface tools added in Story 5-6 (closing Story 5-2's
-deferral): ``cost_breakdown`` (slash: /cost), ``reset_degraded_mode``
-(/budget reset), ``pause_router`` (/pause), ``resume_router`` (/resume), and
-``mute_category`` (/mute).
+The 5 operator-surface tools added in Story 5-6 (closing Story 5-2's
+deferral): ``cost_breakdown`` (intent: 'cost'), ``reset_degraded_mode``
+('budget reset'), ``pause_router`` ('pause'), ``resume_router`` ('resume'), and
+``mute_category`` ('mute'). Story 10-5-6 dropped the '/command' metaphor — these
+are reached by plain-NL intents; the Discord '/' prefix never reaches MailBot
+(F-10-5-1).
 
 The 1 analytics tool added in Story 6-8 (AR-ANALYTICS-1): ``render_spend_chart``
-(slash: /spend) — returns a matplotlib-rendered PNG of cost-per-task over
+(intent: 'spend') — returns a matplotlib-rendered PNG of cost-per-task over
 today/week/month.
 
 The 2 notification-dispatcher tools added in Story 6-3:
@@ -479,11 +481,11 @@ def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
 
     # ---- Story 5-6: router-control + mute_category ----
     #
-    # These five verbs are the slash-command surface for /cost, /pause, /resume,
-    # /budget reset, and /mute. The Hermes Discord adapter dispatches each
-    # slash command to its corresponding tool via the (forthcoming) Hermes
-    # skill bundle at hermes-config/skills/mailbot/ — see Story 6-0
-    # RECONCILIATION-NOTES §6 item 1 for the carry-forward.
+    # These five verbs are the operator surface for the 'cost', 'pause',
+    # 'resume', 'budget reset', and 'mute' intents. Story 10-5-6: reached by
+    # plain-NL recognized phrases, NOT '/command' slashes (F-10-5-1). The Hermes
+    # persona dispatches each recognized phrase to its tool via the skill bundle
+    # at hermes-config/skills/mailbot/ § "Control-verb dispatch".
 
     async def cost_breakdown(
         ctx: Context[Any, Any, Any], period: str = "today"
@@ -1009,30 +1011,33 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
         "Sensitive emails only; ephemeral 10-min token (AR-D12-1). "
         "Confidential refused unconditionally; normal needs no token."
     ),
-    # Story 5-6 — slash-command verbs (registration closes Story 5-2's deferral).
+    # Story 5-6 verbs (registration closes Story 5-2's deferral). Story 10-5-6:
+    # these are reached by plain-NL intents, NOT '/command' slashes (the Discord
+    # '/' prefix is owned by Hermes and never reaches MailBot — F-10-5-1).
     "cost_breakdown": (
         "Return Router cost breakdown for the period (today | month). "
         "Per-task / per-model / per-caller_origin aggregations + cache hit rate. "
-        "Slash-command surface: /cost (Story 5-6)."
+        "Recognized intent (plain NL): 'cost today' / 'cost month' (Story 5-6)."
     ),
     "reset_degraded_mode": (
         "Flip degraded_mode_state to inactive and clear the in-memory flag. "
-        "Slash-command surface: /budget reset (Story 5-6)."
+        "Recognized intent (plain NL): 'budget reset' (Story 5-6)."
     ),
     "pause_router": (
         "Pause the Router lane scheduler with a reason. "
-        "Slash-command surface: /pause (Story 5-6)."
+        "Recognized control phrase (plain NL, exact-match): 'pause' (Story 5-6)."
     ),
     "resume_router": (
         "Resume the Router lane scheduler. "
-        "Slash-command surface: /resume (Story 5-6)."
+        "Recognized control phrase (plain NL, exact-match): 'resume' (Story 5-6)."
     ),
     "set_model_oneshot": (
         "Arm a one-shot model override for the very next ask_router call. "
         "Accepts shorthand (qwen / haiku / opus) or full model IDs. "
         "5-minute TTL; consumed on first effective use; "
         "sensitivity + budget + degraded-mode gates UNCHANGED (overrides "
-        "do NOT punch through). Slash-command surface: /model (Story 9-3). "
+        "do NOT punch through). Recognized phrase (plain NL): 'use qwen' / "
+        "'use haiku' / 'use opus' (Story 9-3; slash form dropped in 10-5-6). "
         "Audit row carries model_chosen_reason=OVERRIDE_SLASH_ONE_SHOT."
     ),
     "set_model_persistent": (
@@ -1043,29 +1048,28 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
         "Survives image rebuilds via the Story 9-1 companion-file pattern. "
         "Refuses with actionable error if the target file is absent "
         "(host-side bootstrap required first per Story 9-1's hot-reload "
-        "contract limitation). Slash-command surface: /model <task> <model> "
-        "(Story 9-4 — docs in SKILL.md; Hermes-side runtime registration "
-        "is Story 9-10's scope). Audit row carries "
-        "model_chosen_reason=OVERRIDE_SLASH_PERSISTENT on subsequent calls."
+        "contract limitation). Recognized intent (plain NL): "
+        "'set <task> to <model>' (Story 9-4 — docs in SKILL.md). Audit row "
+        "carries model_chosen_reason=OVERRIDE_SLASH_PERSISTENT on subsequent calls."
     ),
     "inspect_policy": (
         "Read-only render of current effective policy as a markdown table "
         "(baseline + overrides + degraded-mode + active one-shot). "
         "Overridden rows are visually marked with the 🔧 prefix. "
-        "Slash-command surface: /model (no args; Story 9-4 — docs in "
-        "SKILL.md). No state mutation; safe to call at any time."
+        "Recognized intent (plain NL): 'model' / 'show the policy' (Story 9-4 — "
+        "docs in SKILL.md). No state mutation; safe to call at any time."
     ),
     "mute_category": (
         "Mute a notification category until a timestamp (or indefinitely). "
         "SHARP EDGE: silences ALL tiers including urgent. Avoid indefinite "
         "mutes on ops categories (health, sync, router_anomaly). "
-        "Slash-command surface: /mute (Story 5-6); "
+        "Recognized intent (plain NL): 'mute <category>' (Story 5-6); "
         "Epic 6's dispatcher reads from notification_mutes."
     ),
     "render_spend_chart": (
         "Render a per-task cost chart for the period (today | week | month). "
         "Returns a 1200×800 PNG (image/png) ready to attach to a Discord message. "
-        "Slash-command surface: /spend (Story 6-8); "
+        "Recognized intent (plain NL): 'spend month' (Story 6-8); "
         "AR-ANALYTICS-1 + AR-ANALYTICS-2 — matplotlib Agg backend, bytes-only return."
     ),
     "pull_pending_notifications": (
@@ -1081,8 +1085,9 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
     ),
     "unmute_category": (
         "Clear a notification mute by category. Companion to "
-        "/mute (Story 5-6); idempotent — returns was_muted=False if "
-        "the category had no mute. Slash-command surface: /unmute. Story 6-4."
+        "mute_category (Story 5-6); idempotent — returns was_muted=False if "
+        "the category had no mute. Recognized intent (plain NL): "
+        "'unmute <category>'. Story 6-4."
     ),
     "compose_digest": (
         "Assemble the 08:00 daily digest payload: unread emails bucketed by "

@@ -401,3 +401,31 @@ Story stays **review** (NOT done): dev + CR + all done-gates complete; AC-1 PASS
 - A3 (W1) — footer month-to-date is DB-authoritative (live: footer `July: $26.52` == `mailbot status` `$26.5224`).
 
 Staged, nothing committed. **$0 orchestrator spend** (re-derive is a DB UPDATE; all footer/refusal verification used qwen/$0 turns or the helper); Adam's earlier live paid turns were the only real spend (~$0.01, Console-manual).
+
+---
+
+## Story 10-5-6 — Slash → plain-NL charter rewrite + recognized-phrase control dispatch (2026-07-11, autonomous-story-run; dev=opus-4-8, review=sonnet-5)
+
+**DEV PASS + MANDATORY-CR COMPLETE → HALT at Task 5 (Adam-hands-on live Discord walk).** LAST Cluster story of Epic 10.5; done-flip clause 1 (10-5-1..10-5-6 done) hinges on this walk. Charter rewrite shipped + gate-green at 1859+2+3 (+25 net); story stays `review` pending Adam-signed AC verdicts.
+
+**What shipped (dev-codeable, Tasks 1-4):**
+- README: `## Slash commands` table → `## Talking to MailBot` (two-tier — free-NL read/status + deterministic recognized-phrase control verbs). Write examples, 4 error-table cells, limitation bullets, intro all de-slashed.
+- `hermes-config/skills/mailbot/SKILL.md`: `## Control-verb dispatch (deterministic recognized phrases)` — exact-match phrase→verb table (cancel/confirm+`yes, escalate`/pause/resume/`use qwen|haiku|opus`) + the "never narrate a control-verb outcome without issuing the verb" prohibition naming F-10-5-6-W1 + F-10-5-2-W2.
+- `hermes-config/AGENTS.md`: Tier-2/3 flows to plain NL + Rule S `user_facing_guidance` discoverability cross-ref.
+- `mailbot_api/mcp_server.py` + `chat/orchestrator.py`: agent/user-facing MCP tool descriptions + `_SENSITIVE_ESCALATION_PROMPT` de-slashed (string-literals only, no logic).
+- New `tests/integration/test_recognized_phrase_dispatch.py` — 25-test structural drift gate (incl. the CR matcher-correctness regression tests).
+
+**MANDATORY-CR (sonnet-5 ≠ opus-4-8, §5.12 crit 4 capstone + 6 load-bearing-dispatch):** 3-layer pass, 100% of actionable findings applied, 1 round:
+- HIGH — `unmute_category` §492 still had `Slash command: /unmute <category>` → FIXED (plain NL) + `unmute` added as its own matcher stem (`/u` ≠ `/m`).
+- HIGH — drift-test sweep omitted the `model` verb (F-10-5-6-W1's own family) → FIXED (added `model` + explanation-only carve-out for the permitted native-Hermes `/model` note).
+- CRITICAL/HIGH/MEDIUM — matcher regex had no end-boundary → false-neg (`/confirm` glued to backtick/period/quote/paren) + false-pos (`/pauseless`) → FIXED (`(?<![\w/])/verb\b` + regression tests).
+- LOW — marker-only AC-3 test → ACCEPT WITH RATIONALE (Dev Notes chose prose-resilient markers).
+
+**HALT — Task 5 live Discord walk is Adam-hands-on (dev agent does NOT drive it).** Walk checklist — each recognized phrase must deterministically ISSUE its verb, with NO confabulated narration ("armed…" / "Paused" / "Cancelled" without the tool call):
+1. `cancel <id>` during a Tier-3 cooling-off → `cancel_action` fires; action aborts (router_calls/action_history evidence).
+2. `pause` → `pause_router` (all processes gated incl. worker drainer, per 10-5-1); `resume` → `resume_router` reachable from chat while paused (F-10-5-4 closed end-to-end via plain NL).
+3. `yes, escalate` on a sensitive email → `mint_sensitivity_token` consumes the 10-5-2 `escalation_armed` arm → draft dispatches (closes **F-10-5-2-W2** — the 10-5-2 AC-4 live blocker).
+4. `use qwen` → `set_model_oneshot` issued with a real ledger row + the TTL the verb actually returned (closes **F-10-5-6-W1** — no confabulated expiry).
+Small/`$0` real spend (only the escalated draft is paid; spend truth = Anthropic Console per `feedback_anthropic_spend_source_of_truth.md`). Any live-discovered defects FILED per N.5. Verdicts Adam-signed at Phase 3.5.
+
+Staged, nothing committed. **$0 orchestrator spend** (docs/persona/test story; no paid turns).

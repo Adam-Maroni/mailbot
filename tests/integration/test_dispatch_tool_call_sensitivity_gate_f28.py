@@ -551,6 +551,241 @@ async def test_dispatch_tool_call_legacy_email_id_param_path_still_gates(
     )
 
 
+async def test_dispatch_tool_call_allows_sensitive_when_escalation_armed(
+    tmp_path: Path, _clean_state: Any,
+) -> None:
+    """Story 10-5-6 W2/W3 fix — a standing escalation arm (set by the chat
+    boundary on a genuine user 'yes, escalate') authorizes the very next
+    sensitive dispatch, WITHOUT the persona having to thread a confirmation_token
+    string through the tool call. This is the deterministic-seam fix: the arm is
+    consumed AT THE DISPATCH, so the mint->relay-token step the persona kept
+    dropping (F-10-5-2-W2) is no longer load-bearing.
+    """
+    from mailbot_api.actions.user_confirmation import arm_escalation
+
+    db_path = _setup(tmp_path)
+    await _seed_email(db_path, graph_id="e_sens", sensitivity="sensitive")
+    register_adapter(_HAIKU, _FakeToolAdapter())
+
+    # User said "yes, escalate" at the boundary -> arm stands.
+    await arm_escalation(db_path)
+
+    messages = [
+        {
+            "role": "tool",
+            "tool_call_id": "t1",
+            "content": json.dumps(
+                {"ok": True, "email": {"email_id": "e_sens", "subject": "x"}}
+            ),
+        }
+    ]
+    result = await dispatch_tool_call(
+        messages=messages,
+        tools=_tools(),
+        model=_HAIKU,
+        db_path=db_path,
+        email_id=None,
+        confirmation_token=None,  # NO inline token — the arm authorizes it
+    )
+    assert result.ok is True, f"expected ok=True via arm, got error={result.error}"
+
+    # The dispatch succeeded (no sensitivity_gate:refused row).
+    rows = await fetchall(
+        db_path,
+        "SELECT model_chosen_reason FROM router_calls WHERE task_type = ?",
+        (_TOOL_CALL_TASK_TYPE,),
+    )
+    assert len(rows) == 1
+    assert rows[0][0] != "sensitivity_gate:refused"
+
+    # Story 10-5-6 refinement: the arm records a TTL-windowed grant scoped to
+    # (email, task), so a SECOND same-(email, task) dispatch in the window stays
+    # authorized (covers the persona's multi-dispatch escalation turn). The
+    # single-use boundary is now ACROSS emails — see
+    # test_dispatch_tool_call_arm_does_not_authorize_different_email.
+    result2 = await dispatch_tool_call(
+        messages=messages,
+        tools=_tools(),
+        model=_HAIKU,
+        db_path=db_path,
+        email_id=None,
+        confirmation_token=None,
+    )
+    assert result2.ok is True, (
+        f"same-(email, task) repeat should stay authorized, got {result2.error}"
+    )
+
+
+async def test_dispatch_tool_call_allows_sensitive_when_confirmation_recorded(
+    tmp_path: Path, _clean_state: Any,
+) -> None:
+    """Story 10-5-6 W2/W3 fix — a pre-recorded user_confirmations row (the
+    boundary's confirm_pending_escalation path) also authorizes the sensitive
+    dispatch with no inline token. The single-use boundary confirmation is
+    consumed once, then a TTL-windowed grant covers same-(email, task) repeats.
+    """
+    from mailbot_api.actions.user_confirmation import record_sensitivity_confirmation
+
+    db_path = _setup(tmp_path)
+    await _seed_email(db_path, graph_id="e_sens", sensitivity="sensitive")
+    register_adapter(_HAIKU, _FakeToolAdapter())
+
+    # Boundary recorded a genuine user confirmation for exactly this (eid, task).
+    await record_sensitivity_confirmation(
+        db_path, email_id="e_sens", task_type=_TOOL_CALL_TASK_TYPE
+    )
+
+    messages = [
+        {
+            "role": "tool",
+            "tool_call_id": "t1",
+            "content": json.dumps(
+                {"ok": True, "email": {"email_id": "e_sens", "subject": "x"}}
+            ),
+        }
+    ]
+    result = await dispatch_tool_call(
+        messages=messages,
+        tools=_tools(),
+        model=_HAIKU,
+        db_path=db_path,
+        email_id=None,
+        confirmation_token=None,
+    )
+    assert result.ok is True, f"expected ok=True via recorded confirmation, got {result.error}"
+
+    # Same-(email, task) repeat stays authorized via the recorded grant (the
+    # boundary confirmation was consumed once; the grant now covers the turn).
+    result2 = await dispatch_tool_call(
+        messages=messages,
+        tools=_tools(),
+        model=_HAIKU,
+        db_path=db_path,
+        email_id=None,
+        confirmation_token=None,
+    )
+    assert result2.ok is True
+
+
+async def test_dispatch_tool_call_arm_authorizes_repeat_same_email_within_ttl(
+    tmp_path: Path, _clean_state: Any,
+) -> None:
+    """Story 10-5-6 refinement (live-walk finding) — ONE 'yes, escalate' must
+    authorize the SEVERAL sensitive dispatches the persona fans out in a single
+    escalation turn (hydrate -> propose -> draft) for the SAME (email, task),
+    for the TTL window — not just the first. Otherwise the 2nd/3rd sub-call in
+    one turn re-refuses mid-flow (the residual W3 symptom the walk surfaced).
+    """
+    from mailbot_api.actions.user_confirmation import arm_escalation
+
+    db_path = _setup(tmp_path)
+    await _seed_email(db_path, graph_id="e_sens", sensitivity="sensitive")
+    register_adapter(_HAIKU, _FakeToolAdapter())
+    await arm_escalation(db_path)
+
+    messages = [
+        {
+            "role": "tool",
+            "tool_call_id": "t1",
+            "content": json.dumps(
+                {"ok": True, "email": {"email_id": "e_sens", "subject": "x"}}
+            ),
+        }
+    ]
+
+    # THREE dispatches for the same (email, task) in one escalation window.
+    for i in range(3):
+        result = await dispatch_tool_call(
+            messages=messages,
+            tools=_tools(),
+            model=_HAIKU,
+            db_path=db_path,
+            email_id=None,
+            confirmation_token=None,
+        )
+        assert result.ok is True, (
+            f"dispatch #{i + 1} for same (email, task) should stay authorized "
+            f"within the TTL window, got error={result.error}"
+        )
+
+    # None of the three refused.
+    rows = await fetchall(
+        db_path,
+        "SELECT model_chosen_reason FROM router_calls WHERE task_type = ?",
+        (_TOOL_CALL_TASK_TYPE,),
+    )
+    assert len(rows) == 3
+    assert all(r[0] != "sensitivity_gate:refused" for r in rows)
+
+
+async def test_dispatch_tool_call_arm_does_not_authorize_different_email(
+    tmp_path: Path, _clean_state: Any,
+) -> None:
+    """Story 10-5-6 refinement — the escalation authorization is scoped to the
+    EXACT (email, task) the user escalated. A single 'yes, escalate' must NOT
+    leak authorization to a DIFFERENT sensitive email (blast-radius invariant).
+    """
+    from mailbot_api.actions.user_confirmation import arm_escalation
+
+    db_path = _setup(tmp_path)
+    await _seed_email(db_path, graph_id="e_one", sensitivity="sensitive")
+    await _seed_email(db_path, graph_id="e_two", sensitivity="sensitive")
+    register_adapter(_HAIKU, _FakeToolAdapter())
+    await arm_escalation(db_path)
+
+    # Authorize e_one.
+    r1 = await dispatch_tool_call(
+        messages=[{"role": "tool", "tool_call_id": "t1",
+                   "content": json.dumps({"ok": True, "email": {"email_id": "e_one"}})}],
+        tools=_tools(), model=_HAIKU, db_path=db_path,
+        email_id=None, confirmation_token=None,
+    )
+    assert r1.ok is True
+
+    # e_two must NOT be authorized off e_one's escalation.
+    r2 = await dispatch_tool_call(
+        messages=[{"role": "tool", "tool_call_id": "t2",
+                   "content": json.dumps({"ok": True, "email": {"email_id": "e_two"}})}],
+        tools=_tools(), model=_HAIKU, db_path=db_path,
+        email_id=None, confirmation_token=None,
+    )
+    assert r2.ok is False
+    assert r2.error is not None
+    assert r2.error.code == ErrorCode.SENSITIVITY_BLOCKS_API
+
+
+async def test_dispatch_tool_call_still_refuses_sensitive_with_no_authorization(
+    tmp_path: Path, _clean_state: Any,
+) -> None:
+    """Story 10-5-6 W2/W3 fix — regression guard: with NO inline token, NO arm,
+    and NO recorded confirmation, the sensitive dispatch STILL refuses (the fix
+    must not weaken the gate — it only honors genuine user-gated authorizations).
+    """
+    db_path = _setup(tmp_path)
+    await _seed_email(db_path, graph_id="e_sens", sensitivity="sensitive")
+
+    messages = [
+        {
+            "role": "tool",
+            "tool_call_id": "t1",
+            "content": json.dumps(
+                {"ok": True, "email": {"email_id": "e_sens", "subject": "x"}}
+            ),
+        }
+    ]
+    result = await dispatch_tool_call(
+        messages=messages,
+        tools=_tools(),
+        model=_HAIKU,
+        db_path=db_path,
+        email_id=None,
+        confirmation_token=None,
+    )
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == ErrorCode.SENSITIVITY_BLOCKS_API
+
+
 async def test_dispatch_tool_call_refusal_writes_sensitivity_gate_refused_audit_row(
     tmp_path: Path, _clean_state: Any,
 ) -> None:

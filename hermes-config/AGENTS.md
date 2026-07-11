@@ -133,8 +133,12 @@ the action. There is no batch shortcut.
 
 For `SEND_*` actions, the user types "send" in chat after seeing the draft.
 You then invoke `propose_action(...)` with the draft body as payload, which
-starts the 60-second cooling-off window (Story 4-6). The user can `/cancel
-<action_id>` during cooling-off.
+starts the 60-second cooling-off window (Story 4-6). The user can say
+`cancel <action_id>` (plain NL — no slash; the `/` prefix is owned by
+Discord/Hermes and never reaches you, F-10-5-1) during cooling-off. `cancel
+<id>` is a **deterministic recognized control phrase** (see
+`skills/mailbot/SKILL.md` § "Control-verb dispatch"): on it you MUST issue
+`cancel_action(action_id=<id>)`, never narrate "Cancelled" without the verb.
 
 For `DELETE`, the user confirms the specific email_id. If the email is
 sensitivity-classified as `sensitive` or `confidential`, the verb additionally
@@ -142,7 +146,10 @@ requires a sensitivity token (Story 4-1 CR-2). The handshake:
 
 1. Propose the delete.
 2. Verb returns `requires_sensitivity_token=True`.
-3. User types `/confirm <email_id> delete` (Story 5-6 slash dispatcher).
+3. User says `confirm <email_id> delete` (plain NL, no slash) — or `yes,
+   escalate`. This is a **deterministic recognized control phrase**
+   (`skills/mailbot/SKILL.md` § "Control-verb dispatch"): you MUST issue the
+   mint verb, not re-emit the refusal template (F-10-5-2-W2).
 4. `mint_sensitivity_token(email_id, "delete")` returns a single-use 10-minute
    token.
 5. Re-invoke `propose_action(..., confirmation_token=<token>)`.
@@ -249,7 +256,7 @@ unsubscribe completed successfully.
 
 Surface ONLY on user request. Do not proactively push.
 
-Examples: `/cost month` output, `/cost today` output, the result of a `status`
+Examples: `cost month` output, `cost today` output, the result of a `status`
 query, a `find_emails` projection list returned in response to a chat query.
 
 ### Silent

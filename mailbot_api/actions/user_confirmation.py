@@ -38,6 +38,7 @@ from mailbot_api.db.queries import (
     PENDING_SENSITIVE_REFUSAL_CLAIM,
     PENDING_SENSITIVE_REFUSAL_UPSERT,
     USER_CONFIRMATION_CONSUME,
+    USER_CONFIRMATION_FIND_ESCALATION_DISPATCH,
     USER_CONFIRMATION_FIND_GRANT,
     USER_CONFIRMATION_FIND_SENSITIVITY,
     USER_CONFIRMATION_INSERT,
@@ -322,6 +323,71 @@ async def consume_escalation_arm(
     return True
 
 
+async def authorize_sensitive_dispatch(
+    db_path: str, *, email_id: str, task_type: str,
+) -> bool:
+    """Authorize a sensitive dispatch for (email_id, task_type) off a genuine
+    user "yes, escalate", scoped to the exact (email, task) for the TTL window.
+
+    Story 10-5-6 refinement (live-walk finding): the persona fans out SEVERAL
+    sensitive tool calls in one escalation turn (hydrate -> propose -> draft) for
+    the same (email, task). A strictly single-use arm authorized only the first,
+    so the 2nd/3rd re-refused mid-flow. This helper records a TTL-windowed,
+    RE-READABLE `escalation_dispatch` grant on first authorization and PEEKS it
+    on subsequent same-(email, task) dispatches, so one "yes" covers the whole
+    turn — WITHOUT leaking authorization to a different email (each (email, task)
+    needs its own grant; a different email finds no grant + no live arm/confirm).
+
+    Order:
+      1. Live same-(email, task) escalation_dispatch grant within TTL -> peek, ok.
+      2. Else consume a single-use boundary `sensitivity_token` confirmation.
+      3. Else consume the escalation arm (same-turn ordering-independent path).
+    On 2 or 3 (a fresh authorization), record the reusable grant marker.
+
+    All inputs are user-gated ONLY (arm + confirmation are set exclusively at the
+    chat boundary on a genuine user-role phrase; the agent verb surface cannot
+    set either), so the non-agent-assertable NFR-PRIV-1 invariant holds. Never
+    called for confidential emails (refused unconditionally upstream).
+    """
+    # 1. Reusable grant already standing for this exact (email, task)?
+    grant = await fetchone(
+        db_path, USER_CONFIRMATION_FIND_ESCALATION_DISPATCH, (email_id, task_type)
+    )
+    if grant is not None:
+        _grant_id, grant_created_at = grant
+        if _parse_iso(grant_created_at) + CONFIRMATION_TTL > _utc_now():
+            return True  # peek — do NOT consume; covers the rest of the turn
+
+    # 2/3. First authorization this window: consume a boundary confirmation, else
+    # the arm. Mirrors `mint_sensitivity_token`'s precedence.
+    authorized = await consume_sensitivity_confirmation(
+        db_path, email_id=email_id, task_type=task_type,
+    )
+    if not authorized:
+        authorized = await consume_escalation_arm(
+            db_path, email_id=email_id, task_type=task_type,
+        )
+    if not authorized:
+        return False
+
+    # Record the TTL-windowed reusable grant so the remaining same-(email, task)
+    # dispatches in this turn stay authorized.
+    await execute_write(
+        db_path,
+        USER_CONFIRMATION_INSERT,
+        ("escalation_dispatch", email_id, task_type, None, None, _iso(_utc_now())),
+    )
+    _logger.info(
+        "sensitive dispatch authorized — escalation grant recorded",
+        extra={
+            "event": "user_confirmation.escalation_dispatch_authorized",
+            "email_id": email_id,
+            "task_type": task_type,
+        },
+    )
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Boundary correlation for the Tier-2 grant-approval handshake (CR-3/CR-4)
 # ---------------------------------------------------------------------------
@@ -377,6 +443,7 @@ __all__ = [
     "CONFIRMATION_TTL",
     "ConfirmationScope",
     "arm_escalation",
+    "authorize_sensitive_dispatch",
     "confirm_pending_escalation",
     "confirm_pending_grant",
     "consume_escalation_arm",

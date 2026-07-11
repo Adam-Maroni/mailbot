@@ -1,10 +1,13 @@
-"""Story 6-8 integration: /spend slash command end-to-end (partial).
+"""Story 6-8 integration: `spend` chart intent end-to-end (partial).
 
 The verb side (render_spend_chart), the MCP-tool-registration, and the
 SKILL.md documentation are locally testable here. The F6-gated portion —
-actual Hermes-side slash-dispatch round-trip from Discord through Hermes's
-skill bundle to the MCP /spend tool back to a Discord message attachment —
-is deferred to Phase 3.5 (after the F6 MCP /mcp 307→404 redirect fix ships).
+actual Hermes-side dispatch round-trip from Discord through Hermes's skill
+bundle to the MCP render_spend_chart tool back to a Discord message
+attachment — is deferred to Phase 3.5 (after the F6 MCP /mcp 307→404 redirect
+fix ships). Story 10-5-6: the user-facing invocation is plain NL (`spend
+month`), not a `/spend` slash command (F-10-5-1 — the slash never reaches
+MailBot).
 
 Tests in this file:
 
@@ -146,10 +149,14 @@ async def test_render_spend_chart_perf_under_2s_at_1000_rows(tmp_path: Path) -> 
 def test_skill_md_documents_render_spend_chart() -> None:
     """Story 6-8 Task 6: SKILL.md (the MailBot verb-surface reference Hermes
     consumes) MUST document `render_spend_chart` so the agent knows how to
-    invoke /spend.
+    handle the `spend` intent.
 
     CR LOW-2 fix: anchor SKILL.md path off __file__ so the test is robust to
     cwd changes (pytest sub-invocations, conftest pushd, etc.).
+
+    Story 10-5-6: the invocation is plain NL (`spend month`), not `/spend` —
+    the slash form is architecturally unreachable (F-10-5-1). The recognized-
+    phrase drift is enforced in test_recognized_phrase_dispatch.py.
     """
     skill_path = (
         Path(__file__).resolve().parents[2]
@@ -163,12 +170,12 @@ def test_skill_md_documents_render_spend_chart() -> None:
     assert "render_spend_chart" in text, (
         "SKILL.md does not document the render_spend_chart verb"
     )
-    assert "/spend" in text, (
-        "SKILL.md does not document the /spend slash command"
+    assert "spend month" in text, (
+        "SKILL.md does not document the plain-NL `spend month` intent"
     )
-    # CR LOW-2 strengthen: also check the new 4th turn structure.
+    # CR LOW-2 strengthen: also check the 4th turn structure (now plain-NL).
     assert "Turn structure 4" in text, (
-        "SKILL.md does not include the /spend turn structure (4th)"
+        "SKILL.md does not include the spend turn structure (4th)"
     )
 
 

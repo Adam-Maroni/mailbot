@@ -46,8 +46,8 @@ _CONFIDENTIAL_REFUSAL = (
     "Confidential emails admit no API override. The body stays on your VPS, period."
 )
 _SENSITIVE_ESCALATION_PROMPT = (
-    "This email is sensitive. Confirm via /confirm <email_id> draft_reply "
-    "or say 'yes, escalate'."
+    "This email is sensitive. Say 'yes, escalate' to authorize an API draft "
+    "for this one email (single-use, 10-min token)."
 )
 
 
@@ -71,7 +71,9 @@ class DraftReplyRequest:
 
     ``confirmation_token`` is the sensitivity confirmation token from Story
     4-7's ``mint_sensitivity_token`` — required when the email is sensitive
-    and the user already confirmed via /confirm.
+    and the user already confirmed via the recognized phrase 'yes, escalate'
+    (Story 10-5-6; the old '/confirm' slash form never reached the agent,
+    F-10-5-1).
     """
 
     user_message: str
