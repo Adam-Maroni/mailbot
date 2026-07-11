@@ -395,23 +395,20 @@ async def test_oneshot_takes_precedence_over_persistent_in_dispatch_tool_call(
         model=_HAIKU,
         db_path=db_path,
     )
-    # Story 10.5.5 (AC-2, F-10-3-2): the one-shot resolved the target to qwen
-    # (route b), which cannot serve tools — so the router refuses cleanly BEFORE
-    # any dispatch instead of surfacing an opaque `tools_unsupported`. The
-    # precedence contract this test guards is still proven: the SELECTED model
-    # is qwen (the one-shot pick), NOT opus (persistent) or haiku (policy).
-    from mailbot_api.router.errors import ErrorCode  # noqa: PLC0415
-
-    assert result.ok is False
-    assert result.error is not None
-    assert result.error.code == ErrorCode.TOOL_CALLS_UNAVAILABLE_DEGRADED
+    # Story AI-1: qwen is tool-capable now, so the one-shot qwen pick DISPATCHES
+    # (the old pre-dispatch refusal is gone). The precedence contract this test
+    # guards is proven the same way, just on the success path: the SELECTED and
+    # INVOKED model is qwen (the one-shot pick), NOT opus (persistent) or haiku
+    # (policy). Whether the resulting tool-call may ACT is a downstream
+    # (model-independent) propose_action decision, not this dispatcher's job.
+    assert result.ok is True
     assert result.model_used == _QWEN
-    # No adapter was dispatched — the refusal is pre-dispatch.
-    assert len(qwen_adapter.invocations) == 0
+    # The one-shot pick (qwen) was the ONLY adapter invoked — precedence proven.
+    assert len(qwen_adapter.invocations) == 1
     assert len(opus_adapter.invocations) == 0
     assert len(haiku_adapter.invocations) == 0
 
-    # The refusal is auditable and records the one-shot precedence reason.
+    # The dispatch is auditable and records the one-shot precedence reason.
     rows = await fetchall(
         db_path,
         "SELECT model_chosen, model_chosen_reason FROM router_calls WHERE task_type = ?",

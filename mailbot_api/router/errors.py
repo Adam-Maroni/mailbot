@@ -66,11 +66,16 @@ class ErrorCode(str, Enum):
     STATE_DRIFT_ETAG = "state_drift_etag"
     TARGET_DELETED = "target_deleted"
     STATE_DRIFT_NOOP = "state_drift_noop"
-    # Story 10.5.5 (AC-2, F-10-3-2): a tool-call request resolved/demoted to a
-    # model that cannot serve tools (qwen under degraded mode). The router
-    # refuses cleanly with this stable code INSTEAD of dispatching a doomed call
-    # to `OllamaAdapter.call_with_tools` (which raises opaque `tools_unsupported`,
-    # the 18/18-fail root cause). The caller gets a recoverable, typed refusal.
+    # A tool-call request resolved/demoted to a model that genuinely cannot
+    # serve tools. The router refuses cleanly with this stable code INSTEAD of
+    # dispatching a doomed call that raises opaque `tools_unsupported`; the
+    # caller gets a recoverable, typed refusal.
+    #
+    # Story 10.5.5 (AC-2, F-10-3-2) originally added this for qwen under
+    # degraded mode. Story AI-1 (2026-07-11) proved qwen IS tool-capable, so
+    # qwen no longer trips this code — it now fires only for a genuinely
+    # tool-INcapable model reaching a tools request (e.g. an embedding model
+    # like `nomic-embed-text`). The enum name is retained for stability.
     TOOL_CALLS_UNAVAILABLE_DEGRADED = "tool_calls_unavailable_degraded"
 
 

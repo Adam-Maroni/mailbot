@@ -121,21 +121,50 @@ def _strip_code_fence(text: str) -> str:
 # flow to local LLMs per FR-2.5.
 _API_BOUND_MODEL_RE = re.compile(r"^claude-(haiku|opus|sonnet)\b")
 
+# Story AI-1: local Ollama models that DO expose OpenAI-shape tool-calling.
+# `qwen2.5:*` was proven tool-capable by the AI-1 live probe (2026-07-11,
+# `AI-1-local-tool-caller-verify-or-restore.md`): 6/6 exact argument fidelity
+# at temperature 0 on both the native and OpenAI-compat surfaces. This is
+# deliberately NOT a match-everything regex — `nomic-embed-text` is an
+# embedding model with no chat/tool surface and must stay NON-tool-capable.
+_TOOL_CAPABLE_LOCAL_MODEL_RE = re.compile(r"^qwen2\.5:")
+
 
 def _model_supports_tool_calls(model: str) -> bool:
-    """Story 10.5.5 (AC-2, F-10-3-2) — capability predicate for tool-calling.
+    """Story AI-1 — CAPABILITY predicate for tool-calling (capability ONLY).
 
-    Only Anthropic (API-bound) models expose the OpenAI-shape tool-calling
-    surface (`call_with_tools`) we dispatch through. Local Ollama models
-    (`qwen2.5:*`, `nomic-embed-text`) do NOT — `OllamaAdapter.call_with_tools`
-    raises `tools_unsupported`. Keyed on the same API-bound family regex the
-    sensitivity gate uses, so the two capability notions stay in lockstep: an
-    API-bound model can serve tools; a local model cannot.
+    Returns True iff the model can EMIT OpenAI-shape tool_calls through its
+    adapter's `call_with_tools`. Two families qualify:
+      * Anthropic (API-bound) models — `claude-(haiku|opus|sonnet)*`.
+      * Local `qwen2.5:*` Ollama models — the AI-1 live probe (2026-07-11)
+        proved `OllamaAdapter.call_with_tools` works: 6/6 exact argument
+        fidelity at temperature 0 on both surfaces, incl. long Graph-style
+        ids. The prior claim that "Local Ollama models do NOT [support tools]
+        — OllamaAdapter.call_with_tools raises tools_unsupported" was FALSE
+        (stale Story 6-9 write-off); the adapter is now a real implementation.
+      * `nomic-embed-text` (and any other local non-chat model) stays
+        NON-tool-capable — it's an embedding model with no tool surface.
 
-    This is the primary router-side gate for AC-2; the adapter's own
-    `tools_unsupported` raise stays as defense-in-depth.
+    IMPORTANT — this predicate is CAPABILITY ONLY, not trust/policy (Story
+    AI-1, Winston's split). Whether a given model is ALLOWED to actually
+    dispatch a given mailbox action is enforced entirely downstream and
+    model-INDEPENDENTLY by the propose_action → pending_actions → drain
+    grant/confirmation tier pipeline (`mailbot_api/actions/propose.py`,
+    `mailbot_api/actions/drainer.py`, gated by `ACTION_PROPERTIES` in
+    `mailbot_api/actions/types.py`). A tool-CAPABLE local model can PROPOSE
+    an action; a Tier-2/3 (irreversible) action still requires its grant +
+    (for DELETE/SEND) sensitivity handshake at drain regardless of which
+    model proposed it. So opening capability here does NOT open a bypass —
+    reversibility, not model size, is the trust gate (the decided AI-1
+    design; see the story's RESUME INVESTIGATION section).
+
+    The adapter's own fail-loud contract (raise on genuine no-tool-calls when
+    tools were required) stays as defense-in-depth.
     """
-    return _API_BOUND_MODEL_RE.match(model) is not None
+    return (
+        _API_BOUND_MODEL_RE.match(model) is not None
+        or _TOOL_CAPABLE_LOCAL_MODEL_RE.match(model) is not None
+    )
 
 
 def _stricter_user_template(original: str, output_schema: type[BaseModel]) -> str:
@@ -1758,12 +1787,15 @@ async def dispatch_tool_call(
         (`confirmation_tokens: list[str]`) is the deferred v2 expansion.
         `confidential` admits NO override even with a token (NFR-PRIV-2).
       * Budget guard (Story 2-8) — per-call refusal threshold + degraded-mode
-        demotion. Story 10.5.5 (AC-2, F-10-3-2): degraded mode demotes to qwen,
-        which cannot serve tools. Rather than dispatch a doomed call that
-        surfaces as an opaque `tools_unsupported` failure (the 18/18-fail root
-        cause), the tool-capability gate returns a stable typed refusal
-        (`TOOL_CALLS_UNAVAILABLE_DEGRADED`) BEFORE any adapter call. Degraded
-        mode is still a cost-shedding safety net — it now sheds cleanly.
+        demotion. Story AI-1 (2026-07-11): degraded mode demotes to qwen, which
+        IS tool-capable (live-probed 6/6 at temp 0) — so a demoted qwen
+        tool-call now PROCEEDS (the local model is the safety net; it keeps
+        acting under budget pressure). Whether the resulting tool-call may ACT
+        is enforced downstream and model-independently by the propose_action
+        tier/grant/confirmation pipeline (reversible proceed; irreversible need
+        grant + sensitivity handshake). The tool-CAPABILITY gate below returns
+        `TOOL_CALLS_UNAVAILABLE_DEGRADED` only for a genuinely tool-INcapable
+        model (e.g. an embedding model) reaching a tools request.
       * Audit row (Story 2-1) — populated with `tool_calls_count` +
         redacted `tool_calls_summary` for forensic queries
 
@@ -1924,16 +1956,27 @@ async def dispatch_tool_call(
             model_chosen_reason = degraded_mode_demotion(from_model=model, to_model=demoted)
             model = demoted
 
-    # ---- Story 10.5.5 (AC-2, F-10-3-2) — tool-capability gate ----
-    # The resolved/demoted target must be able to serve tool-calls. Under
-    # degraded mode the demotion above lands on qwen (route a); a policy/override
-    # can also resolve `hermes_aux`→qwen directly (route b). Either way, sending
-    # a tools request to a tools-incapable local model produces the opaque
-    # `tools_unsupported` failure (18/18, F-10-3-2). Refuse cleanly HERE, before
-    # any `call_with_tools`, with a stable typed error the caller can recover
-    # from. This is the PRIMARY fix; `OllamaAdapter.call_with_tools`'s own raise
-    # stays as defense-in-depth. Placed before the sensitivity precondition
-    # because a refusal for an unusable model needs no sensitivity handshake.
+    # ---- Story AI-1 — tool-CAPABILITY gate (capability only, not trust) ----
+    # The resolved/demoted target must be able to EMIT tool-calls at all. As of
+    # Story AI-1 `qwen2.5:*` IS tool-capable (live-probed 6/6 at temp 0), so the
+    # degraded-mode demotion landing on qwen (route a) and a `use qwen` one-shot
+    # / policy resolve to qwen (route b) BOTH pass this gate now — this is the
+    # decided design (Option 1, gate on reversibility not mode). A qwen
+    # tool-call proceeds to `call_with_tools`; whether the resulting tool-call
+    # is ALLOWED to ACT on the mailbox is enforced entirely downstream and
+    # model-independently by the propose_action → drain grant/confirmation tier
+    # pipeline (see `_model_supports_tool_calls` docstring for the full trace).
+    # Reversible (Tier-1) actions proceed; irreversible (Tier-2/3) ones still
+    # require their grant + sensitivity handshake at drain regardless of model.
+    #
+    # This gate now only catches a genuinely tool-INCAPABLE model (e.g. an
+    # embedding model like `nomic-embed-text`, or a future local chat model not
+    # yet capability-verified) reaching a tools request. Sending a tools request
+    # to such a model produces the opaque `tools_unsupported` failure; refuse
+    # cleanly HERE, before any `call_with_tools`, with a stable typed error.
+    # `OllamaAdapter.call_with_tools`'s own fail-loud contract stays as
+    # defense-in-depth. Placed before the sensitivity precondition because a
+    # refusal for an unusable model needs no sensitivity handshake.
     if not _model_supports_tool_calls(model):
         await _emit_tool_calls_unavailable_audit_row(
             db_path=db_path,
@@ -1944,26 +1987,28 @@ async def dispatch_tool_call(
             email_id=email_id,
         )
         # W2b (Story 10.5.5 walk 2026-07-11): the message MUST reflect the real
-        # cause. Two disjoint routes land here (see the gate comment above):
-        #   (a) degraded-mode demotion shed a paid model down to local qwen, OR
+        # cause. Two disjoint routes land here:
+        #   (a) degraded-mode demotion shed a paid model down to a local model
+        #       that is NOT tool-capable, OR
         #   (b) a user override / one-shot / persistent entry picked a local,
         #       tools-incapable model directly (degraded NOT active).
-        # The pre-fix message hardcoded "under degraded mode", which was a
-        # falsehood for route (b) — Adam armed a `use qwen` one-shot with
-        # degraded OFF and got a "degraded mode" refusal. Branch on the actual
-        # degraded flag captured at the gate above.
+        # Post-AI-1 note: `qwen2.5:*` no longer reaches this branch — it is
+        # tool-capable and proceeds. This branch now only fires for a genuinely
+        # tool-incapable local model (e.g. an embedding model). Branch on the
+        # actual degraded flag captured at the gate above so the message names
+        # the true cause.
         if _degraded_active:
             _tool_refusal_msg = (
                 "tool-calling is unavailable right now: cost-saving (degraded) "
-                "mode is active, so full-cost models are shed and the local "
-                "model can't handle tool-calling requests. Resolve the budget "
+                "mode is active, and it demoted onto a local model that can't "
+                "handle tool-calling requests. Resolve the budget "
                 "(or wait for month-rollover), then retry."
             )
         else:
             _tool_refusal_msg = (
-                f"the selected model ({model}) is a local model and can't handle "
+                f"the selected model ({model}) is a local model that can't handle "
                 "tool-calling requests. Ask without needing an action/tool, or "
-                "switch back to an Anthropic model (e.g. clear the one-shot "
+                "switch to a tool-capable model (e.g. clear the one-shot "
                 "override) for requests that need tools."
             )
         return ToolCallResult(

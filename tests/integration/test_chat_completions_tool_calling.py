@@ -748,24 +748,69 @@ def test_compute_cache_key_empty_tools_hash_preserves_existing_key() -> None:
     assert legacy == new_form_empty
 
 
-def test_ollama_adapter_raises_tools_unsupported_when_called_with_tools(
+def test_ollama_adapter_is_tool_capable_and_emits_tool_calls(
     tmp_path: Path,  # noqa: ARG001
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AC §9 — adapters without tool support raise structured error."""
+    """Story AI-1 (was: 'raises tools_unsupported'). CONTRACT FLIPPED — the
+    OllamaAdapter now REALLY tool-calls (AI-1 live probe: 6/6 exact at temp 0).
+    The prior test hit the real unmocked adapter on localhost:11434 and asserted
+    a `tools_unsupported` raise; that raise is gone. This mocks the ollama chat
+    client and asserts the adapter translates a Qwen tool_call into the OpenAI
+    wire shape instead of refusing."""
+    import ollama
+
+    class _FakeClient:
+        def __init__(self, host: str = "") -> None:
+            self.host = host
+
+        async def chat(self, **_: Any) -> dict[str, Any]:
+            return {
+                "model": "qwen2.5:3b-instruct-q4_K_M",
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"function": {"name": "archive_email",
+                                      "arguments": {"email_id": "ABC123"}}}
+                    ],
+                },
+                "done": True,
+                "done_reason": "stop",
+                "prompt_eval_count": 20,
+                "eval_count": 6,
+            }
+
+    monkeypatch.setattr(ollama, "AsyncClient", lambda host="": _FakeClient(host))
     adapter = OllamaAdapter(
         model_id="qwen2.5:3b-instruct-q4_K_M",
         base_url="http://localhost:11434",
     )
-    with pytest.raises(AdapterProviderError) as exc_info:
-        import asyncio as _aio
-        _aio.run(
-            adapter.call_with_tools(
-                system="sys",
-                messages=[{"role": "user", "content": "hi"}],
-                tools=[],
-            )
+    import asyncio as _aio
+
+    result = _aio.run(
+        adapter.call_with_tools(
+            system="sys",
+            messages=[{"role": "user", "content": "archive ABC123"}],
+            tools=[
+                ChatCompletionToolDef(
+                    type="function",
+                    function=ChatCompletionFunctionDef(
+                        name="archive_email",
+                        description="archive by id",
+                        parameters={
+                            "type": "object",
+                            "properties": {"email_id": {"type": "string"}},
+                        },
+                    ),
+                )
+            ],
         )
-    assert exc_info.value.sanitized_message == "tools_unsupported"
+    )
+    assert isinstance(result, ToolCallAdapterResponse)
+    assert result.finish_reason == "tool_calls"
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].function.name == "archive_email"
 
 
 def test_chat_completions_tools_unsupported_adapter_surfaces_502(

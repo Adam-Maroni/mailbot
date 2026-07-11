@@ -13,12 +13,18 @@ Run locally with:
 
 from __future__ import annotations
 
+import json
 import os
 import statistics
 
 import pytest
 
-from mailbot_api.router.models import AdapterResponse, OllamaAdapter
+from mailbot_api.router.errors import ChatCompletionToolDef
+from mailbot_api.router.models import (
+    AdapterResponse,
+    OllamaAdapter,
+    ToolCallAdapterResponse,
+)
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("MAILBOT_RUN_REAL_OLLAMA") != "1",
@@ -71,3 +77,45 @@ async def test_real_ollama_p95_latency_under_5s_for_short_replies() -> None:
 
     p95 = statistics.quantiles(latencies_ms, n=20)[-1]
     assert p95 <= 5000, f"p95 latency {p95}ms exceeded 5000ms target"
+
+
+async def test_real_ollama_tool_call_exact_argument_fidelity() -> None:
+    """Story AI-1: drive the REAL inference surface for a tool call and assert
+    exact argument fidelity at temperature 0 on a Graph-style id.
+
+    Skipped without a live Ollama (same MAILBOT_RUN_REAL_OLLAMA=1 gate as the
+    other real tests). Mirrors the AI-1 probe's load-bearing finding: temp 0 is
+    6/6 exact including long ids.
+    """
+    adapter = OllamaAdapter(
+        model_id="qwen2.5:3b-instruct-q4_K_M",
+        base_url=_base_url(),
+        timeout_seconds=30.0,
+    )
+    graph_id = "AAMkAGI1AAAt3AABGAAAAAABQ8h1i_QeRZ2GJHu8mMj7Bw="
+    archive_tool = ChatCompletionToolDef.model_validate(
+        {
+            "type": "function",
+            "function": {
+                "name": "archive_email",
+                "description": "Archive an email by its id.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"email_id": {"type": "string"}},
+                    "required": ["email_id"],
+                },
+            },
+        }
+    )
+    result = await adapter.call_with_tools(
+        system="You archive emails by calling the archive_email tool.",
+        messages=[{"role": "user", "content": f"Archive the email with id {graph_id}."}],
+        tools=[archive_tool],
+    )
+    assert isinstance(result, ToolCallAdapterResponse)
+    assert result.finish_reason == "tool_calls"
+    assert len(result.tool_calls) == 1
+    tc = result.tool_calls[0]
+    assert tc.function.name == "archive_email"
+    parsed = json.loads(tc.function.arguments)
+    assert parsed["email_id"] == graph_id  # exact — no digit transposition

@@ -187,6 +187,99 @@ def _translate_tools_openai_to_anthropic(
     ]
 
 
+def _translate_tools_openai_to_ollama(
+    tools: list[ChatCompletionToolDef],
+) -> list[dict[str, Any]]:
+    """OpenAI `tools=[{"type":"function","function":{...}}]` → Ollama tools.
+
+    Story AI-1: Ollama's Python SDK (`/api/chat`) accepts OpenAI-compatible
+    tool dicts verbatim — `{"type":"function","function":{name,description,
+    parameters}}`. This helper reconstructs that shape from the parsed
+    `ChatCompletionToolDef` Pydantic models so the SDK sees a plain dict it
+    can serialize (mirrors `_translate_tools_openai_to_anthropic` above).
+    """
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t.function.name,
+                "description": t.function.description,
+                "parameters": t.function.parameters or {"type": "object", "properties": {}},
+            },
+        }
+        for t in tools
+    ]
+
+
+def _translate_messages_openai_to_ollama(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """OpenAI messages history → Ollama `/api/chat` messages.
+
+    Story AI-1 (CR-3, multi-turn correlation). Most OpenAI message shapes pass
+    to Ollama's `/api/chat` verbatim (user/assistant/system text, and assistant
+    messages carrying an OpenAI-shape `tool_calls` array). The ONE shape that
+    needs translation is the tool-RESULT message:
+
+      * OpenAI: `{"role": "tool", "tool_call_id": "<id>", "content": "..."}`
+      * Ollama: `{"role": "tool", "tool_name": "<fn name>", "content": "..."}`
+
+    Ollama correlates a tool result to the call by function NAME (`tool_name`),
+    not by the OpenAI `tool_call_id`. To recover the name we walk the history
+    once, building an id → function-name map from every assistant `tool_calls`
+    entry, then rewrite each `role:"tool"` message to carry `tool_name`
+    (dropping the meaningless-to-Ollama `tool_call_id`). If an id can't be
+    resolved (e.g. a tool result with no preceding assistant tool_call in the
+    supplied window), we fall back to any `name` already on the message, else
+    omit `tool_name` — Ollama then matches positionally, which is the best we
+    can do without the name and matches single-turn behavior.
+
+    Non-tool messages are passed through unchanged (a shallow copy is made only
+    for the tool messages we rewrite; other dicts are forwarded by reference,
+    same as the pre-AI-1 pass-through).
+    """
+    # Pass 1: id → function name, harvested from assistant tool_calls.
+    id_to_name: dict[str, str] = {}
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "assistant":
+            continue
+        tcs = msg.get("tool_calls")
+        if not isinstance(tcs, list):
+            continue
+        for tc in tcs:
+            if not isinstance(tc, dict):
+                continue
+            call_id = tc.get("id")
+            fn = tc.get("function")
+            if isinstance(call_id, str) and isinstance(fn, dict):
+                name = fn.get("name")
+                if isinstance(name, str) and name:
+                    id_to_name[call_id] = name
+
+    # Pass 2: rewrite tool-result messages; pass everything else through.
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("role") == "tool":
+            translated = dict(msg)
+            call_id = translated.pop("tool_call_id", None)
+            resolved = None
+            if isinstance(call_id, str):
+                resolved = id_to_name.get(call_id)
+            if resolved is None:
+                # Fall back to an explicit name already on the message, if any.
+                existing = translated.get("tool_name") or translated.get("name")
+                if isinstance(existing, str) and existing:
+                    resolved = existing
+            if resolved is not None:
+                translated["tool_name"] = resolved
+            out.append(translated)
+        else:
+            out.append(msg)
+    return out
+
+
 _OMIT_TOOL_CHOICE = object()
 """Sentinel returned by `_translate_tool_choice_openai_to_anthropic` to signal
 that the caller should OMIT the tool_choice field from the Anthropic request
@@ -410,15 +503,150 @@ class OllamaAdapter:
         max_tokens_out: int = 1024,
         temperature: float = 0.0,
     ) -> ToolCallAdapterResponse:
-        """Story 6-9 (F11 closure) — Ollama tool-call surface.
+        """Story AI-1 — Ollama tool-call surface (real implementation).
 
-        Qwen 2.5 doesn't expose OpenAI-shape tool-calling at the inference
-        surface we use. Raises a structured error rather than silently
-        dropping tools — silent drop is how F11 hid for an entire epic.
+        Qwen 2.5 3B (`qwen2.5:3b-instruct-q4_K_M`) DOES expose OpenAI-shape
+        tool-calling via Ollama's native `/api/chat` `tools` parameter. The
+        prior `tools_unsupported` write-off (Story 6-9) was stale: the AI-1
+        live probe (2026-07-11, `AI-1-local-tool-caller-verify-or-restore.md`)
+        proved 6/6 exact argument fidelity at temperature 0 on both the native
+        and OpenAI-compat surfaces — including long Graph-style ids.
+
+        Temperature 0 is LOAD-BEARING for argument fidelity on this 3B/Q4
+        model: the same probe saw default (non-zero) temperature corrupt a
+        tool-call argument (`ABC123` → `ABC132`, a digit transposition) while
+        temp 0 was 6/6 exact. The signature defaults `temperature=0.0`; we
+        pass it straight through and callers should not raise it for
+        write-bearing tool calls.
+
+        `messages` arrive in OpenAI shape (roles + content, plus tool /
+        tool_call blocks) — Ollama's `/api/chat` accepts most of those dicts
+        directly, so we prepend the system message (F14 guard: only when
+        non-empty) and forward the caller's list. The ONE exception (Story
+        AI-1 CR-3) is the tool-RESULT message: OpenAI keys it by
+        `tool_call_id`, Ollama by `tool_name`, so
+        `_translate_messages_openai_to_ollama` rewrites those for multi-turn
+        correlation. See that helper's docstring for the fallback behavior.
+
+        When `tool_choice == "none"` the tools list is omitted entirely — same
+        contract as the Anthropic adapter and OpenAI's "disable tools" meaning.
+        For any other tool_choice (auto / required / a specific function) we
+        pass the tools and let the model choose: Ollama's `/api/chat` has no
+        server-side tool_choice knob, so we CANNOT hard-force "required" or a
+        specific function. This is a known limitation surfaced here rather than
+        silently honored; the Router decides what to do with zero tool_calls
+        (we do NOT raise `tools_unsupported` — the capability exists).
         """
-        raise AdapterProviderError(
-            model_id=self.model_id,
-            sanitized_message="tools_unsupported",
+        # F14 guard (mirrors AnthropicAdapter.call_with_tools): only prepend a
+        # system message when the caller supplied non-whitespace system text.
+        ollama_messages: list[dict[str, Any]] = []
+        if system and system.strip():
+            ollama_messages.append({"role": "system", "content": system})
+        # Story AI-1 (CR-3): translate OpenAI-shape tool-RESULT messages
+        # (`role:"tool"`, keyed by `tool_call_id`) to Ollama's shape (keyed by
+        # `tool_name`) so multi-turn tool rounds correlate. Non-tool messages
+        # pass through unchanged.
+        ollama_messages.extend(_translate_messages_openai_to_ollama(messages))
+
+        # Temperature 0 is load-bearing for argument fidelity (see docstring).
+        options: dict[str, Any] = {
+            "num_predict": max_tokens_out,
+            "temperature": temperature,
+        }
+
+        chat_kwargs: dict[str, Any] = {
+            "model": self.model_id,
+            "messages": ollama_messages,
+            "options": options,
+        }
+        # tool_choice == "none" ⇒ omit tools entirely (disable tool use).
+        if tool_choice != "none":
+            chat_kwargs["tools"] = _translate_tools_openai_to_ollama(tools)
+
+        start_ns = time.monotonic_ns()
+        try:
+            response = await asyncio.wait_for(
+                self._client.chat(**chat_kwargs),
+                timeout=self.timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            raise AdapterTimeout(
+                model_id=self.model_id,
+                timeout_seconds=self.timeout_seconds,
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 — adapter boundary: convert everything
+            raise AdapterProviderError(
+                model_id=self.model_id,
+                sanitized_message=sanitize_error(exc),
+            ) from exc
+
+        latency_ms = (time.monotonic_ns() - start_ns) // 1_000_000
+
+        raw_dict: dict[str, Any] = (
+            response.model_dump() if hasattr(response, "model_dump") else dict(response)
+        )
+
+        message = raw_dict.get("message") or {}
+        if not isinstance(message, dict):
+            message = {}
+        text = message.get("content") or ""
+        if not isinstance(text, str):
+            text = ""
+
+        # Ollama native /api/chat returns tool_calls as
+        # [{"function": {"name": ..., "arguments": <dict>}}]. Note arguments is
+        # a DICT here; OpenAIToolCallFunction.arguments is a JSON STRING, so we
+        # json.dumps it (mirrors the Anthropic tool_use translation). Ollama
+        # does not supply a call id, so we synthesize one per index.
+        raw_tool_calls = message.get("tool_calls") or []
+        tool_calls: list[OpenAIToolCall] = []
+        if isinstance(raw_tool_calls, list):
+            for i, tc in enumerate(raw_tool_calls):
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") or {}
+                if not isinstance(fn, dict):
+                    fn = {}
+                arg_input = fn.get("arguments") or {}
+                try:
+                    args_json = json.dumps(arg_input, separators=(",", ":"))
+                except (TypeError, ValueError):
+                    args_json = "{}"
+                call_id = tc.get("id") or f"call_{i}"
+                tool_calls.append(
+                    OpenAIToolCall(
+                        id=str(call_id),
+                        type="function",
+                        function=OpenAIToolCallFunction(
+                            name=str(fn.get("name", "")),
+                            arguments=args_json,
+                        ),
+                    )
+                )
+
+        tokens_in = int(raw_dict.get("prompt_eval_count") or 0)
+        tokens_out = int(raw_dict.get("eval_count") or 0)
+
+        # finish_reason: tool_calls win; otherwise honor a truncation signal
+        # from Ollama's done_reason ("length"), else "stop".
+        done_reason = raw_dict.get("done_reason") or ""
+        finish_reason: Literal["stop", "tool_calls", "length"]
+        if tool_calls:
+            finish_reason = "tool_calls"
+        elif done_reason == "length":
+            finish_reason = "length"
+        else:
+            finish_reason = "stop"
+
+        return ToolCallAdapterResponse(
+            text=text,
+            tool_calls=tool_calls,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cached_tokens_in=0,
+            latency_ms=int(latency_ms),
+            finish_reason=finish_reason,
+            raw=raw_dict,
         )
 
     async def embed(self, text: str) -> EmbeddingResponse:

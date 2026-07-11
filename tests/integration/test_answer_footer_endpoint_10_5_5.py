@@ -277,25 +277,45 @@ _QWEN = "qwen2.5:3b-instruct-q4_K_M"
 
 
 class _QwenToolAdapter:
-    """qwen can't serve tools — mirrors OllamaAdapter.call_with_tools raising."""
+    """Story AI-1: qwen IS tool-capable now (live-probed 6/6 at temp 0), so this
+    adapter EMITS a real tool_call (the old `tools_unsupported` raise is gone).
+    The trust decision for whether the returned action may ACT is downstream in
+    the propose_action tier pipeline, not here."""
 
     async def call(self, *args: Any, **kwargs: Any) -> Any:  # pragma: no cover
         raise NotImplementedError
 
-    async def call_with_tools(self, **_: Any) -> ToolCallAdapterResponse:  # pragma: no cover
-        from mailbot_api.router.models import AdapterProviderError
+    async def call_with_tools(self, **_: Any) -> ToolCallAdapterResponse:
+        return ToolCallAdapterResponse(
+            text="",
+            tool_calls=[
+                OpenAIToolCall(
+                    id="call_qwen0",
+                    type="function",
+                    function=OpenAIToolCallFunction(
+                        name="render_spend_chart", arguments='{"period":"month"}'
+                    ),
+                )
+            ],
+            tokens_in=30,
+            tokens_out=8,
+            cached_tokens_in=0,
+            latency_ms=9,
+            finish_reason="tool_calls",
+            raw={"mock": True},
+        )
 
-        raise AdapterProviderError(model_id=_QWEN, sanitized_message="tools_unsupported")
 
-
-def test_tool_call_to_qwen_renders_graceful_200_not_502(
+def test_tool_call_to_qwen_dispatches_200_not_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """W2a (walk 2026-07-11): a tools request whose model is qwen (route b — a
-    user override / `use qwen`, degraded OFF) must render a GRACEFUL 200 message,
-    NOT an HTTP-502 that Hermes retries into a storm. Regression for the exact
-    502 Adam hit: `use qwen for next request` → next tool turn → 502 x3 retries.
-    """
+    """Story AI-1 (was W2a 'graceful refusal render'). CONTRACT FLIPPED — a tools
+    request forced to qwen (route b: a `use qwen` one-shot, degraded OFF) now
+    DISPATCHES and returns a normal 200 tool-call response, NOT a refusal render
+    and NOT a 502 retry storm. The old refusal-render path applied when qwen was
+    tool-INcapable; qwen is capable now, so the request simply succeeds. The
+    502 Adam originally hit (`use qwen` → tool turn → 502 x3) is doubly
+    neutralized: no refusal AND no adapter raise."""
     app = _bootstrap(tmp_path, monkeypatch)
     with TestClient(app) as client:
         register_adapter(_QWEN, _QwenToolAdapter())
@@ -311,20 +331,19 @@ def test_tool_call_to_qwen_renders_graceful_200_not_502(
         )
     # The load-bearing assertion: 200, not 502 (no retry storm).
     assert r.status_code == 200, r.text
-    content = r.json()["choices"][0]["message"]["content"]
-    assert content is not None
-    # Cause-accurate wording (W2b): NOT a false "degraded" claim.
-    assert "degraded" not in content.lower()
-    assert "local model" in content.lower()
-    # No dollar footer on a refusal render.
-    assert "this reply: $" not in content
+    body = r.json()
+    choice = body["choices"][0]
+    # A real tool-call response — no false "degraded"/refusal render.
+    assert choice["finish_reason"] == "tool_calls"
+    tool_calls = choice["message"]["tool_calls"]
+    assert tool_calls and tool_calls[0]["function"]["name"] == "render_spend_chart"
 
 
-def test_tool_call_to_qwen_graceful_200_streaming(
+def test_tool_call_to_qwen_dispatches_200_streaming(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """W2a streaming twin: the same refusal over `stream: true` returns SSE
-    chunks (200), not a 502."""
+    """Story AI-1 streaming twin: the same qwen tool request over `stream: true`
+    returns SSE chunks (200), not a 502 and not a 'degraded' refusal."""
     app = _bootstrap(tmp_path, monkeypatch)
     with TestClient(app) as client:
         register_adapter(_QWEN, _QwenToolAdapter())
