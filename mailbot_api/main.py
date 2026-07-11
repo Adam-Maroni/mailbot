@@ -16,6 +16,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Iterator
 from contextlib import AsyncExitStack, asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -24,11 +25,13 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from mailbot_api.config import SecretMissing, get_secret, get_secret_optional
+from mailbot_api.db import connection, queries
 from mailbot_api.db.migrations_runner import apply_pending_migrations
 from mailbot_api.mcp_server import build_mcp_server
+from mailbot_api.observability.answer_footer import build_answer_footer
 from mailbot_api.observability.logging import configure_logging
 from mailbot_api.router.anomaly import AnomalyDetector
-from mailbot_api.router.budget import get_guard
+from mailbot_api.router.budget import MONTHLY_HARD_CAP_USD, get_guard
 from mailbot_api.router.errors import (
     ChatCompletionToolChoice,
     ChatCompletionToolDef,
@@ -621,7 +624,27 @@ async def chat_completions(
                 )
             return _refusal
 
+        # Story 10.5.5 (W2a): a tool-calls-unavailable refusal is permanent +
+        # user-actionable, NOT a transient upstream failure — render it as a
+        # graceful 200 (same treatment as the sensitivity refusal above) so
+        # Hermes does not 3×-retry a 502 storm.
+        _tool_unavail = _tool_calls_unavailable_completion(result, raw_request)
+        if _tool_unavail is not None:
+            if request.stream:
+                return StreamingResponse(
+                    _plain_text_completion_sse_chunks(
+                        completion=_tool_unavail,
+                        raw_request=raw_request,
+                    ),
+                    media_type="text/event-stream",
+                )
+            return _tool_unavail
+
         _raise_router_error_if_failed(result)
+
+        # F-10-5-5-W1: DB-authoritative month-to-date for the footer (matches
+        # `mailbot status`), computed once for whichever render path runs.
+        _tool_mtd_usd = await _db_month_to_date_usd(db_path)
 
         # F13 (Story 6-9 CP-2 walk attempt #4): branch on `stream` field.
         # Hermes's main-inference path sends `stream=True` by default; an
@@ -638,12 +661,14 @@ async def chat_completions(
                     result=result,
                     raw_request=raw_request,
                     include_usage=include_usage,
+                    month_spend_usd=_tool_mtd_usd,
                 ),
                 media_type="text/event-stream",
             )
         return _build_tool_call_completion_response(
             result=result,
             raw_request=raw_request,
+            month_spend_usd=_tool_mtd_usd,
         )
 
     # ---- Story 2-10 original text-only path ----
@@ -701,6 +726,14 @@ async def chat_completions(
     # Translate the parsed output back to OpenAI shape. The hermes_aux
     # prompt's OUTPUT_SCHEMA is HermesAuxOutput with `text` field.
     output_text = getattr(result.output, "text", "")
+    # Story 10.5.5 (AC-3, B8): append the per-answer cost/model footer to this
+    # paid success render (the refusal branch above at the `not result.ok`
+    # guard is separate and carries no dollar footer). F-10-5-5-W1: month-to-date
+    # is DB-authoritative (matches `mailbot status`), not the guard mirror.
+    _mtd_usd = await _db_month_to_date_usd(db_path)
+    output_text = _append_footer(
+        output_text, _answer_footer_for_result(result, month_spend_usd=_mtd_usd)
+    )
     return {
         "id": f"chatcmpl-mailbot-{id(raw_request):x}",
         "object": "chat.completion",
@@ -827,6 +860,52 @@ def _sensitivity_refusal_completion(
     }
 
 
+def _tool_calls_unavailable_completion(
+    result: Any, raw_request: Request,
+) -> dict[str, Any] | None:
+    """Story 10.5.5 (W2a, walk 2026-07-11): render a `TOOL_CALLS_UNAVAILABLE_DEGRADED`
+    refusal as a graceful 200-shape chat.completion instead of a raw HTTP-502.
+
+    This mirrors `_sensitivity_refusal_completion`. Before this, the AC-2 typed
+    refusal fell through to `_raise_router_error_if_failed` → HTTP-502 → Hermes
+    treated the 502 as transient and retried 3×, surfacing a retry-storm of raw
+    error text. But "the picked/demoted model can't serve tool-calls" is a
+    permanent, user-actionable condition — not a transient upstream failure — so
+    it must render as a calm assistant message the user can act on (switch model
+    / drop the tool need / resolve the budget). Returns None for any other
+    failure so the caller falls through to the normal 502 path.
+    """
+    if result.ok or result.error is None:
+        return None
+    from mailbot_api.router.errors import ErrorCode as _ErrorCode  # noqa: PLC0415
+
+    if result.error.code is not _ErrorCode.TOOL_CALLS_UNAVAILABLE_DEGRADED:
+        return None
+    # The router already composed a cause-accurate, id-free message (W2b).
+    return {
+        "id": f"chatcmpl-mailbot-{id(raw_request):x}",
+        "object": "chat.completion",
+        "created": 0,
+        "model": getattr(result, "model_used", "") or "",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": result.error.message,
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cached_input_tokens": 0,
+        },
+    }
+
+
 async def _record_pending_grant_approvals_from_messages(
     *, request: _ChatCompletionsRequest, caller_origin: str, db_path: str,
 ) -> None:
@@ -892,17 +971,88 @@ def _raise_router_error_if_failed(result: Any) -> None:
         )
 
 
+async def _db_month_to_date_usd(db_path: str) -> float:
+    """Story 10.5.5 (F-10-5-5-W1 fix, walk 2026-07-11) — DB-authoritative
+    month-to-date spend for the footer.
+
+    The footer's month figure MUST match what `mailbot status` shows. Both now
+    read `ROUTER_CALLS_TOTALS_SINCE` from month-start — the same source
+    `observability.status._read_budget` uses — NOT the in-memory
+    `BudgetGuard.this_month_spend_usd` mirror, which only reflects the spend the
+    CURRENT process added since its own boot and drifts from the ledger (blind
+    to worker-process spend; stale until the next `initialize()`). Verified live
+    2026-07-11: a fresh process's guard counter read $0.00 while the DB month was
+    $26.51. Returns 0.0 on any read failure (footer still renders; cost line just
+    shows $0 rather than crashing the answer).
+    """
+    now = datetime.now(timezone.utc)
+    month_iso = now.strftime("%Y-%m-01T00:00:00Z")
+    try:
+        row = await connection.fetchone(
+            db_path, queries.ROUTER_CALLS_TOTALS_SINCE, (month_iso,)
+        )
+    except Exception:  # noqa: BLE001 — footer must never crash the answer
+        return 0.0
+    # ROUTER_CALLS_TOTALS_SINCE returns (count, sum_cost_usd, sum_cached_in, sum_in).
+    return float(row[1]) if row and row[1] is not None else 0.0
+
+
+def _answer_footer_for_result(result: Any, *, month_spend_usd: float) -> str:
+    """Story 10.5.5 (AC-3, B8) — build the per-answer cost/model footer for a
+    successful paid render.
+
+    Reads the served model + per-reply cost from the RESULT object
+    (`result.model_used` / `result.cost_usd` — exact vendor tokens × verified
+    price, NOT the audit-row `model_chosen`/`cost_usd_estimated` names).
+    ``month_spend_usd`` is the DB-authoritative month-to-date the caller computed
+    via `_db_month_to_date_usd` (F-10-5-5-W1 fix — NOT the drifting in-memory
+    guard mirror). The freshness guard inside `build_answer_footer` degrades to
+    tokens-only if pricing is stale/placeholder.
+    """
+    month_label = datetime.now(timezone.utc).strftime("%B")
+    return build_answer_footer(
+        model_used=result.model_used,
+        tokens_in=result.tokens_in,
+        tokens_out=result.tokens_out,
+        cost_usd=result.cost_usd,
+        month_spend_usd=month_spend_usd,
+        month_cap_usd=MONTHLY_HARD_CAP_USD,
+        month_label=month_label,
+    )
+
+
+def _append_footer(content: str | None, footer: str) -> str:
+    """Append the footer to answer text on its own line. A None/empty content
+    (tool-only response) becomes just the footer."""
+    base = content or ""
+    if base:
+        return f"{base}\n\n{footer}"
+    return footer
+
+
 def _build_tool_call_completion_response(
     *,
     result: Any,
     raw_request: Request,
+    month_spend_usd: float,
 ) -> dict[str, Any]:
     """Shape a successful ToolCallResult into an OpenAI chat.completion dict
     (non-streaming response). Per OpenAI's spec, `content` is null (not
-    empty string) when the assistant produced only tool_calls."""
+    empty string) when the assistant produced only tool_calls — Story 10.5.5
+    (Finding 3) preserves that: the cost/model footer is appended ONLY when
+    there is real answer text; a tool-only response keeps `content = None` so
+    clients that branch on `content is None` to detect a pure tool-call turn
+    are not fed synthetic prose. ``month_spend_usd`` is DB-authoritative
+    (F-10-5-5-W1)."""
     message_payload: dict[str, Any] = {"role": "assistant"}
+    # Story 10.5.5 (AC-3, B8 / Finding 3): append the per-answer cost/model
+    # footer only when there IS answer text; a tool-only response preserves the
+    # OpenAI `content: null` contract (footer suppressed).
     if result.text:
-        message_payload["content"] = result.text
+        message_payload["content"] = _append_footer(
+            result.text,
+            _answer_footer_for_result(result, month_spend_usd=month_spend_usd),
+        )
     else:
         message_payload["content"] = None
     if result.tool_calls:
@@ -934,6 +1084,7 @@ def _tool_call_completion_sse_chunks(
     result: Any,
     raw_request: Request,
     include_usage: bool,
+    month_spend_usd: float,
 ) -> Iterator[str]:
     """F13 (Story 6-9 CP-2 walk attempt #4, 2026-06-04) — emit OpenAI-shape
     SSE chunks for a streaming tool-call response.
@@ -973,8 +1124,16 @@ def _tool_call_completion_sse_chunks(
     # so the client can accumulate them across chunks. Since we emit each
     # tool_call complete in one chunk, the index is simply the position.
     delta: dict[str, Any] = {}
+    # Story 10.5.5 (AC-3, B8 / Finding 3): include the per-answer cost/model
+    # footer in the content delta ONLY when there is real answer text. Matches
+    # the non-streaming twin — a tool-only response (no text) streams no synthetic
+    # content, preserving the OpenAI `content: null` contract for pure tool-call
+    # turns.
     if result.text:
-        delta["content"] = result.text
+        delta["content"] = _append_footer(
+            result.text,
+            _answer_footer_for_result(result, month_spend_usd=month_spend_usd),
+        )
     if result.tool_calls:
         delta["tool_calls"] = [
             {

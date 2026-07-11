@@ -544,7 +544,10 @@ def test_chat_completions_returns_openai_tool_calls_shape(
     body = r.json()
     msg = body["choices"][0]["message"]
     assert msg["role"] == "assistant"
-    assert msg["content"] == "Let me check."
+    # Story 10.5.5 (AC-3): the assistant text now leads and the cost/model footer
+    # follows on its own line.
+    assert msg["content"].startswith("Let me check.")
+    assert "🤖" in msg["content"]
     assert len(msg["tool_calls"]) == 1
     tc = msg["tool_calls"][0]
     assert tc["id"] == "toolu_01ABC"
@@ -881,7 +884,9 @@ def test_text_only_path_unchanged_when_no_tools(
         )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["choices"][0]["message"]["content"] == "ok"
+    # Story 10.5.5 (AC-3): answer text leads; footer follows.
+    assert body["choices"][0]["message"]["content"].startswith("ok")
+    assert "🤖" in body["choices"][0]["message"]["content"]
 
 
 def test_tool_call_result_invariant_ok_requires_error_none() -> None:
@@ -1033,7 +1038,8 @@ def test_empty_tools_list_falls_through_to_text_path(
         )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["choices"][0]["message"]["content"] == "text path"
+    # Story 10.5.5 (AC-3): answer text leads; footer follows.
+    assert body["choices"][0]["message"]["content"].startswith("text path")
 
 
 def test_tool_choice_required_with_no_tools_rejected_422(

@@ -8,6 +8,7 @@ Usage:
     python scripts/mailbot.py replay 42
     python scripts/mailbot.py revert 42
     python scripts/mailbot.py resurrect <graph_id>           # Story 10.5.4
+    python scripts/mailbot.py rederive-cost --month 2026-07  # Story 10.5.5
     python scripts/mailbot.py status                       # Story 6-1
     python scripts/mailbot.py status --base-url http://mailbot-api:8000
     python scripts/mailbot.py pause [reason]               # Story 6-2
@@ -209,6 +210,55 @@ async def _cmd_rederive(
     return 0 if result.failed == 0 and not result.aborted else 1
 
 
+async def _cmd_rederive_cost(*, month: str | None, db_path_arg: str | None) -> int:
+    """Story 10.5.5 (AC-1, R4 / F-10-3-1) — re-derive router_calls cost at
+    corrected A2 pricing, re-seed the budget counter, and clear a degraded trip
+    the inflated ledger forced. Pure DB UPDATE ($0, no model dispatch)."""
+    from mailbot_api.observability.rederive_cost import rederive_month_cost
+
+    if db_path_arg is not None:
+        db_path = db_path_arg
+    else:
+        try:
+            db_path = get_secret("MAILBOT_DB_PATH")
+        except SecretMissing as exc:
+            print(  # noqa: T201
+                f"FATAL: required secret unset: {exc.name}. "
+                f"Set MAILBOT_DB_PATH or pass --db-path.",
+                file=sys.stderr,
+            )
+            return 2
+
+    apply_pending_migrations(db_path)
+
+    # Seed the guard from the (pre-correction) ledger so exit_degraded_mode has a
+    # live in-memory flag to clear; rederive_month_cost re-seeds it post-correction.
+    from mailbot_api.router.budget import get_guard
+
+    await get_guard().initialize(db_path)
+
+    try:
+        result = await rederive_month_cost(db_path=db_path, month=month)
+    except ValueError as exc:
+        print(  # noqa: T201
+            f"FATAL: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    print(  # noqa: T201
+        f"\nCost re-derive ({result.month_label}):\n"
+        f"  rows scanned:         {result.rows_scanned}\n"
+        f"  rows updated:         {result.rows_updated}\n"
+        f"  old month total:      ${result.old_total_usd:.4f}\n"
+        f"  new month total:      ${result.new_total_usd:.4f}\n"
+        f"  month cap:            ${result.month_cap_usd:.2f}\n"
+        f"  degraded (was→now):   {result.degraded_was_active} → {result.degraded_now_active}\n"
+        f"  guard counter now:    ${result.guard_counter_usd:.4f}"
+    )
+    return 0
+
+
 def main() -> int:
     configure_logging()
     parser = argparse.ArgumentParser(prog="mailbot", description="MailBot operator CLI")
@@ -287,6 +337,26 @@ def main() -> int:
              "(default only resurrects move-out 'deleted' removals)",
     )
     resurrect.add_argument(
+        "--db-path",
+        dest="db_path",
+        default=None,
+        help="SQLite path. Defaults to $MAILBOT_DB_PATH.",
+    )
+
+    # Story 10.5.5: re-derive router_calls cost at corrected A2 pricing (R4/F-10-3-1).
+    rederive_cost = sub.add_parser(
+        "rederive-cost",
+        help="Re-derive router_calls cost_usd_estimated at corrected A2 pricing "
+             "for a month, re-seed the budget counter, and clear a degraded trip "
+             "the inflated ledger forced ($0, pure DB UPDATE; Story 10.5.5)",
+    )
+    rederive_cost.add_argument(
+        "--month",
+        dest="month",
+        default=None,
+        help="Month to re-derive as YYYY-MM. Defaults to the current UTC month.",
+    )
+    rederive_cost.add_argument(
         "--db-path",
         dest="db_path",
         default=None,
@@ -393,6 +463,10 @@ def main() -> int:
             _cmd_resurrect(
                 graph_id=args.graph_id, force=args.force, db_path_arg=args.db_path
             )
+        )
+    if args.cmd == "rederive-cost":
+        return asyncio.run(
+            _cmd_rederive_cost(month=args.month, db_path_arg=args.db_path)
         )
     if args.cmd == "status":
         return _cmd_status(base_url=args.base_url)

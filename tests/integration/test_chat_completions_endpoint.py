@@ -144,7 +144,10 @@ def test_chat_completions_happy_path_with_caller_origin_header(
     body = r.json()
     assert body["object"] == "chat.completion"
     assert body["choices"][0]["message"]["role"] == "assistant"
-    assert body["choices"][0]["message"]["content"] == "hermes back"
+    # Story 10.5.5 (AC-3): the answer text is now followed by the cost/model
+    # footer on its own line; assert the answer text is the leading content.
+    assert body["choices"][0]["message"]["content"].startswith("hermes back")
+    assert "🤖 haiku" in body["choices"][0]["message"]["content"]
     assert "usage" in body
     assert body["usage"]["prompt_tokens"] == 10
     assert body["usage"]["completion_tokens"] == 5
@@ -270,7 +273,8 @@ def test_chat_completions_hermes_aux_alias_resolves_to_policy_default(
         "force_model that the adapter registry doesn't recognize."
     )
     body = r.json()
-    assert body["choices"][0]["message"]["content"] == "resolved from policy"
+    # Story 10.5.5 (AC-3): answer text now leads, footer follows on its own line.
+    assert body["choices"][0]["message"]["content"].startswith("resolved from policy")
     # `model` in the response is the actually-used model id, not the alias.
     assert body["model"] == "claude-haiku-4-5-20251001", (
         f"response.model={body['model']!r}; expected the policy-resolved "
@@ -308,7 +312,8 @@ def test_chat_completions_real_model_id_still_force_overrides(
 
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["choices"][0]["message"]["content"] == "opus ran", (
+    # Story 10.5.5 (AC-3): answer text leads; the footer follows on its own line.
+    assert body["choices"][0]["message"]["content"].startswith("opus ran"), (
         "force_model path broken: client requested claude-opus-4-7 but "
         f"got content={body['choices'][0]['message']['content']!r} (would "
         "be 'haiku ran' if the request fell through to the policy default)."

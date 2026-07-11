@@ -122,6 +122,22 @@ def _strip_code_fence(text: str) -> str:
 _API_BOUND_MODEL_RE = re.compile(r"^claude-(haiku|opus|sonnet)\b")
 
 
+def _model_supports_tool_calls(model: str) -> bool:
+    """Story 10.5.5 (AC-2, F-10-3-2) — capability predicate for tool-calling.
+
+    Only Anthropic (API-bound) models expose the OpenAI-shape tool-calling
+    surface (`call_with_tools`) we dispatch through. Local Ollama models
+    (`qwen2.5:*`, `nomic-embed-text`) do NOT — `OllamaAdapter.call_with_tools`
+    raises `tools_unsupported`. Keyed on the same API-bound family regex the
+    sensitivity gate uses, so the two capability notions stay in lockstep: an
+    API-bound model can serve tools; a local model cannot.
+
+    This is the primary router-side gate for AC-2; the adapter's own
+    `tools_unsupported` raise stays as defense-in-depth.
+    """
+    return _API_BOUND_MODEL_RE.match(model) is not None
+
+
 def _stricter_user_template(original: str, output_schema: type[BaseModel]) -> str:
     schema_dump = json.dumps(output_schema.model_json_schema(), separators=(",", ":"))
     return _STRICTER_PROMPT_PREFIX.format(schema_dump=schema_dump) + original
@@ -281,6 +297,47 @@ async def _emit_pause_refusal_audit_row(
         prompt_version=_TOOL_CALL_PROMPT_VERSION,
         model_chosen=model,
         model_chosen_reason=ModelChosenReason.PAUSE_GATE_REFUSED.value,
+        tokens_in=0,
+        tokens_out=0,
+        cached_tokens_in=0,
+        cost_usd_estimated=0.0,
+        latency_ms=0,
+        outcome="failed",
+        caller_verb=caller_verb,
+        caller_origin=caller_origin,
+        email_id=email_id,
+    )
+
+
+async def _emit_tool_calls_unavailable_audit_row(
+    *,
+    db_path: str,
+    model: str,
+    model_chosen_reason: str,
+    caller_verb: str | None,
+    caller_origin: str,
+    email_id: str | None,
+) -> None:
+    """Story 10.5.5 (AC-2, F-10-3-2) — emit an auditable row when the router
+    refuses a tool-call because the (resolved/demoted) target cannot serve
+    tools. Without this, the refusal returns before the dispatch `finally`
+    block and would leave NO `router_calls` row — re-opening the "opaque
+    failure" problem AC-2 is closing.
+
+    `outcome="failed"`, zero tokens/cost (no adapter call happened). The
+    `model_chosen_reason` is the reason already resolved by the dispatcher (a
+    `degraded:<from>→<to>` demotion string for route (a), or the
+    `policy:hermes_aux:default` string for route (b)) — both are valid
+    closed-set shapes, so the audit-vocab validator accepts them. The stable
+    `TOOL_CALLS_UNAVAILABLE_DEGRADED` error code lives on the returned
+    RouterError, making the fault reconstructable.
+    """
+    await _record(
+        db_path=db_path,
+        task_type=_TOOL_CALL_TASK_TYPE,
+        prompt_version=_TOOL_CALL_PROMPT_VERSION,
+        model_chosen=model,
+        model_chosen_reason=model_chosen_reason,
         tokens_in=0,
         tokens_out=0,
         cached_tokens_in=0,
@@ -1701,10 +1758,12 @@ async def dispatch_tool_call(
         (`confirmation_tokens: list[str]`) is the deferred v2 expansion.
         `confidential` admits NO override even with a token (NFR-PRIV-2).
       * Budget guard (Story 2-8) — per-call refusal threshold + degraded-mode
-        demotion. NOTE: degraded mode demotes to qwen, which doesn't support
-        tools — the call will surface as `tools_unsupported` after demotion.
-        This is intentional: degraded mode is a cost-shedding safety net,
-        not a feature-preservation layer.
+        demotion. Story 10.5.5 (AC-2, F-10-3-2): degraded mode demotes to qwen,
+        which cannot serve tools. Rather than dispatch a doomed call that
+        surfaces as an opaque `tools_unsupported` failure (the 18/18-fail root
+        cause), the tool-capability gate returns a stable typed refusal
+        (`TOOL_CALLS_UNAVAILABLE_DEGRADED`) BEFORE any adapter call. Degraded
+        mode is still a cost-shedding safety net — it now sheds cleanly.
       * Audit row (Story 2-1) — populated with `tool_calls_count` +
         redacted `tool_calls_summary` for forensic queries
 
@@ -1843,7 +1902,8 @@ async def dispatch_tool_call(
     # Story 10.5.1 (AC-2, the CLASS): authoritative cross-process degraded read
     # (see the ask_router gate above for the full rationale + scope fence).
     guard = get_guard()
-    if await guard.is_degraded_now(db_path):
+    _degraded_active = await guard.is_degraded_now(db_path)
+    if _degraded_active:
         # CR-4 (Story 6-9 review 2026-06-04): only block opus when it was
         # explicitly user-forced. A policy-resolved opus (unlikely today but
         # possible if hermes_aux policy flips) should be demoted like any
@@ -1863,6 +1923,59 @@ async def dispatch_tool_call(
         if demoted != model:
             model_chosen_reason = degraded_mode_demotion(from_model=model, to_model=demoted)
             model = demoted
+
+    # ---- Story 10.5.5 (AC-2, F-10-3-2) — tool-capability gate ----
+    # The resolved/demoted target must be able to serve tool-calls. Under
+    # degraded mode the demotion above lands on qwen (route a); a policy/override
+    # can also resolve `hermes_aux`→qwen directly (route b). Either way, sending
+    # a tools request to a tools-incapable local model produces the opaque
+    # `tools_unsupported` failure (18/18, F-10-3-2). Refuse cleanly HERE, before
+    # any `call_with_tools`, with a stable typed error the caller can recover
+    # from. This is the PRIMARY fix; `OllamaAdapter.call_with_tools`'s own raise
+    # stays as defense-in-depth. Placed before the sensitivity precondition
+    # because a refusal for an unusable model needs no sensitivity handshake.
+    if not _model_supports_tool_calls(model):
+        await _emit_tool_calls_unavailable_audit_row(
+            db_path=db_path,
+            model=model,
+            model_chosen_reason=model_chosen_reason,
+            caller_verb=caller_verb,
+            caller_origin=caller_origin,
+            email_id=email_id,
+        )
+        # W2b (Story 10.5.5 walk 2026-07-11): the message MUST reflect the real
+        # cause. Two disjoint routes land here (see the gate comment above):
+        #   (a) degraded-mode demotion shed a paid model down to local qwen, OR
+        #   (b) a user override / one-shot / persistent entry picked a local,
+        #       tools-incapable model directly (degraded NOT active).
+        # The pre-fix message hardcoded "under degraded mode", which was a
+        # falsehood for route (b) — Adam armed a `use qwen` one-shot with
+        # degraded OFF and got a "degraded mode" refusal. Branch on the actual
+        # degraded flag captured at the gate above.
+        if _degraded_active:
+            _tool_refusal_msg = (
+                "tool-calling is unavailable right now: cost-saving (degraded) "
+                "mode is active, so full-cost models are shed and the local "
+                "model can't handle tool-calling requests. Resolve the budget "
+                "(or wait for month-rollover), then retry."
+            )
+        else:
+            _tool_refusal_msg = (
+                f"the selected model ({model}) is a local model and can't handle "
+                "tool-calling requests. Ask without needing an action/tool, or "
+                "switch back to an Anthropic model (e.g. clear the one-shot "
+                "override) for requests that need tools."
+            )
+        return ToolCallResult(
+            ok=False,
+            error=RouterError(
+                code=ErrorCode.TOOL_CALLS_UNAVAILABLE_DEGRADED,
+                message=_tool_refusal_msg,
+                retryable=False,
+                model_attempted=[model],
+            ),
+            model_used=model,
+        )
 
     # ---- Story 3-3 + 4-7 sensitivity precondition (Story 6-20 strictest-placement) ----
     #

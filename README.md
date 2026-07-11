@@ -231,6 +231,7 @@ Run inside the `mailbot-api` container (or on the host with `MAILBOT_DB_PATH` / 
 | `mailbot replay <action_id>` | Re-queue a failed action for re-drain |
 | `mailbot revert <action_id>` | Revert an applied Tier-1 action (within 24h) |
 | `mailbot rederive --task=<task> --since=YYYY-MM-DD [--prompt-version vN] [--yes]` | Re-run one ingest task over rows since a date (shows a cost estimate + confirmation first) |
+| `mailbot rederive-cost [--month YYYY-MM]` | Re-derive `router_calls` cost at corrected A2 pricing for a month, re-seed the budget counter, and clear a degraded trip the inflated ledger forced ($0, pure DB UPDATE — no model dispatch). Defaults to the current UTC month. <!-- Story 10.5.5; live production run is the Task-6 Adam-hands-on walk --> |
 
 `status`, `pause`, and `resume` require `MAILBOT_ROUTER_KEY`. Sample `mailbot status` (illustrative — a `!` prefix marks a warning section):
 

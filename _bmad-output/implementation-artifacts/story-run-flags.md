@@ -973,3 +973,40 @@ Delegated adversarial pass, fresh commands against primary sources (10-3/10-4/10
 - **CP-4 (AC-4 CR-skip legitimacy):** `git diff --cached --name-only` = 8 files (README + 7 _bmad-output artifacts), zero source paths. ✔
 
 **Verdict: PASS** — zero findings; no verdict changes. All 4 AC verdicts (AC-1 PASS / AC-2 PASS / AC-3 PASS / AC-4 PASS) signed via Adam's delegation directive. Story 10-7 stands done; epic-10 done-flip clauses 2/3/4 discharged, clause 1 now complete (10-1..10-7 all done) — epic-10 done-flip decision itself belongs to the retrospective.
+
+## Story 10-5-5 — 2026-07-10 (autonomous-story-run, dev + MANDATORY-CR; HYBRID → HALT at live walk)
+
+**Headline:** Cluster E (degraded-mode estimator truth + per-answer cost/model footer) dev-complete at code-L3. July `cost_usd_estimated` re-derive (F-10-3-1/R4) + qwen tool-call typed refusal (F-10-3-2) + B8 per-answer footer with in-code pricing-freshness guard, all shipped with the load-bearing re-derive-before-footer ordering. Story flipped to `review`; live footer-verify walk (AC-1/AC-3 live clauses, small real Opus spend) is Adam-hands-on.
+
+**Models:** dev = claude-opus-4-8; review = claude-sonnet-5 (≠ dev, MANDATORY-CR contract satisfied).
+
+**Review rounds:** 1 review round + 1 fix pass. Findings found = 5; applied = **5/5 (100%)**; deferred = 0. (Reviewer independently converged 3 layers on the dev's escalated §3-MEDIUM and upgraded it to a HIGH — Finding 1.)
+
+**Gate verdicts:**
+- 2.3.5 pre-review self-audit — PASS (`10-5-5.pre-review.md`, all 5 sections + 11 posture checks; §3 6 self-caught items, 2 escalated; MANDATORY-CR criteria 1+3+6).
+- 2.4.4 Dev Agent Record completeness — PASS (Agent Model / Debug Log / Completion-Notes-per-AC / File List / Change Log all filled; Status stays `review` pending Adam-sign).
+- 2.4.5 UI-scope — N/A (no graphical frontend).
+- 2.4.6 File-List-vs-git — PASS (all File List paths tracked-or-staged; new files staged; no untracked-forgotten).
+- 2.4.7 Middleware/Router-real-bootstrap — PASS (HTTP-real `TestClient(app)` footer tests + DB-real re-derive tests + Router-real `dispatch_tool_call` refusal tests with fake adapters at the boundary, no mocked `ask_router`/`queries`).
+- 2.4.8 verbose-row truncation — DEFERRED to the eventual done-flip (story stays `review`; the verbose sprint-status row is retained as the working record until Adam-sign).
+- 2.5 dev-env verification — NOT run autonomously (deferred into the Task-6 live walk, which restarts `mailbot-api` on the live stack; the code-L3 gates + independent orchestrator re-run of ruff/mypy/boundaries/pytest stand in for a boot check).
+
+**Suite:** baseline 1800+2+3 → dev pass 1820+2+3 → **CR-fix pass 1828+2+3 (+28 net)**; ruff (--exclude scratch) / mypy-strict (135) / boundaries (exit 0) all independently re-run green by the orchestrator.
+
+**Deferred items:** none (`[deferred:*]` count = 0; all 5 CR findings applied).
+
+**Autonomous spend:** $0 (no real API calls; fake adapters + real SQLite). Live-walk spend is Console-manual, pending.
+
+**Permission prompts:** zero mid-run permission prompts — the envelope (pytest/ruff/mypy/git via allowed shapes) was sufficient. No permission log configured on this project.
+
+**Disposition:** Story stays **review** (NOT done). Dev + CR + all applicable done-gates complete at code-L3. AC-1 (live prod re-derive, $0) + AC-3 (live paid+free footer render, small real Opus spend, Console-manual) are the Adam-hands-on Phase-3.5 clauses. `done` on Adam-signed AC verdicts. Staged, nothing committed.
+
+## Story 10-5-5 Manual Verification — 2026-07-11 (Adam-DELEGATED: "run the manual verification yourself")
+
+Orchestrator drove the live walk as far as $0 permits (stack up; `mailbot_api/` bind-mounted so new re-derive + footer code is live; `scripts/` NOT mounted so `rederive-cost` CLI invoked as the module directly; mailbot-api restarted once to load the footer, booted clean).
+
+- **AC-1 (July re-derive + degraded) — PASS (live, $0, prod DB).** `month $70.9478 / $30 cap (236.5%)` → **`$26.5075 / $30 cap (88.4%)`, degraded no** (3332 rows corrected, persisted, idempotent, survives API restart via `initialize()` → $26.5116). F-10-3-1/R4 discharged live end-to-end.
+- **AC-2 — code-L3 (autonomous, no live clause).** AC-4 — MANDATORY-CR PASS (sonnet-5 ≠ opus-4-8, 5/5 applied).
+- **AC-3 (per-answer footer) — PASS WITH FINDINGS.** Free render live via `/v1/chat/completions`: `🤖 qwen (local, free)` (exact, $0). Paid format via live helper: `🤖 haiku · this reply: $0.0031 (1240 in / 380 out) · July: $Y of $30.00` (exact spec). **FILED F-10-5-5-W1 (MEDIUM):** footer month-to-date reads the in-memory `guard.this_month_spend_usd` mirror ($0 in a fresh process) instead of the DB-authoritative `_read_budget` month ($26.5116) — same per-process-in-memory-mirror class Cluster A fixed for the FLAGS; per-reply cost is fine, only the month line drifts; contradicts AC-3's "a number I can stand behind." Fix: read month from `ROUTER_CALLS_TOTALS_SINCE` at footer-build time.
+
+**Verdict: PASS WITH FINDINGS** — AC-1 fully live-verified; AC-3 mechanism live-verified but 1 MEDIUM finding filed + the real-paid render / Console reading remain Adam's. **Story stays `review`.** Recommendation: fast-follow amendment fixing F-10-5-5-W1 (footer month source → DB-authoritative) before flipping 10-5-5 `done`, OR file F-10-5-5-W1 to Cluster G and sign AC-3 on the mechanism — Adam's call. Environment left healthy (prod ledger now honest; API healthy, not paused).

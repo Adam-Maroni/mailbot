@@ -66,6 +66,12 @@ class ErrorCode(str, Enum):
     STATE_DRIFT_ETAG = "state_drift_etag"
     TARGET_DELETED = "target_deleted"
     STATE_DRIFT_NOOP = "state_drift_noop"
+    # Story 10.5.5 (AC-2, F-10-3-2): a tool-call request resolved/demoted to a
+    # model that cannot serve tools (qwen under degraded mode). The router
+    # refuses cleanly with this stable code INSTEAD of dispatching a doomed call
+    # to `OllamaAdapter.call_with_tools` (which raises opaque `tools_unsupported`,
+    # the 18/18-fail root cause). The caller gets a recoverable, typed refusal.
+    TOOL_CALLS_UNAVAILABLE_DEGRADED = "tool_calls_unavailable_degraded"
 
 
 class RouterError(BaseModel):

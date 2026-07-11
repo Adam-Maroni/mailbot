@@ -93,6 +93,33 @@ class BudgetGuard:
         row = await connection.fetchone(db_path, queries.DEGRADED_MODE_SELECT, ())
         self._degraded_mode_active = bool(row[0]) if row else False
 
+    async def reseed_month_from_window(
+        self, db_path: str, *, window_start: str, window_end: str
+    ) -> float:
+        """Story 10.5.5 (Findings 1 & 5) — re-seed ``this_month_spend_usd`` from
+        an EXPLICIT ``[window_start, window_end)`` month window rather than the
+        current-UTC-month assumption baked into ``initialize()``.
+
+        ``initialize()`` always aggregates ``ROUTER_CALLS_SPEND_SINCE`` from
+        ``_utc_month_start_iso()`` (today's real UTC month) with no upper bound,
+        so a retrospective ``--month`` re-derive would re-seed the live counter
+        from the WRONG month (Finding 1). This method re-aggregates strictly
+        within the corrected window so the counter and the clear-degraded
+        decision both reflect the SAME month.
+
+        Holds ``self._lock`` (Finding 5) so a concurrent ``add_spend`` mutating
+        ``this_month_spend_usd`` in a live process is mutually excluded from the
+        re-aggregation read. Returns the re-seeded month total.
+        """
+        async with self._lock:
+            row = await connection.fetchone(
+                db_path,
+                queries.ROUTER_CALLS_SPEND_IN_WINDOW,
+                (window_start, window_end),
+            )
+            self.this_month_spend_usd = float(row[0]) if row else 0.0
+            return self.this_month_spend_usd
+
     def is_degraded(self) -> bool:
         return self._degraded_mode_active
 

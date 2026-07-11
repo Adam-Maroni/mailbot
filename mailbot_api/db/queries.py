@@ -685,6 +685,34 @@ DEGRADED_MODE_EXIT = "UPDATE degraded_mode_state SET active = 0, exited_at = ? W
 
 ROUTER_CALLS_SPEND_SINCE = "SELECT COALESCE(SUM(cost_usd_estimated), 0) FROM router_calls WHERE ts >= ?"
 
+# Story 10.5.5 (Findings 1 & 2) — window-bounded spend sum `[start, end)`. Used
+# by the re-derive to compute the OLD/window totals and to re-seed the guard
+# from the SAME month window it corrected (never the unbounded-above SINCE sum).
+ROUTER_CALLS_SPEND_IN_WINDOW = (
+    "SELECT COALESCE(SUM(cost_usd_estimated), 0) FROM router_calls WHERE ts >= ? AND ts < ?"
+)
+
+
+# --- router_calls cost re-derive (Story 10.5.5, AC-1 / R4 / F-10-3-1) ---
+#
+# The July `cost_usd_estimated` figures were written under a pre-A2 3x-overstated
+# Opus placeholder, inflating the internal monthly counter to ~$70 (vs the ~$26
+# Console-real July) and sticking degraded mode on. These two constants drive a
+# pure-arithmetic re-derive from each row's stored per-call tokens — no model
+# re-dispatch. They live here (Rule C) so `observability/rederive_cost.py` never
+# holds a raw SQL literal, and the write path (execute_write) stays inside the
+# router_calls writer monopoly's spirit: the audit-INSERT monopoly is untouched;
+# this is a bounded cost-only correction of already-written rows, gated behind a
+# named constant + a dedicated ops module (documented boundary choice, Task 1).
+ROUTER_CALLS_SELECT_TOKENS_IN_WINDOW = (
+    "SELECT id, model_chosen, tokens_in, tokens_out, cached_tokens_in "
+    "FROM router_calls WHERE ts >= ? AND ts < ?"
+)
+
+# Narrowly-scoped: touches ONLY cost_usd_estimated, keyed by primary id. Cannot
+# alter tokens, model, outcome, or any audit-forensic column.
+ROUTER_CALLS_UPDATE_COST = "UPDATE router_calls SET cost_usd_estimated = ? WHERE id = ?"
+
 
 # --- pause_state (Story 2-9) ---
 

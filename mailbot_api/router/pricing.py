@@ -9,6 +9,52 @@ The function is intentionally a pure leaf — no DB, no network, no config-file 
 
 from __future__ import annotations
 
+import re
+
+# ---------------------------------------------------------------------------
+# Story 10.5.5 (AC-3) — machine-readable pricing-freshness marker.
+#
+# The 9.5.3 "$36 estimator vs $13 Console" lesson as a CODE invariant: the
+# per-answer cost footer must NEVER print a dollar figure it can't stand behind.
+# Before Story 10.5.5 the freshness signal lived ONLY in the module docstring
+# comment ("Rates verified 2026-07-05"). These two symbols + the predicate make
+# it machine-readable so `observability/answer_footer.py` can degrade to a
+# tokens-only footer whenever the prices are placeholder or stale.
+#
+# Freshness rule (deliberately simple + robust): pricing is FRESH iff
+#   (not PRICING_PLACEHOLDER) AND PRICING_VERIFIED_ON is a non-empty ISO date.
+# We base freshness on the PLACEHOLDER flag + presence of a well-formed
+# verified-on date rather than an actual age computation against "now": a
+# wall-clock age check is awkward to exercise deterministically in tests and
+# the failure mode we actually guard (a placeholder rate shipping unnoticed, as
+# in 9.5.3) is captured by the flag. Flip PRICING_PLACEHOLDER=True the instant a
+# rate is set to an unverified placeholder and the footer withholds dollars
+# automatically.
+PRICING_PLACEHOLDER: bool = False
+"""True iff any rate in ``_RATES`` is an unverified placeholder. MUST be flipped
+to True whenever a rate is changed to a value not yet reconciled against real
+Console billing. While True, the answer footer withholds all dollar figures."""
+
+PRICING_VERIFIED_ON: str = "2026-07-05"
+"""ISO date (YYYY-MM-DD) the rates in ``_RATES`` were last verified against the
+Anthropic pricing docs + real Console billing (Epic 9.5 retro A2). Empty/missing
+→ pricing treated as unverified."""
+
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def pricing_is_fresh() -> bool:
+    """Story 10.5.5 (AC-3) — True iff the answer footer may print dollar figures.
+
+    Fresh == (not PRICING_PLACEHOLDER) AND PRICING_VERIFIED_ON is a non-empty,
+    well-formed ISO date. If pricing is stale/placeholder the footer degrades to
+    tokens-only (no dollar figure) — the 9.5.3 lesson as a code invariant.
+    """
+    if PRICING_PLACEHOLDER:
+        return False
+    return bool(PRICING_VERIFIED_ON) and bool(_ISO_DATE_RE.match(PRICING_VERIFIED_ON))
+
+
 # Rates in USD per million tokens.
 #
 # Verification status (2026-07-05):
@@ -90,4 +136,10 @@ def estimate_cost_usd(
     )
 
 
-__all__ = ["UnknownModelPricingError", "estimate_cost_usd"]
+__all__ = [
+    "PRICING_PLACEHOLDER",
+    "PRICING_VERIFIED_ON",
+    "UnknownModelPricingError",
+    "estimate_cost_usd",
+    "pricing_is_fresh",
+]

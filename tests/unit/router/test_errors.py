@@ -37,10 +37,13 @@ _EXPECTED_ERROR_CODES = {
     "STATE_DRIFT_ETAG": "state_drift_etag",
     "TARGET_DELETED": "target_deleted",
     "STATE_DRIFT_NOOP": "state_drift_noop",
+    # Story 10.5.5 (AC-2, F-10-3-2): clean typed refusal when a tool-call
+    # resolves/demotes to a tools-incapable model under degraded mode.
+    "TOOL_CALLS_UNAVAILABLE_DEGRADED": "tool_calls_unavailable_degraded",
 }
 
 
-def test_error_code_has_exactly_15_members() -> None:
+def test_error_code_has_exactly_16_members() -> None:
     members = {m.name for m in ErrorCode}
     assert members == set(_EXPECTED_ERROR_CODES.keys()), (
         f"ErrorCode membership drift detected. "
