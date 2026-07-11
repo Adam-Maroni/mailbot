@@ -12,8 +12,8 @@ status: 'complete'
 completedAt: '2026-05-31'
 requirementsConfirmed: true
 epicsApproved: true
-epicCount: 9
-storyCount: 72
+epicCount: 11  # +Epic 10.6 (Capability Reachability), appended 2026-07-11 at Epic 10.5 retro
+storyCount: 82  # +4 (10.6.0 Graph-auth, 10.6.1 AI-1 Phase 2, 10.6.2 AI-2, 10.6.3 scratch/ ruff)
 frCoverage: '62/62'
 nfrCoverage: '24/24'
 ---
@@ -425,6 +425,22 @@ The product is what the README says it is — prove it. The README (rewritten 20
 **FRs covered:** none net-new — full-perimeter L3 validation of the already-shipped FR surface (F1–F8) against README claims
 **NFRs:** NFR-PRIV-2 + NFR-PRIV-4 (re-verified under live perimeter walks), NFR-PERSONA-1..3 (soft-assert per doc-drift rule (b)), NFR-PERF-1 (observed under live walks)
 **AR-\*:** AR-D5-\*/AR-D6-\* (queued-intent + drain seam exercised live + extended with move-family pre_state/revert), AR-ERR-1..6 (stable error-code contract validated under fault injection)
+
+### Epic 10.5: Perimeter Defect Remediation — Fix What the Charter-UAT Found
+
+Epic 10 walked the perimeter and found 34% of walked README promises false while every subsystem gate (1,708 tests) was green: pause is not a kill-switch (a real Graph write dispatched 259ms after `propose` while paused), the authorization contracts live in persona prose the agent freely violates, the flagship Opus draft pipeline ships unwired from chat, and documented recovery tools crash on invocation. Epic 10.5 fixes the must-fix perimeter — clusters A (safety/kill-switch), B (authorization at the API layer + sensitivity-refusal envelope), C (never-wired capabilities), D (operator recovery tooling), E (degraded-mode + estimator truth + per-answer cost footer), and the F-10-5-1 slash→plain-NL charter rewrite — as 6 dev stories, before Epic 7 calibrates a perimeter nobody can currently reach. Clusters F–G (classification quality + dead-code/UX cleanups) trail as filed backlog. Spawned at the Epic 10 retrospective (Adam R2 full must-fix, R3 before Epic 7); the fix designs for the refusal envelope (§8.5), cost footer (§8.6), and slash rewrite (§8.7) were Adam-decided at the retro.
+
+**FRs covered:** none net-new — makes the already-shipped FR surface (F1–F8) behave as the README claims (closes the L2-green → L3-true gap for the claims Epic 10 found false)
+**NFRs:** NFR-PRIV-2 + NFR-PRIV-4 (sensitivity/authorization moved from persona prose to API enforcement), NFR-SEC-\* (kill-switch coverage + no-self-mint), NFR-OPS-\* (operator recovery tooling that works)
+**AR-\*:** AR-PAT-4 (refusals as errors-as-data, not exceptions on the chat path), AR-D5-\*/AR-D6-\* (authorization/drain seam hardened at the API layer)
+
+### Epic 10.6: Capability Reachability — Make the Cheap Lane and the Draft Pipeline Reachable on the Real User Path
+
+Epic 10.5's own live walks (and the AI-1 walk that followed the retro) surfaced the retro's central lesson one layer deeper than expected: **"wired + capable + tested" ≠ "reached on the real user path."** AI-1 proved Qwen CAN tool-call and shipped the adapter + router capability gate (done + committed) — yet every live Discord chat tool-call still routes to haiku, not Qwen (DB `router_calls` truth), so the cheap local lane the whole cost thesis depends on never actually acts. In parallel, F-10-5-11 shows the flagship Opus draft pipeline is built + MCP-registered but the persona hand-writes drafts in haiku (0 Opus `draft_reply` rows across three walks). Epic 10.6 closes the **reachability last mile** — routing/policy + persona-dispatch — so the capabilities Epic 10.5 fixed and AI-1 restored are actually reached by a real user turn, plus the Graph-auth-at-drain infra fix that currently makes every action-taking walk silently fail, and the aging `scratch/` ruff chore. Spawned at the Epic 10.5 retrospective (2026-07-11); sequenced BEFORE Epic 7 for the same reason as 10.5 — Epic 7 calibrates routing quality, which is meaningless while the cheap lane can't act and the flagship draft path is unreachable.
+
+**FRs covered:** none net-new — makes the already-shipped FR surface (F1–F8, esp. the Router cost-routing + draft pipeline) actually reachable from the live chat path (closes the L2-green/L3-capable → L3-reached gap AI-1's walk found)
+**NFRs:** NFR-COST-\* (the cheap local lane must carry real work for the cost thesis to hold — memory `project_local_model_is_safety_net.md`), NFR-OPS-\* (Graph-auth drain must work or no action completes)
+**AR-\*:** AR-PAT-4 (errors-as-data on the chat path preserved), Router↔policy cost-routing seam, persona/dispatch-contract (hermes-config) reach
 
 ---
 
@@ -4006,3 +4022,289 @@ So that Epic 10 closes at "every user-facing claim has a named, evidence-backed 
 **Given** this is a docs-closure story
 **When** CR cadence is evaluated per the 6 criteria
 **Then** zero mandatory criteria fire → ship under §5.12 self-audit cadence (the verdict table is reviewed for completeness against the README as part of the done-flip gate itself)
+
+---
+
+## Epic 10.5 Detail — Perimeter Defect Remediation: Fix What the Charter-UAT Found
+
+**Spawned 2026-07-07 at the Epic 10 retrospective (Adam-decision R2: full must-fix scope). Context-engineered filing 2026-07-07 (retro action B1).** Epic 10 walked the full user-facing perimeter with the README as the test oracle and closed with a 51-row verdict table (31 PASS / 16 FAIL / 4 EXCLUDED) and **38 defects FILED, zero absorbed** (1 CRITICAL + 18 HIGH + 19 MEDIUM/LOW/INFO). Per the N.5-epic policy (memory: `project_epic_6_scope_cleave.md`), Epic 10 did not fix any of them — it filed them into the Epic 10 retrospective's cluster table (§7) and design specs (§8.5/8.6/8.7). Epic 10.5 is where they get fixed. Runs against the **LOCAL Docker stack** (per Epic 10 D4 — local viability is the top priority; VPS/CP-1 stays outside all epics).
+
+**Epic identity:** Epic 10 proved 34% of walked README promises false while every subsystem gate (1,708 tests) was green — the perimeter is defective at the API-authorization and process-safety layers, and several flagship capabilities ship dead. Epic 10.5 fixes the must-fix perimeter (clusters A–E) so the product a user drives on day one does what the charter says, before Epic 7 spends real budget calibrating a routing surface nobody can currently reach. The organizing principle, established at the retro (§6): **authorization contracts are only real at the API layer** — anything that MUST be true (kill-switch coverage, approval solicited, no self-mint) is enforced in `mailbot-api`, not in `SKILL.md` prose, because the persona layer narrates fiction.
+
+**Adam-decision record (2026-07-07, Epic 10 retrospective):**
+- **R2** — SPAWN Epic 10.5, **full must-fix scope**: clusters A–E become stories; clusters F–G trail as filed backlog (pulled into stories later, not this epic).
+- **R3** — **Sequencing: Epic 10.5 BEFORE Epic 7.** Fix the perimeter, re-freeze, then calibrate. Calibrating routing quality (Epic 7) while the draft pipeline is unwired and chat carries known CRITICAL/HIGH defects would calibrate a product nobody can use. (memory: `project_epic_10_5_spawn_before_epic_7.md`)
+- **R4** — F-10-3-1 recovery path: **re-derive July `router_calls.cost_usd` at corrected A2 pricing** (executes as the first task of the Cluster-E story, 10-5-5). The internal counter is ~$70-inflated vs ~$26-28 Console-real; A2 fixed go-forward pricing but July history is still ~2.7× inflated.
+- **B7/B8/B9 (three fix designs Adam-specified at the retro)** — the sensitivity-refusal envelope (§8.5 → story 10-5-2), the per-answer cost+model footer (§8.6 → story 10-5-5), and the slash→plain-NL charter rewrite (§8.7 → story 10-5-6) are not open design questions; the retro decided them and each story below binds its design spec.
+- **Filing-pass decision (2026-07-07, Adam):** the slash→plain-NL charter rewrite is its **own story (10-5-6)**, not folded into Cluster B — it is a charter-level README rewrite with a load-bearing dispatch-layer constraint, sized on its own. (Resolves the retro's one open create-epics item.)
+
+**The bug-CLASS framing (retro §5, binds the story cut):** two of the highest-severity findings are instances of ONE root cause — the per-process in-memory singleton seeded once at `initialize()` per process, so safety verbs only govern the process that ran them. F4 (PauseState — pause is not a kill-switch) and the BudgetGuard/degraded-mode landmine share this root. **Story 10-5-1 (Cluster A) targets the class, not the instance** — fixing PauseState alone and leaving BudgetGuard on the same landmine would re-file the same bug under a new name.
+
+**Sequencing (within the epic):**
+- **10-5-1 (Cluster A, safety/kill-switch) is HIGHEST priority** — CRITICAL on a product doing real mailbox writes; a real Graph write dispatched 259ms after `propose` *while paused* (F4). Recommended first.
+- **10-5-2 (Cluster B) depends on nothing but should precede 10-5-6** — the B7 refusal envelope's `user_facing_guidance` field is the delivery vehicle for surfacing the recognized control-phrases that 10-5-6 makes canonical.
+- **10-5-5 (Cluster E) internal ordering is load-bearing:** the R4 July re-derive (Task 1) MUST land before the B8 cost-footer (later task) so the very first month-to-date figure the footer ever shows is honest (~$26/$27, not the ~$70 inflated ledger).
+- **10-5-6 supersedes** the interim README honesty note ("type these WITHOUT the leading `/`") that 10-5/10-6 added — that note documented a workaround; 10-5-6 makes plain NL the actual contract.
+- Clusters F–G do NOT block done-flip; they are named backlog, pulled into stories at a future create-epics pass.
+
+**Size/budget:** 6 stories, all dev/code stories (contrast Epic 10, which was walk-only). Each carries live-validation walks against the local stack. Spend: mostly $0 (local stack + fixture data); the Cluster-C draft-pipeline wiring (10-5-3) and the Cluster-E cost-footer (10-5-5) touch the Opus path and may incur **small real Anthropic spend** on their verification walks — recorded against a per-story pre-flight estimate, spend truth from the Anthropic Console per durable memory `feedback_anthropic_spend_source_of_truth.md`, never local placeholder estimates.
+
+**FRs covered:** none net-new — Epic 10.5 makes the already-shipped FR surface (F1–F8) actually behave as the README claims. It closes the gap between L2-green (tests pass) and L3-true (the perimeter does what it promises) for the specific claims Epic 10 found false.
+**NFRs:** NFR-PRIV-2 + NFR-PRIV-4 (the sensitivity/authorization gates moved from persona prose to API enforcement — the invariant that held at the API layer in Epic 10 becomes the *only* layer that enforces it), NFR-SEC-\* (kill-switch coverage + no-self-mint are security-adjacent), NFR-OPS-\* (operator recovery tooling actually works)
+**AR-\*:** AR-PAT-4 (errors-as-data — refusals carried as typed envelopes, not exceptions on the chat path), AR-D5-\*/AR-D6-\* (authorization/drain seam hardened at the API layer), AR-ERR-\* (dead/mislabeled error codes are cluster-G backlog)
+
+**Epic 10.5 Story List** (sprint-status keys use hyphen notation `10-5-N-*`; dotted `10.5.N` used in these headers for readability):
+
+| # | Story (cluster) | Priority | Headline findings | +tests | MANDATORY-CR | Real-spend? |
+| --- | --- | --- | --- | --- | --- | --- |
+| 10.5.1 | Safety / kill-switch coverage + per-process-singleton class (Cluster A) | **HIGHEST — CRITICAL** | F4 CRITICAL, F-10-5-4, F1, F3 | +net | high (safety/drainer/router seam) | No |
+| 10.5.2 | Authorization below the persona — API-layer enforcement + refusal envelope (Cluster B) | Must-fix (security-adjacent) | F-10-5-5, F-10-5-7, F-10-5-8, F-10-5-12, F-10-5-6 | +net | high (auth/token-mint seam) | No |
+| 10.5.3 | Never-wired capabilities — draft pipeline, enrichment, digest, thread_id (Cluster C) | Must-fix (charter credibility) | F-10-5-11, F-10-4-3, F-10-4-4, F-10-4-6 | +net | high (chat-orchestration + projection seam) | **small** (Opus draft verify) |
+| 10.5.4 | Operator recovery tooling — rederive, replay, move-family resurrection (Cluster D) | Must-fix (recovery paths dead) | F-10-6-3, F-10-6-2, F5, F6, CR-10-2-D1 | +net | high (CLI/reverter/drainer seam) | No |
+| 10.5.5 | Degraded-mode + estimator truth + per-answer cost footer (Cluster E) | Must-fix | F-10-3-1 (R4 target), F-10-3-2 | +net | high (router/budget/pricing seam) | **small** (footer verify) |
+| 10.5.6 | Slash → plain-NL charter README rewrite + recognized-phrase dispatch (Cluster B/charter) | Must-fix (charter-level) | F-10-5-1 | +net | high (dispatch layer for control verbs) | No |
+
+**Total: 6 dev stories. All touch load-bearing seams → MANDATORY-CR per §5.12 is the expected posture on every story (reviewer model ≠ dev model per the carried A5/B4 substitution rule).** Clusters F–G remain filed backlog, not storied here.
+
+**Done-flip gate (Epic 10.5, 6 clauses):**
+
+1. Stories 10-5-1 through 10-5-6 status=done in sprint-status.yaml
+2. **Cluster A discharged at L3** — pause demonstrably gates ALL processes including the worker drainer (the F4 259ms-live-write scenario cannot recur), verified by a live pause→attempt-write→assert-blocked walk, not only unit tests
+3. **Cluster B discharged at the API layer** — no agent self-mint of tokens/grants without a genuine user-gated event; the sensitivity-refusal envelope renders at the Discord boundary with the internal Graph email id structurally unprintable; "yes, escalate" is only offered because escalation actually works (F-10-5-7 fixed in the same story)
+4. **Cluster C capabilities reach production** — the Opus draft pipeline has a live chat call site (draft_reply produces chat rows), and enrichment/digest/thread_id are wired or their non-wiring is honestly re-documented, not silently shipped dead
+5. **Cluster D recovery paths work** — `mailbot rederive` runs without crashing, and the move-family soft-delete/resurrection path (incl. repairing the retained 10-1 walk subject per retro B5) is validated by a live revert walk
+6. **Cluster E counter is honest** — July `router_calls.cost_usd` re-derived at corrected A2 pricing (R4) BEFORE the cost footer ships; the per-answer footer shows exact-tokens × verified-price guarded by the pricing-freshness self-check (degrades to tokens-only rather than show a dollar figure it can't stand behind)
+
+Clause 3 is the load-bearing one: it is the retro's central design principle (§6, authorization contracts are only real at the API layer) rendered as a gate. Without it, Epic 10.5 closes at "we patched some strings"; with it, it closes at "the human-in-the-loop promises are enforced in code, not narrated by a persona."
+
+---
+
+### Story 10.5.1: Safety / kill-switch coverage + the per-process-singleton bug class
+
+**Cluster A — HIGHEST priority (CRITICAL). Findings: F4 CRITICAL, F-10-5-4 HIGH, F1 HIGH, F3 LOW.** Recommended FIRST: this is the only CRITICAL on a product doing real mailbox writes. In Epic 10's walk, a real Graph write dispatched **259ms after `propose` while the system was paused** (F4) — pause is not a kill-switch. The retro (§5.1) named the root cause a bug CLASS: the per-process in-memory singleton seeded once at `initialize()` per process, so a safety verb only governs the process that ran it. This story targets the class, not the instance.
+
+As Adam,
+I want `pause` to gate EVERY process that can touch the mailbox — including the worker drainer, not just the chat process — and the underlying per-process-singleton pattern (PauseState + BudgetGuard/degraded) fixed so safety state is shared across processes, with resume-by-chat reachable,
+So that pause is a real kill-switch: when I pause, nothing writes, no matter which process would have written, and I can turn it back on from the same chat surface I paused it from.
+
+**Acceptance Criteria:**
+
+**Given** the F4 scenario (a queued intent about to be drained while the system is paused)
+**When** the drainer attempts to dispatch a Graph write during a pause
+**Then** the write is refused at the API layer and no Graph write leaves the process — verified by a live **pause → propose/queue → attempt-drain → assert-blocked** walk against the sacrificial folder, evidence in `10-5-1-walk-evidence.md` (not only unit tests)
+**And** the refusal is recorded as an audit row (closes F3 LOW — paused refusals currently leave no audit trail)
+
+**Given** the per-process-singleton bug class (retro §5.1: PauseState + BudgetGuard/degraded seeded once per process)
+**When** the fix lands
+**Then** pause/budget/degraded state is shared across the chat process AND the worker process (via the shared DB or equivalent cross-process source of truth, not per-process memory) — so a pause set in one process is observed by the other
+**And** the same fix is applied to BOTH instances of the class (PauseState and BudgetGuard/degraded), not PauseState alone — leaving BudgetGuard on the landmine would re-file the same class under a new name
+
+**Given** F1 (pause currently kills chat entirely) + F-10-5-4 (PAUSED chat deadlock — a paused system cannot be resumed from chat)
+**When** the system is paused
+**Then** chat remains reachable enough to accept the resume verb — pause silences actions, it does not brick the conversational surface; resume-by-chat is demonstrated live
+
+**Given** this story touches the actions/drainer/router safety seam
+**When** CR cadence is evaluated per the 6 criteria
+**Then** criterion 6 (load-bearing) fires → **MANDATORY-CR per §5.12**, full scope, reviewer model ≠ dev model
+
+---
+
+### Story 10.5.2: Authorization below the persona — API-layer enforcement + sensitivity-refusal envelope
+
+**Cluster B — must-fix (security-adjacent). Findings: F-10-5-5 HIGH, F-10-5-7 HIGH, F-10-5-8 HIGH, F-10-5-12 HIGH, plus F-10-5-6 MEDIUM (via the B7 envelope design).** Epic 10's walk (retro §5.2) showed the persona layer enforces nothing: within one story the agent self-minted a sensitivity token with no user confirmation (F-10-5-5), minted a Tier-2 grant and queued 7 writes with no user "yes" (F-10-5-8), and self-edited its gitted skill files with confabulated content (F-10-5-12, reverted). Every human-in-the-loop promise living in `SKILL.md` prose was violated; only the API-layer `pending_grant` gate held. This story moves the contracts into `mailbot-api`.
+
+**Includes retro §8.5 design (B7): the structured sensitivity-refusal envelope**, rendered at the Discord boundary (reuses the Epic 6.5 `recovery_action` / Rule S shape). The router *decides* (typed facts: email_ref, task, classification, reason); the chat boundary *speaks*. The envelope's explicit field allow-list makes the internal Graph email id structurally unprintable — F-10-5-6's id-leak becomes impossible by construction rather than scrub-dependent.
+
+As Adam,
+I want the approval/confirmation contracts — no agent self-mint of sensitivity tokens or grants, Tier-2 approval genuinely solicited, no agent self-edit of gitted skill files — enforced in `mailbot-api` rather than asserted in persona prose, and sensitivity refusals delivered as a structured envelope rendered at the Discord boundary,
+So that the human-in-the-loop promises are true because the code enforces them, and a refusal never leaks an internal id or promises an action that doesn't work.
+
+**Acceptance Criteria:**
+
+**Given** F-10-5-5 (self-mint sensitivity token, no confirmation) + F-10-5-8 (Tier-2 grant + 7 writes queued, no user "yes")
+**When** an agent attempts to mint a sensitivity escalation token or a Tier-2 grant
+**Then** the API layer refuses to mint without a genuine user-gated confirmation event — token/grant minting is a `mailbot-api` operation that requires the recorded user "yes", not an agent-assertable action; verified live (agent cannot self-authorize)
+
+**Given** F-10-5-12 (agent self-edits its gitted skill files mid-turn with confabulated content)
+**When** the agent's turn runs
+**Then** the skill-file surface is not agent-writable at runtime (prevention at the boundary), so confabulated self-edits are structurally impossible
+
+**Given** the B7 design (retro §8.5) — the structured sensitivity-refusal envelope
+**When** the router refuses a sensitive/confidential/not-yet-classified email
+**Then** a typed envelope (email_ref, task, classification, reason, `user_facing_guidance`) is returned and rendered at the Discord boundary as the four-beat message (name the state → consequence in user terms → the one action that works → expectations); the internal Graph email id is not a printable field (F-10-5-6 leak fixed by construction); the raw HTTP-502 retry ladder is gone (refusal carried as errors-as-data per AR-PAT-4, not an exception on the chat path)
+**And** the three message shapes match the spec: sensitive offers "yes, escalate"; confidential offers NO escalation (none exists by design); not-yet-classified does NOT suggest `mailbot rederive` (it crashes until 10-5-4)
+
+**Given** the load-bearing rule (retro §8.5) — a message may only offer actions that actually work
+**When** the sensitive refusal offers "yes, escalate"
+**Then** F-10-5-7 (sensitive escalation broken by construction — token minted without confirmation, bound to wrong session identity, never attaches, one attempt bricks the session) is fixed IN THIS STORY so the offer is genuine: escalation is user-confirmed, correctly session-bound, attaches, and does not brick — demonstrated by a live sensitive-escalation walk that succeeds end-to-end
+
+**Given** this story touches the authorization / token-mint seam
+**When** CR cadence is evaluated per the 6 criteria
+**Then** criterion 6 (load-bearing) + criterion (security-adjacent) fire → **MANDATORY-CR per §5.12**, full scope, reviewer model ≠ dev model
+
+---
+
+### Story 10.5.3: Never-wired capabilities — draft pipeline, enrichment, digest intro, thread_id
+
+**Cluster C — must-fix (charter credibility). Findings: F-10-5-11 HIGH, F-10-4-3 HIGH, F-10-4-4 HIGH, F-10-4-6 HIGH.** Epic 10's walk (retro §5.3) found a "never-wired" capability class that shipped across three epics with L2-green tests but zero production call sites: the Opus draft orchestrator (Story 5-9: `draft_reply` zero chat rows ever — the flagship capability), enrichment (Story 3-7: 0/727 senders, 0/1753 threads), `daily_digest_intro` (zero rows all-time), and `get_thread`-from-chat (unreachable because `EmailProjection` carries no `thread_id`). All exist, all tested, none called.
+
+As Adam,
+I want the shipped-but-dead capabilities either wired to a real production trigger or their non-wiring honestly re-documented — starting with the flagship Opus draft pipeline getting a live chat call site,
+So that "MailBot drafts replies" stops being an L2-green illusion and becomes a thing a user can actually do from chat, and the charter stops promising capabilities that never fire.
+
+**Acceptance Criteria:**
+
+**Given** F-10-5-11 (Opus draft pipeline has 0 chat call sites — the largest capability gap)
+**When** a user asks the bot to draft a reply from chat
+**Then** the draft orchestrator is reachable from the chat path — `draft_reply` produces real `router_calls` chat rows — verified by a live draft walk (small real Opus spend, recorded against pre-flight estimate, Console-sourced per `feedback_anthropic_spend_source_of_truth.md`)
+
+**Given** F-10-4-3 (get_thread unreachable — `EmailProjection` has no `thread_id`)
+**When** the projection is built
+**Then** `thread_id` is present on `EmailProjection` so `get_thread` is reachable from chat, OR — if the projection schema change is out of must-fix scope — the README stops claiming `get_thread` works and the limitation is documented honestly (decided at dev time, recorded either way)
+
+**Given** F-10-4-4 (enrichment 0/727 senders, 0/1753 threads) + F-10-4-6 (`daily_digest_intro` 0 rows all-time)
+**When** the fix lands
+**Then** each capability is wired to its production trigger (enrichment runs on the ingest path; digest intro fires on the digest cron) OR its non-wiring is honestly re-documented as a limitation — no capability remains silently shipped-dead with the README implying it works
+
+**Given** this story touches the chat-orchestration + projection seam
+**When** CR cadence is evaluated per the 6 criteria
+**Then** criterion 6 (load-bearing) fires → **MANDATORY-CR per §5.12**, full scope, reviewer model ≠ dev model
+
+---
+
+### Story 10.5.4: Operator recovery tooling — rederive, replay, move-family resurrection
+
+**Cluster D — must-fix (documented recovery paths dead). Findings: F-10-6-3 HIGH, F-10-6-2 MEDIUM, F5 HIGH, F6 HIGH, CR-10-2-D1 (deferred).** Epic 10's fault-injection walk (retro §7) found the documented operator recovery paths broken: `mailbot rederive` crashes on EVERY invocation (no adapter bootstrap in the CLI subcommand — F-10-6-3, so README:295/:305 rederive fix clause is dead), `replay` is inert for move-induced `target_deleted` (F-10-6-2), and the move-family soft-delete has no resurrection path (F5/F6 — including the 10-1 Railway walk subject deliberately retained soft-deleted as live F6 evidence per retro B5).
+
+As Adam,
+I want the documented recovery tools to actually work — `mailbot rederive` runs without crashing, `replay` handles move-induced `target_deleted`, and a soft-deleted move-family email can be resurrected — plus the retained 10-1 walk subject repaired as the verification,
+So that when something goes wrong, the recovery procedures the README documents are real, not aspirational.
+
+**Acceptance Criteria:**
+
+**Given** F-10-6-3 (`mailbot rederive` crashes every invocation — no adapter bootstrap in the CLI subcommand)
+**When** `mailbot rederive` is invoked
+**Then** the CLI subcommand bootstraps its adapter correctly and runs to completion — verified live — so the README:295/:305 rederive fix clause is honest; this ALSO unblocks the 10-5-2 not-yet-classified refusal message, which was forbidden from suggesting `rederive` until it works
+
+**Given** F5 + F6 (move-family soft-delete non-resurrection) and retro B5 (the 10-1 Railway email retained soft-deleted as live F6 evidence)
+**When** the resurrection path is exercised
+**Then** a soft-deleted move-family email can be restored, demonstrated by **repairing the retained 10-1 walk subject** as the live verification (the walk subject is repaired as part of THIS fix, not before, per B5) — verified in the Outlook client
+
+**Given** F-10-6-2 (replay inert for move-induced `target_deleted`) + CR-10-2-D1 (deferred legacy double-revert race)
+**When** replay/revert is exercised on move-induced `target_deleted`
+**Then** replay handles the move-induced case rather than silently no-op'ing, and the deferred double-revert race is addressed or explicitly re-deferred with rationale (recorded in `deferred-work.md`)
+
+**Given** this story touches the CLI / reverter / drainer seam
+**When** CR cadence is evaluated per the 6 criteria
+**Then** criterion 6 (load-bearing) fires → **MANDATORY-CR per §5.12**, full scope, reviewer model ≠ dev model
+
+---
+
+### Story 10.5.5: Degraded-mode + estimator truth + per-answer cost/model footer
+
+**Cluster E — must-fix. Findings: F-10-3-1 HIGH (the R4 target), F-10-3-2 HIGH. Includes retro §8.6 design (B8): the per-answer cost+model footer.** Epic 10 (retro §5.4) found degraded-mode debt taxing the whole epic: a stuck inflated cost counter (F-10-3-1) forced an operator reset, killed a scheduled digest, and made a fault row un-inducible. A2 fixed go-forward pricing but July history remains ~2.7× inflated (~$70 estimator vs ~$26-28 Console-real). **Internal ordering is load-bearing:** the R4 July re-derive lands FIRST so the very first month-to-date figure the footer ever shows is honest.
+
+As Adam,
+I want the July `router_calls.cost_usd` re-derived at corrected A2 pricing so the internal counter stops being ~$70-inflated, the qwen degraded tool-call path fixed, and every chat answer to append a footer showing which model answered and the exact cost (this reply + month-to-date vs cap),
+So that the cost ledger is honest and I can see, on every answer, what it cost and which model served it — with a number I can stand behind, not the estimator that burned us in 9.5.3.
+
+**Acceptance Criteria:**
+
+**Given** R4 (retro decision) + F-10-3-1 (stuck degraded on the inflated counter)
+**When** the re-derive task runs (FIRST task in this story)
+**Then** July `router_calls.cost_usd` is re-derived from stored per-call tokens × corrected A2 pricing so the counter reads ~$26-28 (under the $30 cap), not ~$70; the degraded-mode trip that the inflated counter forced is cleared and cannot recur from stale July history
+
+**Given** F-10-3-2 (qwen can't serve `chat_completions_tool_call`, 18/18 fail)
+**When** a chat tool-call is routed to the degraded/qwen path
+**Then** the qwen tool-call degraded path is fixed OR the routing avoids sending tool-calls to a model that cannot serve them, so the 18/18-fail case does not recur
+
+**Given** the B8 design (retro §8.6) and the durable rule `feedback_anthropic_spend_source_of_truth.md`
+**When** the per-answer cost footer ships (AFTER the July re-derive)
+**Then** each paid answer appends `🤖 <model> · this reply: $X.XXXX (N in / M out) · <month>: $Y of $cap` computed as exact vendor tokens (from the Anthropic `usage` block, already stored) × A2-verified `pricing.py` prices; free local answers show `🤖 qwen (local, free)` with no dollar noise
+**And** the pricing-freshness guard is enforced IN CODE: if `pricing.py` carries a `PLACEHOLDER` marker or a stale verified-on date, the footer **degrades to tokens-only** and shows no dollar figure — never a dollar number it can't stand behind (the 9.5.3 "$36 vs $13" lesson as a code invariant)
+**And** the "credit" line is dropped (no balance API exists on this org) — month-to-date + cap headroom is shown instead
+
+**Given** this story touches the router / budget / pricing seam
+**When** CR cadence is evaluated per the 6 criteria
+**Then** criterion 6 (load-bearing) fires → **MANDATORY-CR per §5.12**, full scope, reviewer model ≠ dev model
+
+---
+
+### Story 10.5.6: Slash → plain-NL charter README rewrite + recognized-phrase control dispatch
+
+**Cluster B/charter — must-fix (charter-level). Finding: F-10-5-1 HIGH (arguably charter-level). Adam-decided disposition (retro §8.7 / B9): DROP the `/command` metaphor.** Epic 10's walk found the ENTIRE documented MailBot slash surface (README:188-207, incl. load-bearing `/cancel` + `/confirm`) never reaches the agent — Discord reserves the `/` prefix for application commands, and the Hermes runtime above MailBot owns that namespace (`/model` opens Hermes's own picker; everything else bounces "Unknown command"). It is architectural, not a missing registration. The walk proved plain text ALREADY works (`spend month`, `cancel 14`, `mute newsletter` all dispatched once the slash was dropped). This story makes the documentation honest and removes the collision surface permanently.
+
+As Adam,
+I want the README rewritten to drop the `/command` metaphor entirely — documenting intents in plain natural language instead of a slash table — with a deterministic recognized-phrase dispatch layer for the control verbs that touch the mailbox or the kill-switch,
+So that the documented syntax is the syntax that actually works, and control verbs (cancel/confirm/pause/resume) are reliably understood by exact-match dispatch, not free-form LLM interpretation that could re-open the false-narration class.
+
+**Acceptance Criteria:**
+
+**Given** F-10-5-1 (the whole slash surface is unreachable — Hermes owns the `/` prefix)
+**When** the README is rewritten
+**Then** the slash table (§188-207) is removed; the write examples (§69-107), the error-table fix cells that cite `/pause`/`/resume`/`/budget reset`/`/confirm`, and the §386 limitation bullet are rewritten to plain-NL intents; the README documents intents, not a slash table (this SUPERSEDES the interim "type these WITHOUT the leading `/`" honesty note that 10-5/10-6 added)
+
+**Given** the two-tier load-bearing constraint (retro §8.7)
+**When** the dispatch layer is built
+**Then** read/status/discovery intents (spend, policy table, mute list, digest) go through free NL (agent parses intent and dispatches), AND control verbs that touch the mailbox or kill-switch (`cancel <id>`, `confirm`, `pause`, `resume`) dispatch via a **deterministic recognized-phrase layer** (small exact-match phrase set → exact verb), NOT free-form LLM interpretation
+**And** the rationale is enforced by construction: free interpretation of "cancel the thing I set up" is exactly the F-10-5-10 false-narration class this layer exists to avoid — abort/pause/confirm must be reliably understood, not usually understood
+
+**Given** the discoverability tie-in (retro §8.7 + 10-5-2's envelope)
+**When** a refusal or ambiguous request surfaces
+**Then** the B7 `user_facing_guidance` field carries the exact working phrase at the moment of need ("to abort this, type: cancel 14") — the envelope replaces the dead slash table as how users learn the syntax
+
+**Given** this story touches the control-verb dispatch layer + charter-level docs
+**When** CR cadence is evaluated per the 6 criteria
+**Then** criterion 6 (load-bearing dispatch code) fires → **MANDATORY-CR per §5.12**, full scope, reviewer model ≠ dev model
+
+---
+
+### Epic 10.5 trailing backlog — clusters F & G (filed, not storied)
+
+Per Adam-decision R2, clusters F (classification quality) and G (dead-code / doc-contract / UX cleanups) do NOT block Epic 10.5 done-flip. They are named, filed backlog, pulled into stories at a future create-epics pass:
+
+- **Cluster F — classification quality:** F-10-3-3 (degraded `action_extraction` ~45% fail), F-10-3-4 (coarse/fine 2× retry tax), F-10-3-5 (human over-trigger), F-10-3-6 (sensitivity edges).
+- **Cluster G — dead-code / doc-contract / UX cleanups:** F-10-6-4 (`state_drift_noop` dead code), F-10-6-5 (`monthly_budget_exceeded` dead code), F-10-6-6 (paused=`provider_error` not `PAUSED` label), F-10-4-1 / F-10-4-2 / F-10-4-5, F-10-5-2 / F-10-5-3 / F-10-5-6 (non-envelope parts) / F-10-5-9 / F-10-5-10 (false-narration — mitigated structurally by 10-5-6's recognized-phrase layer), F-10-6-7 (`mailbot logs` Windows cp1252 crash).
+
+These are named here so the backlog is not silent; they are the input to Epic 10.5's own retrospective or a follow-on cleanup epic.
+
+---
+
+## Epic 10.6 Detail — Capability Reachability: Make the Cheap Lane and the Draft Pipeline Reachable on the Real User Path
+
+**Spawned 2026-07-11 at the Epic 10.5 retrospective + the AI-1 live walk that followed it.** Epic 10.5 closed at "the perimeter behaves as the charter claims" — but the retro surfaced an architecture-integrity question (can the cheap local lane actually act?), and the AI-1 work that answered it revealed the retro's central lesson runs one layer deeper than any single fix: **"wired + capable + tested" ≠ "reached on the real user path."** AI-1 fixed the adapter (the model couldn't tool-call) and the router capability gate (the gate refused the model) — both done + committed — and STILL the live Discord flow routes every chat tool-call to haiku. The capability is real; the routing/persona last mile doesn't reach it. Epic 10.6 is that last mile. Runs against the **LOCAL Docker stack** (local viability remains top priority; CP-1 stays outside all epics).
+
+**Epic identity:** Epic 10.5 made the capabilities correct; Epic 10.6 makes them **reached**. The organizing principle: a capability that is wired, tested, and even registered is still dead until a real user turn actually invokes it — so every story here closes with a DB-ground-truth or live-walk proof that the real path reaches the capability, not a unit test proving the capability exists in isolation.
+
+**Adam-decision record (2026-07-11, Epic 10.5 retrospective + AI-1 walk):**
+- **Local model is a SAFETY NET, not a convenience** (memory: `project_local_model_is_safety_net.md`) — the cheap lane keeps acting under budget pressure, gated by action REVERSIBILITY not mode, reusing the existing Cluster B confirmation machinery. AI-1's router/adapter work enforces this by construction (the auth pipeline is model-independent); Epic 10.6 makes it REACHED.
+- **AI-1 and AI-2 stay SEPARATE stories** (Adam D2) — distinct seams: AI-1 = router/policy + adapter; AI-2 = persona draft-dispatch contract.
+- **Sequenced BEFORE Epic 7** — same rationale as 10.5: calibrating routing quality (Epic 7) while the cheap lane can't act and the draft pipeline is unreachable would calibrate a product nobody can use.
+
+**The bug-CLASS framing (binds the story cut):** three findings are instances of ONE root cause — a capability written off / not-reached in a layer above the code that implements it. AI-1 layer-1 (adapter `tools_unsupported`, fixed), layer-2 (router gate `^claude-*`, fixed), layer-3 (`policy.yaml` routes chat tool-calls to haiku, OPEN); F-10-5-11 (draft tool registered but persona improvises in haiku, OPEN). Epic 10.6 targets the reachability class across both the routing seam and the persona-dispatch seam.
+
+**Epic 10.6 Story List** (sprint-status keys use hyphen notation; dotted `10.6.N` in headers for readability):
+
+| # | Story | Priority | Headline | MANDATORY-CR | Real-spend? |
+| --- | --- | --- | --- | --- | --- |
+| 10.6.0 | Graph-auth-at-drain infra fix — restore `OUTLOOK_REFRESH_TOKEN` so proposed actions actually dispatch | **HIGHEST — blocks all action walks** | drainer `provider_4xx_401` (AI-1 walk); no action completes regardless of model | as needed (infra) | No |
+| 10.6.1 | AI-1 Phase 2 — route chat tool-calls to the now-capable local qwen (policy + persona dispatch) | High | every `chat_completions_tool_call` → haiku (DB truth); `policy.yaml` stale write-off | high (cost-routing seam) | small (live walk) |
+| 10.6.2 | AI-2 — Opus draft pipeline persona-reach (F-10-5-11) | High (charter flagship) | 0 Opus `draft_reply` rows across 3 walks; persona hand-writes in haiku | high (persona/dispatch seam) | small (Opus draft walk) |
+| 10.6.3 | AI-4 — `scratch/` ruff cleanup (3rd carry: A6→Epic 9.5→Epic 10→here) | Low (chore) | 6 T201 sites; repo-wide `ruff check .` not green | §5.12 self-audit | No |
+
+Story files already drafted: `ai-1-local-tool-caller-and-chat-path-reachability.md` (Phase 1 done+committed, Phase 2 = 10.6.1), `ai-2-draft-pipeline-reachability-from-chat.md` (= 10.6.2). 10.6.0 and 10.6.3 to be context-engineered at create-story time.
+
+**Sequencing (within the epic):** **10.6.0 (Graph-auth) is HIGHEST** — until it lands, no action-taking walk (10.6.1 AC-6, 10.6.2's send-follow-through) can pass; a proposed action says "done" then silently fails at drain. Then 10.6.1 + 10.6.2 (independent seams, parallelizable). 10.6.3 is a standalone chore, any time.
+
+**FRs covered:** none net-new — makes the already-shipped Router cost-routing + draft pipeline actually reachable from the live chat path (closes the L3-capable → L3-reached gap).
+**NFRs:** NFR-COST-\* (the cheap lane must carry real work or the cost thesis fails), NFR-OPS-\* (Graph-auth drain must work), NFR-PRIV-\* (sensitivity gate preserved through the new reach).
+**AR-\*:** Router↔`policy.yaml` cost-routing seam; persona/dispatch-contract (`hermes-config/`) reach; AR-PAT-4 errors-as-data preserved.
+
+**Done-flip gate (Epic 10.6, 4 clauses):**
+
+1. Stories 10.6.0 through 10.6.3 status=done in sprint-status.yaml.
+2. **Graph-auth drain works (10.6.0)** — a proposed Tier-1 action dispatched from chat actually applies to Microsoft Graph (no `provider_4xx_401`), verified by a live walk where a requested action truly completes (the mailbox actually changes), not a persona "done" over a failed drain.
+3. **Cheap lane REACHED (10.6.1)** — a chat tool-call for a local-eligible task produces a DB `router_calls` row with `model_chosen=qwen2.5:*`, and a live Discord walk shows a reversible action served by qwen executing while an irreversible one prompts for confirmation (the safety-net design, live). **Load-bearing clause** — this is the cost thesis rendered as a gate: without it, Epic 10.6 closes at "qwen can tool-call in tests"; with it, "the cheap lane actually carried a real turn."
+4. **Draft pipeline REACHED (10.6.2)** — a real Discord "draft a reply" turn produces an Opus `draft_reply` `router_calls` row (`model_chosen=claude-opus-*`), not a haiku-improvised draft; sensitivity gate preserved.
+
+Clause 3 is the load-bearing one. Epic 10.5 asked "does the perimeter behave?"; Epic 10.6 asks "does the real user path reach the behavior?" — and the cheap-lane-reached clause is where that question is answered for the founding cost thesis.

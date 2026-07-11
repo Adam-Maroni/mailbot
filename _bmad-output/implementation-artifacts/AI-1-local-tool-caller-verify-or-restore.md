@@ -18,7 +18,20 @@
 
 **Final gates:** 114/114 tests green across all AI-1-touched files + the new safety test + F28 sensitivity gate (no privacy regression); ruff clean; mypy --strict clean. Test delta across the whole story: adapter +9 unit / +1 real (session 1), router-gate + contract-flip updates + edge/multi-turn (session 2), +3 safety tests. Suite green.
 
-**REMAINING to fully close:** Adam done-sign + commit. (The live end-to-end Discord walk — Adam types a request, qwen tool-calls, a reversible action executes and an irreversible one asks to confirm — is the natural L3 verification if Adam wants it, small/$0; the code + unit/integration L2 is complete.)
+**REMAINING to fully close:** Adam done-sign. Code COMMITTED (branch `ai-1-local-tool-caller`, 2 commits). L2 complete.
+
+### LIVE DISCORD WALK 2026-07-11 — AI-1 code CORRECT but NOT REACHED on the chat path (significant finding)
+
+Ran the L3 walk. Result: **AI-1's Qwen tool-calling is real and correct, but the live Discord flow never routes a chat tool-call to Qwen — so the walk could not exercise AI-1 end-to-end.** DB ground truth (`router_calls`, last 15 min): EVERY chat turn logged `task_type=chat_completions_tool_call, model_chosen=claude-haiku-4-5-20251001`. The only qwen row was a background ingest enrichment (`sender_reputation_summary`), NOT a chat turn.
+
+**Root cause — a stale write-off ONE MORE LAYER UP (policy, not code):** the routing policy sends `chat_completions_tool_call` → haiku. This was almost certainly written because until AI-1, qwen COULDN'T tool-call — so the policy correctly never sent tool-calls there. Now that qwen CAN (AI-1), the policy is a stale constraint. Same class as the adapter's old `tools_unsupported` and F-10-5-11: **"wired + capable + tested" ≠ "reached on the real user path."** AI-1 fixed the adapter + the router capability gate; the LAST mile is a `policy.yaml` routing decision (+ the persona self-serving tool-calls in haiku rather than asking the Router to dispatch to qwen).
+
+**Walk also surfaced (all PRE-EXISTING, none AI-1):**
+- **MCP session-drop** on first attempt — caused by MY mid-walk `mailbot-api` restart; known Hermes-transport fragility (F-10-5-1-W2). Fixed by restarting hermes to re-handshake. Lesson: restart hermes AFTER any api restart before a walk.
+- **"use qwen" false-narration** (turn 1): persona replied in haiku claiming qwen — F-10-5-6-W1, already filed.
+- **Premature "Done, marked as read"** while the drainer then FAILED `provider_4xx_401` (Graph auth) on action_id 40 — the Steam email was NOT actually marked read. Persona declared success before drain + a real Graph 401. The `mark_read` DID correctly propose as `tier:1 status:pending` (Tier-1 reversible, no confirmation) — that part matches AI-1's design — but drain failed on Graph creds (separate infra issue) and the persona over-narrated.
+
+**Disposition:** AI-1 code stays DONE-READY/committed (correct + L2-proven). Its LIVE reachability is blocked by a policy/persona last-mile that is its OWN follow-up (route `chat_completions_tool_call` to qwen where appropriate, or have the persona dispatch through the Router). Pairs naturally with AI-2 (draft reachability) — same "capability wired, persona/policy doesn't reach it" class. Filed as AI-1-FU (chat-path routing to the local tool-caller). Also note: a Graph-auth 401 at drain is a separate live-infra item to chase before any action-taking walk.
 
 ---
 **Epic:** pre-Epic-7 (drafted at the Epic 10.5 retrospective, 2026-07-11)
