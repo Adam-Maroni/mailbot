@@ -1,5 +1,9 @@
 # Deferred Work
 
+## Deferred from: code review of 10-6-0-graph-auth-at-drain-infra-fix (2026-07-12)
+
+- `retry_count` conflates auth-refresh attempts with AR-D5-1 backoff attempts in observability — a 401-refresh-then-fail and a pure-backoff-exhausted failure can report the same numeric `retry_count`, so downstream consumers (logs/dashboards) can't distinguish the two failure classes by that field alone. Real but minor and non-blocking; pre-existing pattern (the field was never meant to disambiguate failure class, only attempt count). [`mailbot_api/actions/outlook_adapter.py:380`]
+
 ## Deferred from: code review of 10-5-1-safety-kill-switch-coverage-and-per-process-singleton-class (2026-07-07)
 
 - `ask_router`'s permitted-interpretation branch (router.py:349-375) falls through to full dispatch with no second pause re-check immediately before the real adapter call; safety currently rests entirely on `hermes_aux` being documented as text-only/non-action-producing, not on a structural gate. Defense-in-depth architectural concern, not a demonstrated reachable bug in this diff.

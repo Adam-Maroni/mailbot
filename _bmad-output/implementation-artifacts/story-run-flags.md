@@ -2,6 +2,57 @@
 
 This file collects flags raised by `autonomous-story-run` runs. One block per invocation.
 
+## Story 10-6-0 — 2026-07-12
+
+**Headline:** Graph 401-at-drain reachability fix — a stale in-memory access-token 401 now triggers an on-demand token-cache refresh + one bounded retry in `OutlookGraphWriteAdapter` (wired in the worker), instead of the drainer marking the proposed action terminal. Closes the AI-1 walk's `pending_actions` id=40 `provider_4xx_401` failure. First story of Epic 10.6.
+
+**Dev model:** claude-opus-4-8
+**Review model:** claude-sonnet-5 (≠ dev; MANDATORY-CR per §5.12 criteria 3 + 6 — load-bearing Graph write-dispatch seam)
+
+**Adam decision (2026-07-12, pre-flight AskUserQuestion):** fix locus = "Code fix: 401-refresh-retry" (chosen over credential-re-mint or both). DB truth showed the refresh token is VALID and self-heals (`check_graph_auth.py` live 200; id=38 Tier-1 move applied 07-07); the 401 was a stale-cache race, not an expired credential — re-minting would not have fixed the actual defect. Story authored inline (Branch A) from epics.md § Epic 10.6 Detail + code inspection.
+
+**Review rounds + applied rate:** 1 round, 3-layer adversarial. 7 findings → **5 Patches FIXED (100% of actionable)** + 1 Decision ACCEPT-WITH-RATIONALE + 1 Defer. The Patches surfaced 2 genuine correctness bugs beyond the dev pass's self-audit: (a) a 401 on the loop's final iteration returned `error="unknown"` instead of `provider_4xx_401` — root-caused + eliminated by restructuring `_request_with_retry` from `for range()` to `while`+manual-counter so the 401 refresh no longer shares/consumes the AR-D5-1 backoff budget; (b) `on_auth_failure()` exceptions escaped the adapter's result contract — now wrapped, fail closed to `provider_4xx_401`. Plus the "no backoff slot" comment made true, +3 tests, zero-delay documented.
+
+**Decision (ACCEPT WITH RATIONALE):** the on-demand refresh is a DB re-read of `oauth_state`, not a Microsoft token-endpoint exchange — under the exact race where the periodic `oauth_token_refresh` task also hasn't rotated the row, it can be a no-op (retry re-401s, now terminal + audited, NO regression). Bounded + tested (`test_401_refresh_noop_token_unchanged_still_bounded`). A true on-demand token-endpoint refresh is scope-fenced off `oauth.py`/`graph_client.py` per Adam's decision — FILED as a residual follow-up note in the story § Residual, NOT absorbed.
+
+**Gate verdicts:**
+- 2.3.5 Pre-Review Self-Audit — PASS (5 sections + 11 posture checks; §5.11.b test-ratio 2.53; §5.12 MANDATORY-CR criteria 3+6; §3 flagged 5 issues all dispositioned in §4, INFO gap escalated to reviewer). See 10-6-0.pre-review.md.
+- 2.4.4 Dev Agent Record completeness — PASS
+- 2.4.5 UI-scope — N/A (no graphical frontend)
+- 2.4.6 File-List-vs-git — PASS (all code/test paths TRACKED + staged)
+- 2.4.7 Middleware-Real-Bootstrap (MailBot Router/drainer reframe) — PASS via NEW integration test `test_drainer_401_refresh_retry_applies_via_real_adapter`: the 401-refresh-retry proven through real `drainer.run_loop` + real `OutlookGraphWriteAdapter` (real httpx retry machinery via MockTransport) + real on-disk SQLite → row lands `applied`. Not just adapter-unit level.
+- 2.4.8 Verbose-row truncation — PASS (sprint-status row = headline + pointer; verbose narrative in story Completion Notes)
+
+**Step 2.5 dev-env verification:** PARTIAL — no dedicated `<dev-env-skill>` configured. Ran a targeted import/construct smoke (adapter constructs with/without `on_auth_failure`; worker imports cleanly) = PASS. Full live-boot of the worker with the fix is deferred to the Phase 3.5 walk (needs container restart + real drain). Local Docker stack up throughout (mailbot-api healthy).
+
+**Suite:** post-CR full run **1889 passed + 3 skipped + 3 deselected** (+4 net passing vs baseline 1885; adapter unit tests 13→20, drainer integration +1). ruff clean / mypy-strict 134 files clean / boundaries exit 0.
+
+**Deferred / residual items:**
+- [residual] on-demand refresh is a DB re-read not a token-endpoint exchange — scope-fenced, story-owner follow-up call (story § Residual).
+- [deferred] `retry_count` failure-class conflation (auth-refresh vs AR-D5-1 backoff) — deferred-work.md.
+
+**Flags:**
+- INFO — mypy `--strict` pointed directly at `tests/integration/test_worker_drainer_wiring.py` shows 3 PRE-EXISTING `int | None → int` errors (lines 143/195/268) in the original Story-6-6 tests. The AC-5 gate command `mypy --strict mailbot_api` (package-scoped, the dev-story convention) is clean; my new integration test line was written mypy-clean (asserts `action_id is not None`). Not introduced by this story; noted for a future test-hygiene sweep.
+- INFO — story doc has cosmetic markdown-lint warnings (MD022/MD032/MD052 on `[Review][Patch]` bracket labels + empty-scaffold spacing). Non-blocking; not a code gate.
+
+**Permission-prompt summary:** No permission log hook configured. Zero permission prompts observed during the run — every command shape (rtk git, .venv pytest/ruff/mypy, docker compose exec, Glob/Grep/Read/Edit/Write) was within the settings.json envelope.
+
+**Staging:** 8 story-scoped files staged explicitly (2 source + 2 test + story `.md` + pre-review `.md` + deferred-work.md + sprint-status.yaml). `.claude/settings.json` (pre-existing background), `.autonomous-run-active.json` (run-state), and `scratch/` (out-of-scope, story 10.6.3) left unstaged. **Nothing committed.**
+
+**AC-6 (does not block `done`):** live drain walk = Phase 3.5, delegated + executed (see below).
+
+### Story 10-6-0 Manual Verification — 2026-07-12 (DELEGATED: "Run the manual verification yourself")
+
+**Verdict: PASS (L3, real Microsoft Graph).**
+
+Restarted mailbot-api + hermes to load the fix (bind-mounted source; confirmed `on_auth_failure` live at outlook_adapter.py:182/380 + worker.py:315). Drove an **induced-401 recovery against the REAL mailbox**: constructed the real `OutlookGraphWriteAdapter` with a deliberately-stale token + the real `oauth_state` refresh hook, dispatched a real `mark_read` on a live inbox email. Captured `[graph] PATCH → 401` → `[hook] on_auth_failure fired (call #1)` → `[graph] PATCH → 200`, `result.ok=True`. Before the fix that first 401 marked the action terminal (the AI-1 id=40 failure); after, it recovers and the action applies to Graph. Mailbox restored (`isRead` back to original False, restore 200). No collateral: pause/degraded OFF, oauth failure-count 0, no synthetic queue rows, 2008 emails, all containers healthy.
+
+**Honesty tag:** the 401 is INDUCED (seeded garbage token); the refresh, retry, and both real Graph status codes are REAL. Scope note: proves the fix at the drain→adapter→real-Graph boundary (the defect locus), not a full Discord-chat round-trip (needs Adam live in Discord); the recovery behavior is entirely model-independent drain-path, so the direct dispatch is a faithful L3 exercise. See `10-6-0-walk-evidence.md`.
+
+Per-AC: AC-1 PASS(L3) · AC-2 PASS · AC-3 PASS(L3) · AC-4 PASS(code-L3) · AC-5 PASS · AC-6 PASS(L3, drain path). Epic 10.6 done-flip clause 2 satisfied for the drain path. Story stays **done**.
+
+---
+
 ## Story 10-5-4 — 2026-07-10
 
 **Headline:** Cluster D operator recovery tooling made real (F-10-6-3 rederive crash / F5+F6 move-family resurrection / F-10-6-2 replay inert / CR-10-2-D1 legacy double-revert). All 3 fixes + the deferred race closed at code-L3; suite 1788→**1798+2+3 (+10 net)**; MANDATORY-CR sonnet-5 2 Decision APPLIED + 2 Defer. Story stays **review** — the live walk (`mailbot rederive` no-crash against the real DB + resurrecting the retained 10-1 subject verified in Outlook) is the Adam-hands-on Task 6 per the HYBRID run-mode binding.

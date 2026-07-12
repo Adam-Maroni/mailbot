@@ -232,9 +232,12 @@ class _CachedAccessToken:
     the provider returns whatever the most-recent refresh wrote.
 
     If the access token is stale when a drainer dispatch fires, the
-    dispatched call gets a 401 and the drainer's retry chain on the next
-    tick succeeds once the refresher has caught up. This matches the
-    documented "drainer reads what sync just persisted" pattern.
+    dispatched call gets a 401 — and (Story 10.6.0) the adapter's
+    `on_auth_failure` hook refreshes THIS cell on-demand and retries the
+    SAME dispatch once, so the action completes within the tick instead of
+    failing terminal. The periodic `oauth_token_refresh` task still keeps
+    the cell warm between dispatches; the on-demand hook is the safety net
+    for the stale-cache race the periodic cadence can't fully close.
     """
 
     value: str = ""
@@ -304,6 +307,12 @@ async def _worker_main(db_path: str) -> None:
     await _refresh_access_token_cache(db_path, token_cache)
     outlook_adapter = OutlookGraphWriteAdapter(
         access_token_provider=lambda: token_cache.value,
+        # Story 10.6.0: on a Graph 401 (stale cached access token at dispatch),
+        # refresh the cell on-demand and let the adapter retry once — instead of
+        # the drainer marking the row terminal (the AI-1 walk's id=40 failure).
+        # Same read the periodic `oauth_token_refresh` task performs; the sync
+        # provider above re-reads `token_cache.value` on the retry attempt.
+        on_auth_failure=lambda: _refresh_access_token_cache(db_path, token_cache),
     )
 
     scheduler = Scheduler(db_path=db_path)

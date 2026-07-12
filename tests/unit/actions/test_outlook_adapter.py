@@ -278,6 +278,211 @@ async def test_503_retries_three_times_then_fails() -> None:
     assert counter["n"] == 4  # initial + 3 retries
 
 
+# ---- 401 auth-refresh retry (Story 10.6.0) -----------------------------------
+
+
+async def test_401_refresh_hook_retries_once_then_succeeds() -> None:
+    """AC-1: a 401 invokes the async refresh hook and retries the SAME dispatch
+    once; a 401-then-200 sequence yields ok=True. AC-3-shape: the refresh hook
+    freshens the token the sync provider returns, so the retry carries it."""
+    counter = {"n": 0}
+    tokens_seen: list[str] = []
+    refresh_calls = {"n": 0}
+    # Mutable token cell the sync provider reads — the refresh hook mutates it.
+    cell = {"value": "stale-token"}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        counter["n"] += 1
+        tokens_seen.append(req.headers.get("Authorization", ""))
+        if counter["n"] == 1:
+            return httpx.Response(401)
+        return httpx.Response(200, json={})
+
+    async def on_auth_failure() -> None:
+        refresh_calls["n"] += 1
+        cell["value"] = "fresh-token"
+
+    adapter = OutlookGraphWriteAdapter(
+        access_token_provider=lambda: cell["value"],
+        transport=_mock_transport(handler),
+        on_auth_failure=on_auth_failure,
+    )
+    out = await adapter.apply(_row(action_type=ActionType.MARK_READ))
+    assert out.ok is True
+    assert refresh_calls["n"] == 1  # refreshed exactly once
+    assert counter["n"] == 2  # initial 401 + 1 retry
+    # AC-3 shape: first attempt carried the stale token, retry carried the fresh one.
+    assert tokens_seen[0] == "Bearer stale-token"
+    assert tokens_seen[1] == "Bearer fresh-token"
+
+
+async def test_401_then_401_with_hook_is_bounded_and_fails_terminal() -> None:
+    """AC-2: a 401-then-401 (refresh did not help) exits terminal with the
+    existing provider_4xx_401 error — the auth-refresh retry fires at most once,
+    no infinite loop."""
+    counter = {"n": 0}
+    refresh_calls = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        counter["n"] += 1
+        return httpx.Response(401)
+
+    async def on_auth_failure() -> None:
+        refresh_calls["n"] += 1
+
+    adapter = OutlookGraphWriteAdapter(
+        access_token_provider=_fake_token,
+        transport=_mock_transport(handler),
+        on_auth_failure=on_auth_failure,
+    )
+    out = await adapter.apply(_row(action_type=ActionType.MARK_READ))
+    assert out.ok is False
+    assert out.error == "provider_4xx_401"
+    assert refresh_calls["n"] == 1  # refreshed exactly once, then gave up
+    assert counter["n"] == 2  # initial 401 + 1 auth-refresh retry, no more
+
+
+async def test_401_without_hook_immediate_fail_unchanged() -> None:
+    """AC-2: when no refresh hook is supplied, a 401 is an immediate terminal
+    fail — today's behavior preserved."""
+    counter = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        counter["n"] += 1
+        return httpx.Response(401)
+
+    adapter = OutlookGraphWriteAdapter(
+        access_token_provider=_fake_token, transport=_mock_transport(handler),
+    )
+    out = await adapter.apply(_row(action_type=ActionType.MARK_READ))
+    assert out.ok is False
+    assert out.error == "provider_4xx_401"
+    assert out.retry_count == 0
+    assert counter["n"] == 1  # no retry
+
+
+async def test_403_with_hook_does_not_refresh_or_retry() -> None:
+    """AC-4: a non-401 4xx (403) is an immediate terminal fail even when a
+    refresh hook is supplied — the hook is NOT awaited."""
+    counter = {"n": 0}
+    refresh_calls = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        counter["n"] += 1
+        return httpx.Response(403)
+
+    async def on_auth_failure() -> None:
+        refresh_calls["n"] += 1
+
+    adapter = OutlookGraphWriteAdapter(
+        access_token_provider=_fake_token,
+        transport=_mock_transport(handler),
+        on_auth_failure=on_auth_failure,
+    )
+    out = await adapter.apply(_row(action_type=ActionType.MARK_READ))
+    assert out.ok is False
+    assert out.error == "provider_4xx_403"
+    assert out.retry_count == 0
+    assert refresh_calls["n"] == 0  # non-401 4xx never triggers refresh
+    assert counter["n"] == 1
+
+
+async def test_401_refresh_then_429_preserves_full_ar_d5_1_backoffs() -> None:
+    """CR finding: the 401 auth-refresh retry must NOT consume an AR-D5-1
+    backoff slot. A 401 followed by 429s still gets the full _MAX_RETRIES (3)
+    backoff retries before exhausting — i.e. 1 (initial 401) + 1 (refresh retry,
+    429) + 3 (429 backoffs) = 5 requests, ending in provider_429_retry_exhausted
+    with retry_count == _MAX_RETRIES (the 401 refresh did not eat a slot)."""
+    counter = {"n": 0}
+    refresh_calls = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        counter["n"] += 1
+        if counter["n"] == 1:
+            return httpx.Response(401)
+        return httpx.Response(429, headers={"Retry-After": "0.001"})
+
+    async def on_auth_failure() -> None:
+        refresh_calls["n"] += 1
+
+    adapter = OutlookGraphWriteAdapter(
+        access_token_provider=_fake_token,
+        transport=_mock_transport(handler),
+        on_auth_failure=on_auth_failure,
+    )
+
+    orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_t: float) -> None:
+        return None
+
+    asyncio.sleep = _fast_sleep  # type: ignore[assignment]
+    try:
+        out = await adapter.apply(_row(action_type=ActionType.MARK_READ))
+    finally:
+        asyncio.sleep = orig_sleep  # type: ignore[assignment]
+
+    assert out.ok is False
+    assert out.error == "provider_429_retry_exhausted"
+    assert refresh_calls["n"] == 1  # 401 refreshed once
+    # 1 (401) + 1 (refresh retry → 429) + 3 (429 backoffs) = 5 requests.
+    assert counter["n"] == 5
+    assert out.retry_count == 3  # full _MAX_RETRIES backoffs, 401 didn't consume one
+
+
+async def test_401_refresh_hook_raises_fails_closed_not_propagated() -> None:
+    """CR finding: an exception from on_auth_failure() must be normalized to a
+    GraphApplyResult (fail closed to provider_4xx_401), not propagated raw out
+    of apply() — every sibling branch yields a result, this one must too."""
+    counter = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        counter["n"] += 1
+        return httpx.Response(401)
+
+    async def on_auth_failure() -> None:
+        raise RuntimeError("db locked mid-drain")
+
+    adapter = OutlookGraphWriteAdapter(
+        access_token_provider=_fake_token,
+        transport=_mock_transport(handler),
+        on_auth_failure=on_auth_failure,
+    )
+    out = await adapter.apply(_row(action_type=ActionType.MARK_READ))
+    assert out.ok is False
+    assert out.error == "provider_4xx_401"  # failed closed, not raised
+    assert counter["n"] == 1  # never got to a retry (refresh raised)
+
+
+async def test_401_refresh_noop_token_unchanged_still_bounded() -> None:
+    """CR Decision-item shape: if the refresh hook runs but leaves the token
+    cell unchanged (the periodic task hasn't rotated oauth_state yet), the retry
+    re-sends the SAME token → 401 again → terminal. Proves the no-op-refresh
+    residual is bounded (no infinite loop) and surfaces the real 401."""
+    counter = {"n": 0}
+    refresh_calls = {"n": 0}
+    cell = {"value": "stale-token"}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        counter["n"] += 1
+        return httpx.Response(401)
+
+    async def on_auth_failure() -> None:
+        refresh_calls["n"] += 1
+        # no-op: token cell left unchanged (oauth_state not rotated yet)
+
+    adapter = OutlookGraphWriteAdapter(
+        access_token_provider=lambda: cell["value"],
+        transport=_mock_transport(handler),
+        on_auth_failure=on_auth_failure,
+    )
+    out = await adapter.apply(_row(action_type=ActionType.MARK_READ))
+    assert out.ok is False
+    assert out.error == "provider_4xx_401"
+    assert refresh_calls["n"] == 1  # refreshed once, no-op, then gave up
+    assert counter["n"] == 2  # initial 401 + 1 retry, bounded
+
+
 # ---- defensive paths ---------------------------------------------------------
 
 

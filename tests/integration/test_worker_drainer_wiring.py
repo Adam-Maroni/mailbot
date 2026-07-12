@@ -198,6 +198,80 @@ async def test_tier_2_archive_drainer_dispatches_to_real_adapter(
     assert "/me/messages/e-arch-1/move" in captured["url"]
 
 
+async def test_drainer_401_refresh_retry_applies_via_real_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 10.6.0 (integration boundary) — a stale-access-token 401 at drain
+    triggers the adapter's on_auth_failure hook, which freshens the token cell,
+    and the retry APPLIES the action through the real drainer + real adapter +
+    real SQLite. Proves the fix at the drain→dispatch→applied boundary, not just
+    the adapter unit level: before the fix, the 401 marked the row terminal
+    (the AI-1 walk's id=40 failure); after, the row lands `applied`.
+    """
+    db_path = _setup(tmp_path, monkeypatch)
+    await _seed_email(db_path, graph_id="e-401-1")
+
+    out = await propose_action("e-401-1", ActionType.ARCHIVE, db_path=db_path)
+    assert out.ok
+    assert out.action_id is not None
+    action_id = out.action_id
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE pending_actions SET status = 'pending' WHERE id = ?",
+            (action_id,),
+        )
+        conn.commit()
+
+    from mailbot_api.actions.authorization import mint_grant
+
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    grant_out = await mint_grant(
+        ActionType.ARCHIVE, ["e-401-1"], expires_at, db_path=db_path,
+    )
+    assert grant_out.ok
+
+    # First dispatch (the move POST) 401s once; the on_auth_failure hook
+    # freshens the token cell; the retry carries the fresh token and 200s.
+    # (The pre-state GET is served a folder id regardless — move-family drains
+    # issue it before the dispatch.)
+    dispatch_attempts = {"n": 0}
+    refresh_calls = {"n": 0}
+    token_cell = {"value": "stale-token"}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.method == "GET" and req.url.params.get("$select") == "parentFolderId":
+            return httpx.Response(200, json={"parentFolderId": "folder-pre-state"})
+        dispatch_attempts["n"] += 1
+        if dispatch_attempts["n"] == 1:
+            return httpx.Response(401)
+        return httpx.Response(200, json={})
+
+    async def on_auth_failure() -> None:
+        refresh_calls["n"] += 1
+        token_cell["value"] = "fresh-token"
+
+    adapter = OutlookGraphWriteAdapter(
+        access_token_provider=lambda: token_cell["value"],
+        transport=httpx.MockTransport(handler),
+        on_auth_failure=on_auth_failure,
+    )
+
+    shutdown = asyncio.Event()
+
+    async def _trigger_shutdown() -> None:
+        await asyncio.sleep(0.3)
+        shutdown.set()
+
+    asyncio.create_task(_trigger_shutdown())
+    await drainer_run_loop(
+        db_path, adapter=adapter, interval_seconds=0.05, shutdown_event=shutdown,
+    )
+
+    assert _read_status(db_path, action_id) == "applied"
+    assert refresh_calls["n"] == 1  # 401 triggered exactly one on-demand refresh
+    assert dispatch_attempts["n"] == 2  # 401 + refreshed retry
+
+
 async def test_cross_process_pause_stops_worker_drainer_dispatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

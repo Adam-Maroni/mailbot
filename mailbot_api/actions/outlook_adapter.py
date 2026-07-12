@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 import httpx
 
@@ -179,8 +179,17 @@ class OutlookGraphWriteAdapter:
         access_token_provider: Callable[[], str],
         transport: httpx.AsyncBaseTransport | httpx.BaseTransport | None = None,
         timeout_seconds: float = _WRITE_TIMEOUT_SECONDS,
+        on_auth_failure: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._token_provider = access_token_provider
+        # Story 10.6.0: optional async hook invoked once on a Graph 401 so a
+        # STALE in-memory access-token cache can be refreshed on-demand and the
+        # dispatch retried within the same call — instead of the 401 becoming a
+        # terminal provider_4xx_401 failure. When None (e.g. unit adapters or
+        # the read-only path), a 401 fails immediately as before. The hook only
+        # mutates the cache cell the SYNC `access_token_provider` reads; it must
+        # not make the provider async (preserves the Story 4-5 sync seam).
+        self._on_auth_failure = on_auth_failure
         # httpx.MockTransport is duck-compatible with both sync + async. We
         # accept BaseTransport at construction and cast at use time.
         self._transport = transport
@@ -284,7 +293,17 @@ class OutlookGraphWriteAdapter:
         the result so read paths (Story 10-2 pre-state) can parse the body.
         The response is non-None only when result.ok is True."""
         last_error = "unknown"
-        for attempt in range(_MAX_RETRIES + 1):
+        # Story 10.6.0: at most ONE auth-refresh retry per call, tracked by
+        # `auth_refresh_used` and — unlike the AR-D5-1 429/5xx/timeout/transport
+        # retries — it does NOT advance `attempt`. `attempt` is a MANUAL counter
+        # (not a `for range(...)` loop var) precisely so the 401-refresh path can
+        # `continue` without consuming a backoff slot: a 401-then-429-then-429-
+        # then-429 sequence still gets its full 3 AR-D5-1 backoffs. Bounded two
+        # ways: `auth_refresh_used` caps the refresh at one, and `attempt` caps
+        # the AR-D5-1 retries at `_MAX_RETRIES`, so neither path can loop forever.
+        auth_refresh_used = False
+        attempt = 0
+        while True:
             try:
                 token = self._token_provider()
                 headers = {
@@ -297,12 +316,14 @@ class OutlookGraphWriteAdapter:
                 last_error = "timeout"
                 if attempt < _MAX_RETRIES:
                     await asyncio.sleep(_BACKOFF_SCHEDULE[min(attempt, len(_BACKOFF_SCHEDULE) - 1)])
+                    attempt += 1
                     continue
                 return (GraphApplyResult(ok=False, error="timeout", retry_count=attempt), None)
             except httpx.TransportError as exc:
                 last_error = f"transport:{type(exc).__name__}"
                 if attempt < _MAX_RETRIES:
                     await asyncio.sleep(_BACKOFF_SCHEDULE[min(attempt, len(_BACKOFF_SCHEDULE) - 1)])
+                    attempt += 1
                     continue
                 return (GraphApplyResult(ok=False, error=last_error, retry_count=attempt), None)
 
@@ -323,6 +344,7 @@ class OutlookGraphWriteAdapter:
                     else:
                         wait = _BACKOFF_SCHEDULE[min(attempt, len(_BACKOFF_SCHEDULE) - 1)]
                     await asyncio.sleep(wait)
+                    attempt += 1
                     continue
                 return (
                     GraphApplyResult(
@@ -335,6 +357,7 @@ class OutlookGraphWriteAdapter:
             if 500 <= status < 600:
                 if attempt < 1:
                     await asyncio.sleep(_BACKOFF_SCHEDULE[0])
+                    attempt += 1
                     continue
                 return (
                     GraphApplyResult(
@@ -342,6 +365,46 @@ class OutlookGraphWriteAdapter:
                     ),
                     None,
                 )
+
+            # 401 → the in-memory access token is stale/expired. Story 10.6.0:
+            # refresh it on-demand ONCE and retry the same dispatch, rather than
+            # letting a stale-cache race become a terminal provider_4xx_401 (the
+            # AI-1 walk's id=40 failure). The refresh hook mutates the cache cell
+            # the sync token provider reads, so the retry re-reads a fresh token.
+            # This path deliberately does NOT `attempt += 1` (it is not an
+            # AR-D5-1 backoff) and does NOT sleep: a token refresh is not rate-
+            # limited the way 429/5xx backoff is, and the whole point is to
+            # re-dispatch immediately with the freshened credential. Bounded by
+            # `auth_refresh_used` (one refresh max); a 401-that-persists (or no
+            # hook) falls through to the generic 4xx branch → provider_4xx_401.
+            if status == 401 and self._on_auth_failure is not None and not auth_refresh_used:
+                auth_refresh_used = True
+                _logger.info(
+                    "graph dispatch 401 — refreshing access token and retrying once",
+                    extra={"event": "action.adapter.auth_refresh_retry"},
+                )
+                try:
+                    await self._on_auth_failure()
+                except Exception as exc:  # noqa: BLE001 — normalize to the adapter's result contract
+                    # Every sibling branch yields a GraphApplyResult; a refresh
+                    # hook that raises (e.g. DB contention mid-drain) must not
+                    # escape apply() as a raw exception. Fail closed with the
+                    # 401 that triggered the refresh so the drainer records a
+                    # meaningful terminal reason.
+                    _logger.warning(
+                        "graph dispatch 401 auth-refresh hook raised — failing closed",
+                        extra={
+                            "event": "action.adapter.auth_refresh_failed",
+                            "exc_type": type(exc).__name__,
+                        },
+                    )
+                    return (
+                        GraphApplyResult(
+                            ok=False, error="provider_4xx_401", retry_count=attempt,
+                        ),
+                        None,
+                    )
+                continue
 
             # 4xx non-429 → immediate fail.
             if 400 <= status < 500:
@@ -359,7 +422,10 @@ class OutlookGraphWriteAdapter:
                 ),
                 None,
             )
-
+        # Defensive: every branch inside `while True` returns or `continue`s and
+        # both retry counters are bounded, so this is effectively unreachable —
+        # but keep it as the type-checker's terminating return + a last-resort
+        # result if a future branch is added without its own return.
         return (GraphApplyResult(ok=False, error=last_error, retry_count=_MAX_RETRIES), None)
 
 
