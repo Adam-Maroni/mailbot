@@ -2,6 +2,58 @@
 
 This file collects flags raised by `autonomous-story-run` runs. One block per invocation.
 
+## Story 10-6-3 (AI-4 — scratch/ ruff cleanup) — 2026-07-13
+
+**Headline:** `scratch/` ruff cleanup — repo-wide `ruff check .` now GREEN (was 6 `T201 print` sites in `scratch/walk_bootstrap.py` + `scratch/mcp_walk_106.py`). Fixed via **exclude + gitignore** (Adam-decided this run): `scratch` added to `[tool.ruff] extend-exclude` + `scratch/` to `.gitignore`. Retires the recurring lint debt (3rd carry: A6 → Epic 9.5 → Epic 10 → Epic 10.6) permanently — the two walk helpers are preserved on disk (now untracked), not deleted. Standalone chore; NOT tied to any Epic 10.6 done-flip clause.
+
+**Dev model:** claude-opus-4-8[1m]; **Review model:** claude-sonnet-5 (≠ dev, [[feedback_reviewer_model_substitution]]).
+
+**Fix / approach:** the epic headline + Epic 10.5 retro (line 114, Amelia/Adam owner) named "remove/gitignore scratch/ so `ruff check .` green." At authoring, `git check-ignore scratch/` returned exit 1 — scratch was NOT actually gitignored despite both helper docstrings claiming so. Adam chose exclude+gitignore (AskUserQuestion, recommended) over delete (loses reusable walk tooling; doesn't prevent recurrence) or per-file-ignore (one more special-case row). `scratch` now sits alongside the other non-product scaffolding dirs in `extend-exclude` (`_bmad-output`, `.claude`, `_eval-outputs`, `hermes-docs`) so a future scratch helper with `print()` cannot re-trip the gate (AC-2 durability). 2 config-pinning meta-tests added to `tests/unit/test_lint_boundaries.py` (sibling to the Story-1-4 `test_pyproject_per_file_ignores_scripts_for_t201` pattern).
+
+**Review rounds:** 1 round. 2 actionable findings → **2 APPLIED (100%)**, 3 dismissed by reviewer as refuted/noise:
+- [Decision] mypy-exclude symmetry gap → APPLIED (mirrored `scratch` into `[tool.mypy] exclude`; meta-test now also asserts mypy-exclude membership). Closes a latent break if a future gate widens mypy scope repo-wide.
+- [Patch] fragile unanchored string-slice in the new ruff-exclude meta-test → APPLIED (rewrote to parse `pyproject.toml` via `tomllib` and assert on actual `[tool.ruff] extend-exclude` list membership — kills the commented-out-entry false-pass). Round-2 not run (both fixes are small, verified-green refinements of the reviewer's own suggestions).
+
+**Aggregated `[deferred:*]`:** none. All §3 self-audit items were accept-with-rationale (low-risk chore); both CR findings applied.
+
+**Gate verdicts:**
+- 2.3.5 Pre-Review Self-Audit — PASS (5 sections + 11 posture sub-sections; §3 = 5 tagged bullets; §4 dispositions all accept-with-rationale). Artifact: 10-6-3.pre-review.md.
+- 2.4.4 Dev Agent Record — PASS (model + per-AC completion notes + File List + Status=done in file).
+- 2.4.5 UI-scope — N/A (no graphical frontend; MailBot).
+- 2.4.6 File-List-vs-git — PASS (3 source files `pyproject.toml`/`.gitignore`/`test_lint_boundaries.py` TRACKED via `git ls-files --error-unmatch`; story `.md` + pre-review `.md` are new artifacts staged at 2.6; `scratch/` intentionally untracked per AC-3, correctly absent from staging).
+- 2.4.7 Middleware-Real-Bootstrap (Router reframing) — N/A / exempt (config + test + docs only; zero `mailbot_api/` verb/endpoint/`ask_router`/DB-write/drainer/sync-worker touched).
+- 2.4.8 Verbose-row truncation — PASS (verbose narrative → story `## Completion Notes` 2026-07-13 header; sprint-status row = headline + pointer).
+
+**Step 2.5 dev-env verification:** N/A — no runtime/service/migration surface (only lint config + a test + docs). Booting the dev env would verify nothing this story changed. Full-suite green (1913 passed) is the boot proxy for the test change.
+
+**Suite:** 1913 passed + 3 skipped + 3 deselected (**+2 net** vs 10-6-2 baseline 1911 — the two new config-pinning meta-tests). ruff `.` = 0 ("All checks passed!"), mypy --strict mailbot_api = Success (134 files), boundaries = clean. Full suite re-run after CR fixes; all green.
+
+**FLAGS:** 0 CRITICAL / 0 WARNING.
+- **INFO — the recurring "repo-wide `ruff check .` not green" note in prior story flags (10-6-2 F30, 10-6-1, 10-6, etc.) is now DISCHARGED.** This was the debt those stories deferred to 10-6-3; it is closed.
+- **INFO — cosmetic markdown-lint on the story doc:** non-blocking MD049 (`_(RED)_`/`_(GREEN)_` underscore emphasis) + MD052 (`[Review][Decision]`/`[Review][Patch]` bracket labels misparsed as ref-links) + MD032 warnings. Not a code gate.
+
+**Permission prompts during run:** Zero. No permission log configured — all command shapes (rtk git, .venv pytest/ruff/mypy, Glob/Grep/Read/Edit/Write) stayed within the settings.json envelope.
+
+**Staging:** 6 story-scoped files staged explicitly (`.gitignore` + `pyproject.toml` + `tests/unit/test_lint_boundaries.py` + story `.md` + pre-review `.md` + sprint-status). `.claude/settings.json` (pre-existing), the other-story artifacts (`10-6-4-*.md`, `F-10-6-1-W1-diagnosis-*.md`, `epic-10-6-retro-*PARTIAL.md`), `scratch/` (now gitignored, by design), and `.autonomous-run-active.json` (run-state) left unstaged. **Nothing committed.**
+
+**#yolo mode:** active through Phase 2; OFF as of the Phase 3.3 final report.
+
+### Story 10-6-3 Manual Verification — 2026-07-13 (DELEGATED: "Run manual verification yourself")
+
+**Verdict: PASS (L3, live shell).** Drove all 5 AC checkpoints directly against the working tree.
+
+- **CP-1 [AC-1] `ruff check .` green — PASS(L3).** `.venv/Scripts/python.exe -m ruff check .` → "All checks passed!", exit 0. The 6 pre-fix `T201` sites are gone.
+- **CP-2 [AC-2] durable, not per-site — PASS(L3).** Created a fresh `scratch/_ac2_probe.py` containing `print("durability probe")`; `ruff check .` stayed green (exit 0) AND `git check-ignore` reported the probe ignored. Removed the probe. Confirms a future scratch helper won't re-trip the gate — the exclude is structural, not the removal of 6 specific lines.
+- **CP-3 [AC-3] `scratch/` gitignored — PASS(L3).** `git check-ignore scratch/walk_bootstrap.py scratch/mcp_walk_106.py` → both reported, exit 0. `git status --porcelain | grep -E '(^| )scratch/'` → no match (the only "scratch" hit in status is the story filename `10-6-3-scratch-ruff-cleanup.md`, not a `scratch/` path).
+- **CP-4 [AC-4] no regression — PASS(L3).** mypy --strict mailbot_api = Success (134 files); `scripts/check_boundaries.py` exit 0; full pytest 1913 passed/3 skipped/3 deselected (green twice earlier in the run — dev pass + post-CR). The `scripts/**`, `benchmark/**`, `tests/**` per-file-ignore lines are all still present in pyproject.toml (grep-confirmed) — existing ignore semantics unchanged.
+- **CP-5 [AC-5] helpers preserved — PASS(L3).** `test -f` confirms both `scratch/walk_bootstrap.py` + `scratch/mcp_walk_106.py` still on disk; only tracking/lint behavior changed.
+
+**Honesty tag:** every checkpoint driven live against the real working tree (real ruff/mypy/boundary/git invocations + a real created-then-removed probe file). No simulation. The story is a config/ignore chore with no live-service or Discord surface, so L3-live here is the complete verification — nothing is Adam-only.
+
+**Per-AC:** AC-1 PASS(L3) · AC-2 PASS(L3) · AC-3 PASS(L3) · AC-4 PASS(L3) · AC-5 PASS(L3). Story stays **done**. No findings, no follow-up. The recurring repo-wide-ruff-not-green debt carried across 10-6/10-6-1/10-6-2 flags is now closed.
+
+---
+
 ## Story 10-6-2 (AI-2 — draft-pipeline reachability from chat) — 2026-07-13
 
 **Headline:** Closed the persona-reach half of F-10-5-11 — `hermes-config/skills/mailbot/SKILL.md` now MUST-dispatches the registered `draft_reply` MCP verb on a draft request (no-improvise / no-"isn't-exposed" contract + an `ask_router`↔`draft_reply` disambiguation note that kills the conflation at its source). Hermes-side persona-contract change ONLY; **no `mailbot_api` change** (the draft tool + Opus pipeline already exist per Story 10.5.3 — verified in code). Done at L1/L2; AC-1/AC-5 live Opus walk deferred to Adam-hands-on Phase 3.5 (Epic 10.6 done-flip clause 4).

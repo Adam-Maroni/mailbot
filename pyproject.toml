@@ -17,6 +17,11 @@ extend-exclude = [
     "docs/external",
     "_eval-outputs",
     "hermes-docs",
+    # Story 10.6.3: `scratch/` holds walk/benchmark scaffolding (CLI-shaped
+    # helpers that legitimately print() to stdout/stderr). It is non-product
+    # code, never staged (also gitignored), so it is excluded wholesale rather
+    # than fixing T201 print-sites that would re-appear with the next helper.
+    "scratch",
     # Third-party Hermes-bundled skill directories. MailBot's lint rules
     # don't apply — these are upstream code shipped with the Hermes image.
     # MailBot's own skill (`hermes-config/skills/mailbot/`) IS subject to
@@ -95,6 +100,11 @@ exclude = [
     "docs/external",
     "_eval-outputs",
     "hermes-docs",
+    # Story 10.6.3: `scratch/` walk/benchmark scaffolding — mirrors the ruff
+    # extend-exclude above so a future repo-wide mypy invocation (CI scope
+    # widening) never picks up scratch helpers. mypy is invoked scoped to
+    # `mailbot_api/` today, so this is durability-symmetry, not a current fix.
+    "scratch",
     # Third-party Hermes-bundled skill directories — see ruff exclude
     # block above for the same rationale. MailBot's own skill at
     # `hermes-config/skills/mailbot/` is NOT excluded.

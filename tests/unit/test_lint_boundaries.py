@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -88,6 +89,52 @@ def test_pyproject_per_file_ignores_scripts_for_t201() -> None:
     # Find the line and verify T201 (or its alias T20) is one of the codes.
     scripts_line = next(line for line in pyproject.splitlines() if "scripts/**/*.py" in line)
     assert ("T201" in scripts_line) or ("T20" in scripts_line)
+
+
+def test_pyproject_excludes_scratch_from_ruff_scan() -> None:
+    """Story 10.6.3 AC-2: the pyproject.toml MUST exclude `scratch` from the ruff
+    scan surface via `[tool.ruff] extend-exclude`.
+
+    `scratch/` holds walk/benchmark scaffolding that legitimately prints to
+    stdout/stderr (T201). Rather than fix 6 print-sites that would re-appear with
+    the next scratch helper (this is the debt's 4th carry), `scratch` is excluded
+    wholesale like the other non-product dirs (`_bmad-output`, `.claude`,
+    `_eval-outputs`, …). Asserting the config text directly (not running ruff
+    against a synthetic tmp tree) is the right way to pin "the exclusion is
+    configured", because extend-exclude entries are project-relative.
+    """
+    # Parse the TOML and assert on the actual [tool.ruff] extend-exclude list
+    # membership (not raw substring matching) so a commented-out entry or a
+    # same-named key elsewhere in the file can't produce a false pass.
+    with (_REPO_ROOT / "pyproject.toml").open("rb") as fh:
+        config = tomllib.load(fh)
+    ruff_exclude = config["tool"]["ruff"]["extend-exclude"]
+    assert "scratch" in ruff_exclude, (
+        "`scratch` must be in [tool.ruff] extend-exclude so repo-wide "
+        "`ruff check .` stays green regardless of scratch/ print() usage."
+    )
+    # Story 10.6.3 CR (mypy-symmetry): mirror the exclusion into [tool.mypy]
+    # exclude too, so a future repo-wide mypy invocation never trips on the
+    # scratch helpers. (mypy is scoped to mailbot_api/ today, but AC-2's
+    # durability intent argues for closing the latent gap.)
+    mypy_exclude = config["tool"]["mypy"]["exclude"]
+    assert "scratch" in mypy_exclude, (
+        "`scratch` must be in [tool.mypy] exclude to mirror the ruff "
+        "exclusion and keep the durability contract symmetric."
+    )
+
+
+def test_gitignore_ignores_scratch_dir() -> None:
+    """Story 10.6.3 AC-3: `scratch/` MUST be git-ignored so walk/benchmark
+    scaffolding under it is never accidentally staged. The two existing helpers'
+    docstrings already assert scratch is gitignored — this pins that claim true.
+    """
+    gitignore = (_REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+    entries = {line.strip() for line in gitignore.splitlines()}
+    assert ("scratch/" in entries) or ("scratch" in entries), (
+        "`scratch/` must be listed in .gitignore so scratch scaffolding is "
+        "never accidentally staged."
+    )
 
 
 def test_utcnow_triggers_dtz003(tmp_path: Path) -> None:

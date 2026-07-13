@@ -128,3 +128,9 @@ _eval_test.txt
 # MailBot project documentation. Kept locally for the docs-archiver skill;
 # per-machine, not tracked.
 hermes-docs/
+
+# Story 10.6.3: scratch/ holds walk/benchmark scaffolding (fault-injection MCP
+# clients, benchmark bootstrap shims). Never product code, never staged. Also
+# excluded from ruff (pyproject [tool.ruff] extend-exclude) so repo-wide
+# `ruff check .` stays green regardless of scratch/ print() usage.
+scratch/
