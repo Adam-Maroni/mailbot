@@ -2,6 +2,62 @@
 
 This file collects flags raised by `autonomous-story-run` runs. One block per invocation.
 
+## Story 10-6-2 (AI-2 — draft-pipeline reachability from chat) — 2026-07-13
+
+**Headline:** Closed the persona-reach half of F-10-5-11 — `hermes-config/skills/mailbot/SKILL.md` now MUST-dispatches the registered `draft_reply` MCP verb on a draft request (no-improvise / no-"isn't-exposed" contract + an `ask_router`↔`draft_reply` disambiguation note that kills the conflation at its source). Hermes-side persona-contract change ONLY; **no `mailbot_api` change** (the draft tool + Opus pipeline already exist per Story 10.5.3 — verified in code). Done at L1/L2; AC-1/AC-5 live Opus walk deferred to Adam-hands-on Phase 3.5 (Epic 10.6 done-flip clause 4).
+
+**Dev model:** claude-opus-4-8[1m]; **Review model:** claude-sonnet-5 (≠ dev, [[feedback_reviewer_model_substitution]]).
+
+**Root cause / fix:** across 3 live walks the persona hand-wrote drafts in haiku and narrated "the Router's draft_reply task isn't directly exposed via MCP" (FALSE — `draft_reply` IS MCP-registered, `mcp_server.py` tool count 26). Root cause: SKILL.md's Turn structure 2 framed the draft step as `ask_router(task_type="draft_reply")` (the router-internal name), which the persona conflated with the same file's "ask_router is intentionally NOT MCP-exposed" note → concluded the draft path was unreachable → improvised. Fix: (1) `draft_reply` verb section gets a Reach contract (MUST-dispatch + no-improvise + no-"isn't-exposed", naming F-10-5-11 in the F-10-5-6 false-narration family) + two carve-outs (verb-failure ≠ hand-writing; the F28 inline-variant is a gate backstop, not the intended path); (2) Turn structure 2 rewritten to dispatch the `draft_reply` MCP verb; (3) Disambiguation note added to the "ask_router NOT MCP-exposed" section itself. Sensitivity gate preserved (AC-3). New offline drift test `tests/integration/test_draft_reply_reach_contract.py` (6 tests).
+
+**Review rounds:** 2. Round 1 — 11 adversarial findings. Applied 6 (100% of the actionable/valid): inline-variant reconciliation, router_error escape hatch, source-of-ambiguity disambiguation, tightened sensitive-token phrasing, de-duplicated the triple prohibition to one source of truth, action-oriented step-4 rewrite. Skipped 5 with rationale (verified-correct assertions: tone-inside-pipeline / single-call-site / F-taxonomy; + the intentional drift-test-posture item). Round 2 — focused verify of the 6 fixes: all 4 load-bearing points HOLD (inline-variant contradiction resolved; AC-3 gate unweakened; ask_router non-exposure contract intact; no new contradiction from de-dup). Applied-rate on valid findings 100% (≥70% ✓).
+
+**Aggregated `[deferred:*]`:** none. The 5 skipped CR findings are dispositioned SKIPPED-with-rationale (verified-correct or intentional posture), not deferred work.
+
+**Gate verdicts:**
+- 2.3.5 Pre-Review Self-Audit — PASS (all 5 sections + 11 posture sub-sections; §3 4 severity-tagged bullets; §4 dispositions each; §5.12 = MANDATORY-CR criteria 3+5+6). Artifact: 10-6-2.pre-review.md.
+- 2.4.4 Dev Agent Record — PASS (model + per-AC completion notes + File List + Status=done in file).
+- 2.4.5 UI-scope — N/A (no graphical frontend; "draft a reply" surface is Discord chat text).
+- 2.4.6 File-List-vs-git — PASS (3 tracked File-List paths confirmed via `git ls-files --error-unmatch`; new test file `??` pending stage, staged in 2.6).
+- 2.4.7 Middleware-Real-Bootstrap (Router reframing) — N/A / exempt (zero `mailbot_api/` verb/endpoint/DB-write/drainer/sync-worker touched; markdown-persona-contract + offline-test only).
+- 2.4.8 Verbose-row truncation — PASS (verbose narrative → story `## Completion Notes` 2026-07-13 header; sprint-status row = headline + pointer).
+- 2.5 dev-env verification — N/A (no `<dev-env-skill>` for offline persona-doc loading; no runnable `mailbot_api` service touched; full-suite test-collection-green [1911 passed] is the boot proxy for the test-only source change).
+
+**Suite:** 1911 passed + 3 skipped + 3 deselected (+6 net vs the 10-6-1 baseline of 1905). ruff clean (changed files), mypy clean (new test; no `mailbot_api` source touched).
+
+**FLAGS:**
+- **INFO — story-file naming:** sprint-status key `10-6-2-draft-pipeline-reachability-from-chat` but the story file is `ai-2-draft-pipeline-reachability-from-chat.md` (created at the Epic 10.5 retro spawn, pre-dating the `10-6-N-` convention; same as 10-6-1's `ai-1-...`). Left as-is — epics.md line 4295 names this file explicitly; renaming would break that cross-reference. Not a defect; noted for orientation.
+- **INFO — repo-wide `ruff check .` not green (pre-existing, out of scope):** the `scratch/` T201 sites remain (owned by story 10-6-3). All changed source/test files ruff-clean. Not staged.
+- **INFO — AC-1/AC-5 not dev-verifiable:** the live Discord "draft a reply" → Opus `draft_reply` `router_calls` row (`model_chosen=claude-opus-*`) + small real Opus spend is Adam-hands-on Phase 3.5 (the per-story manual-verification prompt + Epic 10.6 done-flip clause 4). Precondition: Graph-auth drain (10-6-0 done) + live MCP session (restart hermes after any api restart).
+- **INFO — cosmetic markdown-lint:** the story file has non-blocking MD033 (`<email>` in AC-1 text, pre-existing) + MD060 (Review-Findings table pipe spacing) warnings. Not a code gate.
+
+**Permission prompts during run:** Zero. No permission log configured — all command shapes (rtk git, .venv pytest/ruff/mypy, Glob/Grep/Read/Edit/Write) stayed within the settings.json envelope.
+
+**Staging:** story-scoped files staged explicitly (SKILL.md + new test + story `.md` + pre-review `.md` + this flags file + sprint-status). `.claude/settings.json` (pre-existing), the other-story artifacts (`10-6-4-*.md`, `F-10-6-1-W1-diagnosis-*.md`, `epic-10-6-retro-*PARTIAL.md`), `scratch/`, and `.autonomous-run-active.json` left unstaged. **Nothing committed.**
+
+**#yolo mode:** active through Phase 2; OFF as of the Phase 3.3 final report.
+
+### Story 10-6-2 Manual Verification — 2026-07-13 (DELEGATED: "Run manual verification yourself")
+
+**Verdict: PASS WITH FINDINGS (1 INFO finding, pre-existing + out of scope).** Drove the real `handle_draft_reply` orchestrator inside the actual FastAPI `lifespan()` (real policy + `init_default_adapters()` + real Anthropic Opus adapter + real `/data/mailbot.db`) — the exact bootstrap the MCP `draft_reply` tool runs through. See `10-6-2-walk-evidence.md`.
+
+- **CP-1 [AC-3] confidential → `confidential_refused`, 0 Opus — PASS(L3).** Gate refuses confidential unconditionally; new reach contract didn't weaken it.
+- **CP-2 [AC-3] sensitive/no-token → `needs_sensitivity_token`, 0 Opus — PASS(L3).** FR-2.3/F28 handshake intact.
+- **CP-3 [AC-1/AC-5 structural] normal → real Opus draft — PASS(L3).** 2× `POST api.anthropic.com/v1/messages → 200`, `state=draft_presented`; new `router_calls` row **id 14861: `draft_reply, model_chosen=claude-opus-4-7, reason=policy:draft_reply:default, outcome=ok, origin=chat-orchestrator, $0.00602`** (the exact AC-1 DB shape — Opus, not haiku). MCP server `tools:26`.
+- **CP-4 [AC-2 structural] verb dispatches, not improvises — PASS(L3).** The capability the persona contract now points at is genuinely reachable end-to-end.
+
+**Honesty tag:** proved the verb reachability + Opus dispatch + DB row + sensitivity gate at the real orchestrator/Router/Opus/SQLite boundary. NOT faked: being the Hermes LLM persona in Discord — so **AC-2's "the persona *chooses* the verb on a real turn" + AC-5's Opus draft-*quality* judgment stay Adam-only L3** (Epic 10.6 done-flip clause 4).
+
+**WALK-10-6-2-F1 (INFO, pre-existing, OUT OF 10-6-2 SCOPE):** the normal-path draft returned `draft_presented` but `draft_body=''` — the chosen source email was a no-reply marketing blast ("Satisfactory and 2 other items…") with nothing substantive to reply to; Opus returned schema-valid output with an empty body (plausibly correct "nothing to draft"). This is in the pre-existing Opus pipeline (Story 5-9/10.5.3), upstream of 10-6-2's persona-doc-only change — NOT a regression. For his walk, Adam should pick a real person-to-person email to judge draft quality. Possible follow-up: empty-body `draft_presented` could surface a "nothing to reply to" defender message — separate draft-pipeline UX story, not this one.
+
+**Collateral:** 0 open pending_actions (draft-only; never proposed a send), pause/degraded OFF, all containers healthy. 2 legitimate Opus `draft_reply` audit rows, ~$0.0121 **estimator** spend — **Console is authoritative** ([[feedback_anthropic_spend_source_of_truth]]). No mailbox mutation, no synthetic rows.
+
+**Per-AC:** AC-1 PASS(L3 structural) · AC-2 PASS(L3 structural) + Adam-only behavioral · AC-3 PASS(L3) · AC-4 PASS (CR discharged) · AC-5 PARTIAL(L3 — Opus ran + real spend; quality = Adam). Story stays **done**.
+
+**Discord-walk PREP (2026-07-13) + cross-story blocker note:** restarted hermes → MCP session live + `draft_reply` discoverable (api-side fresh session `39418893…`, tool calls OK). BUT a real Discord "draft a reply" turn is currently **blocked upstream by F-10-6-1-W1 / story 10-6-4** (NOT by 10-6-2): the default chat tool-call routes to qwen2.5:3b (10-6-1 cost-thesis win, `policy.chat_completions_tool_call.model=qwen`), and qwen-on-CPU exceeds the adapter's 30s timeout on full-context tool-calls → `AdapterTimeout` → HTTP 502 before the persona ever reaches `draft_reply`. qwen was loaded+warm (`ollama ps: UNTIL Forever`) yet still timed out → confirms it's full-context latency (F-10-6-1-W1), not cold-load. **Workaround for the walk ahead of 10-6-4:** Adam types **`use opus`** (recognized control phrase → `set_model_oneshot`) immediately before the draft request, routing that tool-call turn to a fast cloud model so the persona can actually reach `draft_reply`. This does NOT compromise the 10-6-2 test — AC-2 asks whether the persona *chooses* the draft_reply verb, which is model-independent; `use opus` only bypasses the qwen latency wall. Good normal-sensitivity draft targets (person-to-person, non-marketing, has body): `ishemrabai@gmail.com` (Invitation: Vista branding), `yonathanphysio@gmail.com` (Studio Sport Santé dossier), `guillaume.bilcke@gmail.com` (Appel Stratégique). Suggested phrasing: "draft a reply to the email from yonathan about the Studio Sport Santé project" (optionally prefix `use opus` to dodge F-10-6-1-W1).
+
+---
+
 ## Story 10-6-1 (AI-1 Phase 2 — cheap-lane reachability) — 2026-07-13
 
 **Headline:** Default chat tool-call now routes to the LOCAL qwen lane (AC-5 dev-complete) via a dedicated `chat_completions_tool_call` policy default; `hermes_aux` retained as lane proxy. Latent Ollama multi-turn tool_calls arg-translation bug (reached only once the default routed to qwen) fixed. MANDATORY-CR NOTABLE (3-hunter, 5 patches, round-2 verify all hold). AC-6 = Adam-hands-on Phase 3.5 live walk. Epic 10.6 done-flip clause 3 (cheap lane REACHED) pending the live-turn DB proof.
