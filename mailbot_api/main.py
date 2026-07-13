@@ -769,18 +769,52 @@ async def _chat_completions_tools_dispatch(
     from mailbot_api.router import dispatch_tool_call as _dispatch_tool_call  # noqa: PLC0415
     from mailbot_api.router.policy import snapshot_for_dispatch as _snap  # noqa: PLC0415
 
-    # Resolve "hermes_aux" alias to its policy-default model. CR-2/CR-4
-    # (Story 6-9 review 2026-06-04): track whether the caller explicitly
-    # forced a model so dispatch_tool_call can attribute the audit row's
-    # `model_chosen_reason` correctly and gate the degraded-mode opus
+    # Resolve the "hermes_aux" default alias to the tool-call policy-default
+    # model. CR-2/CR-4 (Story 6-9 review 2026-06-04): track whether the caller
+    # explicitly forced a model so dispatch_tool_call can attribute the audit
+    # row's `model_chosen_reason` correctly and gate the degraded-mode opus
     # block on user-force only.
+    #
+    # Story AI-1 Phase 2 (10-6-1, AC-5): the default alias now resolves to the
+    # `chat_completions_tool_call` policy entry (local qwen), NOT `hermes_aux`
+    # (haiku). BEFORE this change every default chat tool-call landed on the
+    # paid lane even though Phase 1 made the local model genuinely tool-capable
+    # — the layer-3 reachability gap (DB router_calls proved 100% haiku on the
+    # live walk). `hermes_aux` remains the lane proxy (rate-limit / semaphore)
+    # inside dispatch_tool_call; only the DEFAULT MODEL source moved. An
+    # explicit request.model (not the alias) is still an explicit force.
+    # Fallback stays haiku only if the tool-call entry is somehow absent (a
+    # broken policy) — never silently re-introducing the paid-lane default when
+    # the entry is present.
+    _TOOL_CALL_DEFAULT_FALLBACK = "claude-haiku-4-5-20251001"
     if request.model == "hermes_aux":
+        # CR (Edge Case Hunter, 10-6-1): the documented fallback guarantee must
+        # hold for ANY snapshot-resolution failure, not only RuntimeError — a
+        # malformed snapshot could surface as AttributeError/KeyError. Broaden
+        # the guard and LOG when the entry is missing so a policy that dropped
+        # `chat_completions_tool_call` is visible (a silent haiku fallback would
+        # otherwise look like normal paid-lane traffic on the cost dashboard).
+        resolved_model = _TOOL_CALL_DEFAULT_FALLBACK
         try:
             policy_snapshot = _snap()
-            entry = policy_snapshot.tasks.get("hermes_aux")
-            resolved_model = entry.model if entry is not None else "claude-haiku-4-5-20251001"
-        except RuntimeError:
-            resolved_model = "claude-haiku-4-5-20251001"
+            entry = policy_snapshot.tasks.get("chat_completions_tool_call")
+            if entry is not None:
+                resolved_model = entry.model
+            else:
+                logger.warning(
+                    "chat_completions_tool_call policy entry missing — tool-call "
+                    "default falling back to haiku (paid lane)",
+                    extra={
+                        "event": "router.tool_call_default.entry_missing",
+                        "fallback_model": _TOOL_CALL_DEFAULT_FALLBACK,
+                    },
+                )
+        except (RuntimeError, AttributeError, KeyError):
+            logger.warning(
+                "policy snapshot unavailable resolving tool-call default — "
+                "falling back to haiku (paid lane)",
+                extra={"event": "router.tool_call_default.snapshot_unavailable"},
+            )
         is_force_override = False
     else:
         resolved_model = request.model

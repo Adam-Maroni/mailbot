@@ -356,8 +356,10 @@ async def _emit_tool_calls_unavailable_audit_row(
     `outcome="failed"`, zero tokens/cost (no adapter call happened). The
     `model_chosen_reason` is the reason already resolved by the dispatcher (a
     `degraded:<from>→<to>` demotion string for route (a), or the
-    `policy:hermes_aux:default` string for route (b)) — both are valid
-    closed-set shapes, so the audit-vocab validator accepts them. The stable
+    `policy:chat_completions_tool_call:default` string for route (b) — Story
+    AI-1 Phase 2 moved the tool-call MODEL default off `hermes_aux` to the
+    `chat_completions_tool_call` entry) — both are valid closed-set shapes, so
+    the audit-vocab validator accepts them. The stable
     `TOOL_CALLS_UNAVAILABLE_DEGRADED` error code lives on the returned
     RouterError, making the fault reconstructable.
     """
@@ -1928,7 +1930,15 @@ async def dispatch_tool_call(
     elif _persistent_engaged:
         model_chosen_reason = ModelChosenReason.OVERRIDE_SLASH_PERSISTENT.value
     else:
-        model_chosen_reason = policy_default("hermes_aux")
+        # Story AI-1 Phase 2 (10-6-1, AC-5): the policy-default for a tool-call
+        # dispatch is now sourced from the `chat_completions_tool_call` entry
+        # (local qwen) — the caller (main.py) resolves the "hermes_aux" alias to
+        # that model before dispatch. Attribute the audit reason to the same
+        # task key so `model_chosen_reason` names the entry that actually chose
+        # the model, and cost-attribution queries filtering on the tool-call
+        # default are correct. `hermes_aux` stays the LANE proxy (policy_entry
+        # above), not the model source.
+        model_chosen_reason = policy_default(_TOOL_CALL_TASK_TYPE)
 
     # ---- Story 2-8 Layer 3 — degraded mode gate ----
     # Story 10.5.1 (AC-2, the CLASS): authoritative cross-process degraded read

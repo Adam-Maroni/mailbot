@@ -126,7 +126,16 @@ tasks:
     max_tokens_out: 1024
     lane: "interactive"
     sensitivity: "any"
-    notes: "Hermes-aux pass-through via /v1/chat/completions. force_model is overridden by the request body; this entry exists so policy.tasks['hermes_aux'] resolves."
+    notes: "Hermes-aux pass-through via /v1/chat/completions. force_model is overridden by the request body; this entry exists so policy.tasks['hermes_aux'] resolves. Also serves as the LANE PROXY (rate-limit / semaphore accounting) for tool-call dispatch — see chat_completions_tool_call for the MODEL default. Story AI-1 (2026-07-13): the MODEL for a default chat tool-call is NO LONGER sourced from here; it moved to chat_completions_tool_call so the now-tool-capable local lane serves default tool-calls (haiku here would keep every tool-call on the paid lane, defeating the cost thesis)."
+
+  chat_completions_tool_call:
+    model: "qwen2.5:3b-instruct-q4_K_M"
+    prompt_version: "v1"
+    escalate: false
+    max_tokens_out: 1024
+    lane: "interactive"
+    sensitivity: "any"
+    notes: "Story AI-1 Phase 2 (2026-07-13, F-10-3-2 reachability last-mile): the MODEL default for a default (non-override) tool-call arriving on /v1/chat/completions. Set to local qwen2.5 — which Story AI-1 Phase 1 made genuinely tool-capable (adapter call_with_tools + router capability gate, live-probed 6/6 exact at temp 0). BEFORE this entry existed, dispatch_tool_call defaulted the model from hermes_aux (haiku), so EVERY chat tool-call landed on the paid lane regardless of the local model's capability — the layer-3 'wired+capable+tested ≠ reached' gap the Epic 10.5 retro named. Routing the default here to qwen makes the cheap local lane genuinely CARRY chat tool-calls end-to-end (the founding 'LLM without high cost' thesis). SAFETY: this only picks the PROPOSING model; whether a resulting tool-call may ACT on the mailbox is enforced downstream + model-independently by the propose_action → drain tier/grant/sensitivity pipeline (reversible Tier-1 proceeds; irreversible Tier-2/3 still require grant + sensitivity handshake at drain, exactly as for a haiku-proposed action). See project_local_model_is_safety_net. Overrides (one-shot / persistent / is_force_override) still win over this default; degraded-mode demotion is a no-op here (qwen is already the floor). prompt_version is a sentinel — tool-call dispatch has no prompt module. Lane accounting still borrows hermes_aux (both interactive, Hermes-driven)."
 
   # --- Story 5-3: chat-side prompts ---
 

@@ -80,6 +80,13 @@ tasks:
     max_tokens_out: 1024
     lane: "interactive"
     sensitivity: "any"
+  chat_completions_tool_call:
+    model: "{_QWEN}"
+    prompt_version: "v1"
+    escalate: false
+    max_tokens_out: 1024
+    lane: "interactive"
+    sensitivity: "any"
 """
 
 
@@ -423,8 +430,15 @@ async def test_no_override_no_bridge_engagement(
     tmp_path: Path, _clean_state: Any,
 ) -> None:
     """Baseline no-op — no one-shot armed, no persistent override, no
-    is_force_override. Should route via `policy_default("hermes_aux")` at
-    haiku, matching pre-Path-B behavior for regression coverage.
+    is_force_override. The dispatcher records the policy-default reason and
+    invokes the model it was handed (the caller/main.py resolved it upstream).
+
+    Story AI-1 Phase 2 (10-6-1, AC-5): the default reason now keys on
+    `chat_completions_tool_call` (the tool-call model-default entry), NOT
+    `hermes_aux` (the lane proxy). Here we still pass model=_HAIKU directly (the
+    dispatcher doesn't re-resolve the model in the no-override branch — that's
+    main.py's job), so haiku is still the invoked adapter; only the audit reason
+    string reflects the new default-source entry.
     """
     db_path = _setup_baseline(tmp_path)
     haiku_adapter = _RecordingAdapter(_HAIKU)
@@ -446,4 +460,4 @@ async def test_no_override_no_bridge_engagement(
     )
     assert len(rows) == 1
     assert rows[0][0] == _HAIKU
-    assert rows[0][1] == "policy:hermes_aux:default"
+    assert rows[0][1] == "policy:chat_completions_tool_call:default"

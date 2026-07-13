@@ -237,7 +237,15 @@ def test_chat_boundary_renders_confidential_refusal_as_200_not_502(
 ) -> None:
     """F-10-5-6: a confidential-blocked tool-call chat request returns a
     graceful 200 completion (the four-beat message), NOT a raw 502, and the
-    Graph email id never appears in the response body."""
+    Graph email id never appears in the response body.
+
+    Story AI-1 Phase 2 (10-6-1): the confidential API-block gate only fires for
+    an API-BOUND model (`_API_BOUND_MODEL_RE`) — a LOCAL model reading
+    confidential content never leaves the device, so it is privacy-exempt by
+    design (see test_chat_boundary_confidential_served_locally_no_api_block for
+    the default-path behavior). Since the default alias now routes to the local
+    lane (qwen), this test forces an API model (`model=_HAIKU`) to exercise the
+    API-bound confidential-refusal render this test was written to guard."""
     import asyncio
 
     app, db_path = _bootstrap_app(tmp_path, monkeypatch)
@@ -249,7 +257,9 @@ def test_chat_boundary_renders_confidential_refusal_as_200_not_502(
             "/v1/chat/completions",
             headers={"Authorization": "Bearer test-router-key-xyz"},
             json={
-                "model": "hermes_aux",
+                # Force an API-bound model so the confidential gate fires — the
+                # F-10-5-6 graceful-refusal render is the behavior under test.
+                "model": _HAIKU,
                 "stream": False,
                 "messages": [
                     {"role": "user", "content": "summarize this email"},
@@ -279,3 +289,99 @@ def test_chat_boundary_renders_confidential_refusal_as_200_not_502(
     assert "outlook" in content.lower()
     # The id must not leak anywhere in the response.
     assert _SECRET_GRAPH_ID not in resp.text
+
+
+def test_chat_boundary_confidential_served_locally_no_api_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _clean_state: Any
+) -> None:
+    """Story AI-1 Phase 2 (10-6-1, AC-5) — the privacy-model consequence of
+    routing the default chat tool-call to the local lane: a confidential email
+    is NOT API-blocked when served by the LOCAL model (qwen). Confidential
+    content read by a local model never leaves the device, so the
+    `SENSITIVITY_BLOCKS_API` gate (API-bound-only) correctly does not fire — the
+    request is served locally and returns a normal 200. The id still must not
+    leak in the response.
+
+    This is the deliberate, documented behavior (local = privacy-safe;
+    NFR-PRIV-2 blocks EXTERNAL APIs, not local inference). It is asserted
+    explicitly so a future regression that starts API-blocking the local lane
+    (or, worse, silently routing confidential content to an API) is caught."""
+    import asyncio
+
+    app, db_path = _bootstrap_app(tmp_path, monkeypatch)
+    asyncio.run(_seed_email(db_path, graph_id=_SECRET_GRAPH_ID, sensitivity="confidential"))
+
+    # Register a fake qwen adapter so the local dispatch has an adapter to reach
+    # (the real Ollama isn't running in unit/integration CI). It returns a plain
+    # text completion — the point is the request is SERVED, not API-blocked.
+    from mailbot_api.router.models import ToolCallAdapterResponse
+    from mailbot_api.router.registry import register_adapter
+
+    class _LocalFake:
+        async def call(self, *a: Any, **k: Any) -> Any:  # pragma: no cover
+            raise NotImplementedError
+
+        async def call_with_tools(self, **_: Any) -> ToolCallAdapterResponse:
+            return ToolCallAdapterResponse(
+                text="served locally",
+                tool_calls=[],
+                tokens_in=5,
+                tokens_out=3,
+                cached_tokens_in=0,
+                latency_ms=4,
+                finish_reason="stop",
+                raw={"mock": True},
+            )
+
+    with TestClient(app) as client:
+        register_adapter(_QWEN, _LocalFake())
+        resp = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer test-router-key-xyz"},
+            json={
+                # Default alias → routes to the local lane (qwen) post-AC-5.
+                "model": "hermes_aux",
+                "stream": False,
+                "messages": [
+                    {"role": "user", "content": "summarize this email"},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "toolu_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "propose_action",
+                                    "arguments": json.dumps({"email_id": _SECRET_GRAPH_ID}),
+                                },
+                            }
+                        ],
+                    },
+                ],
+                "tools": [t.model_dump() for t in _tools()],
+            },
+        )
+    # Served locally — NOT an API block, NOT a 502.
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # It is NOT the confidential-refusal envelope (that only fires for API models).
+    content = body["choices"][0]["message"]["content"]
+    assert "admits no api override" not in content.lower()
+    # The id still never leaks in the response body.
+    assert _SECRET_GRAPH_ID not in resp.text
+    # The dispatch was attributed to the local model in the audit trail.
+    import asyncio as _aio
+
+    from mailbot_api.db.connection import fetchone as _fetchone
+
+    async def _reason() -> tuple[Any, ...] | None:
+        return await _fetchone(
+            db_path,
+            "SELECT model_chosen FROM router_calls WHERE task_type = 'chat_completions_tool_call'",
+            (),
+        )
+
+    row = _aio.run(_reason())
+    assert row is not None
+    assert row[0] == _QWEN

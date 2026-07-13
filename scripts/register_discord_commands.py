@@ -51,7 +51,20 @@ KNOWN_MODEL_SHORT_FORMS: tuple[str, ...] = ("qwen", "haiku", "opus")
 # a `/model persist task=embedding` choice would let a user set a persistent
 # override that the Router never consults — surfacing as silent-no-op.
 # Excluding it from the Discord picker prevents the confused-user path.
-EXCLUDED_FROM_PERSIST_CHOICES: frozenset[str] = frozenset({"embedding"})
+#
+# Story AI-1 Phase 2 (10-6-1): `chat_completions_tool_call` is excluded for the
+# SAME reason. It is a synthetic dispatch task that supplies the tool-call
+# MODEL default (local qwen); but `dispatch_tool_call`'s persistent-override
+# peek keys on the `hermes_aux` LANE task, NOT `chat_completions_tool_call`
+# (router.py — the `"hermes_aux" in policy.overrides_applied` branch). So a
+# `/model persist task=chat_completions_tool_call` would set an override the
+# dispatcher never consults — a silent no-op. Users persist the tool-call model
+# via `task=hermes_aux` (the lane key the peek honors). Excluding it keeps the
+# frozen Discord payload unchanged when the new task entry was added to
+# policy.yaml.
+EXCLUDED_FROM_PERSIST_CHOICES: frozenset[str] = frozenset(
+    {"embedding", "chat_completions_tool_call"}
+)
 
 # Discord application command types (root-level command.type field)
 # https://discord.com/developers/docs/interactions/application-commands#application-command-object-application-command-types

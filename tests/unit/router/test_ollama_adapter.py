@@ -633,6 +633,160 @@ async def test_call_with_tools_translates_tool_result_message_to_tool_name(
     assert tool_msgs[0]["content"] == "archived ok"
 
 
+async def test_call_with_tools_assistant_tool_call_arguments_string_to_dict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story AI-1 Phase 2 (10-6-1) — a multi-turn history where a PRIOR
+    assistant message carries an OpenAI-shape `tool_calls[].function.arguments`
+    (a JSON STRING per the OpenAI wire spec) must be forwarded to Ollama with
+    that arguments field converted to a DICT — Ollama's `Message.ToolCall`
+    model requires a dict and raises pydantic ValidationError on a string.
+
+    This path became REACHED when AI-1 Phase 2 routed default chat tool-calls
+    to the local lane (qwen); before that qwen refused all tool-calls at the
+    capability gate so a multi-turn echo never reached the Ollama translator.
+    Regression witnessed by
+    test_sensitivity_refusal_envelope_boundary.py once the default routed to
+    qwen (ValidationError on arguments; input_type=str)."""
+    fake = _FakeAsyncClient(response=_canned_tool_response())
+    adapter = _adapter(monkeypatch, fake)
+
+    messages = [
+        {"role": "user", "content": "archive ABC123"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_xyz",
+                    "type": "function",
+                    "function": {
+                        "name": "archive_email",
+                        "arguments": '{"email_id":"ABC123"}',  # JSON STRING (OpenAI wire)
+                    },
+                }
+            ],
+        },
+        {"role": "user", "content": "and the next one"},
+    ]
+
+    await adapter.call_with_tools(system="sys", messages=messages, tools=[_tool_def()])
+
+    assert fake.last_kwargs is not None
+    sent = fake.last_kwargs["messages"]
+    asst = [m for m in sent if m.get("role") == "assistant" and m.get("tool_calls")]
+    assert len(asst) == 1
+    args = asst[0]["tool_calls"][0]["function"]["arguments"]
+    # Converted to a dict for Ollama — NOT the raw JSON string.
+    assert isinstance(args, dict), f"expected dict arguments for Ollama, got {type(args)}: {args!r}"
+    assert args == {"email_id": "ABC123"}
+
+    # And the shape must survive the REAL ollama library's message validation —
+    # this is what actually raised the ValidationError in production.
+    ollama.Message.model_validate(asst[0])
+
+
+async def test_call_with_tools_assistant_tool_call_malformed_args_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defense: if a prior assistant `tool_calls` arguments string is NOT valid
+    JSON, the translator must not crash — it leaves the value as-is so the
+    Ollama layer surfaces its own error rather than the translator raising
+    mid-history. (Malformed args are a caller/model bug, not a translator bug.)"""
+    fake = _FakeAsyncClient(response=_canned_tool_response())
+    adapter = _adapter(monkeypatch, fake)
+
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_bad",
+                    "type": "function",
+                    "function": {"name": "archive_email", "arguments": "not-json{"},
+                }
+            ],
+        },
+    ]
+
+    # Must not raise inside the translator.
+    await adapter.call_with_tools(system="sys", messages=messages, tools=[_tool_def()])
+
+    assert fake.last_kwargs is not None
+    asst = [
+        m for m in fake.last_kwargs["messages"]
+        if m.get("role") == "assistant" and m.get("tool_calls")
+    ]
+    # Left unchanged (still a string) — the translator did not fabricate a dict.
+    assert asst[0]["tool_calls"][0]["function"]["arguments"] == "not-json{"
+
+
+@pytest.mark.parametrize("bad_args", ['42', '[1, 2, 3]', '"just a string"', 'true', 'null'])
+async def test_call_with_tools_assistant_args_valid_json_non_object_preserved(
+    monkeypatch: pytest.MonkeyPatch, bad_args: str,
+) -> None:
+    """CR (Blind + Edge Case Hunter, 10-6-1): a `tool_calls[].function.
+    arguments` string that is SYNTACTICALLY VALID JSON but decodes to a
+    NON-OBJECT (scalar/list/bool/null) must be left UNCHANGED — not substituted
+    with the decoded scalar. Ollama requires a dict; forwarding the original
+    string lets the ollama validator raise its own diagnostic rather than the
+    translator fabricating a different-but-still-invalid non-dict `arguments`.
+    The decode guard must reject valid-JSON-but-non-object, not only malformed
+    JSON."""
+    fake = _FakeAsyncClient(response=_canned_tool_response())
+    adapter = _adapter(monkeypatch, fake)
+
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_scalar",
+                    "type": "function",
+                    "function": {"name": "archive_email", "arguments": bad_args},
+                }
+            ],
+        },
+    ]
+
+    await adapter.call_with_tools(system="sys", messages=messages, tools=[_tool_def()])
+
+    assert fake.last_kwargs is not None
+    asst = [
+        m for m in fake.last_kwargs["messages"]
+        if m.get("role") == "assistant" and m.get("tool_calls")
+    ]
+    # Left as the ORIGINAL string — the translator did NOT substitute the
+    # decoded scalar/list (which would still be a non-dict Ollama rejects).
+    assert asst[0]["tool_calls"][0]["function"]["arguments"] == bad_args
+
+
+async def test_call_with_tools_does_not_mutate_caller_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CR (Blind Hunter isolation claim, 10-6-1): the arg-normalization must not
+    alias or mutate the caller's original message dicts. Capture the original
+    assistant message + its nested function dict by reference and assert they
+    are unchanged after the call (arguments still the original string on the
+    CALLER's copy)."""
+    fake = _FakeAsyncClient(response=_canned_tool_response())
+    adapter = _adapter(monkeypatch, fake)
+
+    original_fn = {"name": "archive_email", "arguments": '{"email_id":"ABC123"}'}
+    original_tc = {"id": "call_xyz", "type": "function", "function": original_fn}
+    original_msg = {"role": "assistant", "content": "", "tool_calls": [original_tc]}
+    messages = [original_msg, {"role": "user", "content": "next"}]
+
+    await adapter.call_with_tools(system="sys", messages=messages, tools=[_tool_def()])
+
+    # The caller's original structures are untouched: arguments still the STRING.
+    assert original_fn["arguments"] == '{"email_id":"ABC123"}'
+    assert original_tc["function"] is original_fn
+    assert original_msg["tool_calls"][0] is original_tc
+
+
 async def test_call_with_tools_tool_result_falls_back_to_existing_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -234,9 +234,23 @@ def _translate_messages_openai_to_ollama(
     omit `tool_name` — Ollama then matches positionally, which is the best we
     can do without the name and matches single-turn behavior.
 
-    Non-tool messages are passed through unchanged (a shallow copy is made only
-    for the tool messages we rewrite; other dicts are forwarded by reference,
-    same as the pre-AI-1 pass-through).
+    Story AI-1 Phase 2 (10-6-1): a SECOND translation is needed for assistant
+    messages that ECHO a prior `tool_calls` array (multi-turn history). OpenAI's
+    wire shape stores `function.arguments` as a JSON STRING, but Ollama's
+    `Message.ToolCall` model requires `arguments` to be a DICT — passing the
+    string through raises a pydantic ValidationError inside the ollama library
+    (`Input should be a valid dictionary ... input_type=str`). This path became
+    REACHED only when AI-1 Phase 2 routed default chat tool-calls to the local
+    lane; before that qwen refused all tool-calls at the capability gate so no
+    multi-turn echo ever reached this translator. We convert each assistant
+    tool_call's arguments string → dict (json-decoded); a value that is already
+    a dict, or a string that isn't valid JSON, is left unchanged (the latter is
+    a caller/model bug the Ollama layer surfaces on its own — the translator
+    must not raise mid-history).
+
+    Non-tool, non-tool_call messages are passed through unchanged (a shallow
+    copy is made only for the messages we rewrite; other dicts are forwarded by
+    reference, same as the pre-AI-1 pass-through).
     """
     # Pass 1: id → function name, harvested from assistant tool_calls.
     id_to_name: dict[str, str] = {}
@@ -258,7 +272,9 @@ def _translate_messages_openai_to_ollama(
                 if isinstance(name, str) and name:
                     id_to_name[call_id] = name
 
-    # Pass 2: rewrite tool-result messages; pass everything else through.
+    # Pass 2: rewrite tool-result messages (role:"tool") AND assistant messages
+    # echoing a tool_calls array (arguments string → dict); pass everything else
+    # through by reference.
     out: list[dict[str, Any]] = []
     for msg in messages:
         if isinstance(msg, dict) and msg.get("role") == "tool":
@@ -275,9 +291,74 @@ def _translate_messages_openai_to_ollama(
             if resolved is not None:
                 translated["tool_name"] = resolved
             out.append(translated)
+        elif (
+            isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and isinstance(msg.get("tool_calls"), list)
+        ):
+            out.append(_ollama_assistant_tool_calls_args_to_dict(msg))
         else:
             out.append(msg)
     return out
+
+
+def _ollama_assistant_tool_calls_args_to_dict(msg: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of an assistant message whose `tool_calls[].function.
+    arguments` JSON strings have been decoded to dicts (Ollama's required
+    shape). A value that is already a dict is left as-is. A string is
+    substituted ONLY when it decodes to a JSON OBJECT (dict); a string that is
+    not valid JSON, or that decodes to a non-object (scalar/list — e.g. `'42'`,
+    `'[1,2]'`, `'"x"'`), is left UNCHANGED so the Ollama layer surfaces its own
+    typed error rather than this translator fabricating a still-invalid
+    non-dict `arguments`. (CR — the decode guard must reject valid-JSON-but-
+    non-object, not just syntactically-invalid JSON.)
+
+    Copies only the mutated sub-structures — a fresh `tool_calls` list plus a
+    shallow copy (`dict(...)`) of each rewritten call and its `function` dict —
+    so the caller's original message dicts are never aliased or mutated. The
+    decoded `arguments` object is a freshly-allocated value from `json.loads`,
+    not shared with the caller.
+    """
+    tool_calls = msg.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return msg
+    new_tool_calls: list[Any] = []
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            new_tool_calls.append(tc)
+            continue
+        fn = tc.get("function")
+        if not isinstance(fn, dict):
+            new_tool_calls.append(tc)
+            continue
+        args = fn.get("arguments")
+        if isinstance(args, str):
+            try:
+                decoded = json.loads(args)
+            except (json.JSONDecodeError, ValueError):
+                # Malformed args — leave as-is; the Ollama layer surfaces its
+                # own error rather than the translator raising mid-history.
+                new_tool_calls.append(tc)
+                continue
+            if not isinstance(decoded, dict):
+                # Valid JSON that is NOT an object (scalar/list). Ollama requires
+                # a dict; leaving the original string in place lets the ollama
+                # validator raise its own diagnostic rather than us forwarding a
+                # differently-but-still-invalid shape. Same disposition as the
+                # malformed-JSON branch above.
+                new_tool_calls.append(tc)
+                continue
+            new_fn = dict(fn)
+            new_fn["arguments"] = decoded
+            new_tc = dict(tc)
+            new_tc["function"] = new_fn
+            new_tool_calls.append(new_tc)
+        else:
+            # Already a dict (or absent) — pass the call through unchanged.
+            new_tool_calls.append(tc)
+    new_msg = dict(msg)
+    new_msg["tool_calls"] = new_tool_calls
+    return new_msg
 
 
 _OMIT_TOOL_CHOICE = object()

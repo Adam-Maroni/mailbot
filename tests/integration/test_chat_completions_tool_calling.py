@@ -871,7 +871,12 @@ def test_chat_completions_hermes_aux_alias_resolves_via_policy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Story 6-6.8 F8 fix preserved: tools-bearing call with model=hermes_aux
-    resolves to the policy default, not a KeyError."""
+    resolves to the policy default, not a KeyError.
+
+    Story AI-1 Phase 2 (10-6-1, AC-5): that default MOVED from haiku to the
+    local qwen (the `chat_completions_tool_call` policy entry) so the cheap
+    local lane is REACHED by default. The F8 "resolves, doesn't KeyError"
+    intent is unchanged; only the resolved model differs."""
     app, _, _ = _bootstrap(tmp_path, monkeypatch)
     captured: dict[str, Any] = {}
     fake = _FakeToolAdapter(
@@ -879,7 +884,8 @@ def test_chat_completions_hermes_aux_alias_resolves_via_policy(
         last_call_kwargs=captured,
     )
     with TestClient(app) as client:
-        register_adapter("claude-haiku-4-5-20251001", fake)
+        # The default now resolves to the local model — register qwen.
+        register_adapter("qwen2.5:3b-instruct-q4_K_M", fake)
         payload = _tools_payload(model="hermes_aux")
         r = client.post(
             "/v1/chat/completions",
@@ -888,8 +894,8 @@ def test_chat_completions_hermes_aux_alias_resolves_via_policy(
         )
     assert r.status_code == 200, r.text
     body = r.json()
-    # Resolved model surfaces in response.model.
-    assert body["model"] == "claude-haiku-4-5-20251001"
+    # Resolved model surfaces in response.model — the local lane default.
+    assert body["model"] == "qwen2.5:3b-instruct-q4_K_M"
 
 
 def test_text_only_path_unchanged_when_no_tools(
@@ -1148,15 +1154,23 @@ def test_tool_choice_auto_with_no_tools_accepted_as_text_call(
 def test_audit_records_policy_reason_when_hermes_aux_alias_used(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """CR-2: When the caller passes `model="hermes_aux"` (policy alias),
-    the audit row's `model_chosen_reason` is `"policy:hermes_aux:default"`
-    (Story 9.2 vocabulary; was bare "policy" pre-9.2), NOT
-    `"override:api:force_model"`. Cost-attribution queries depend on this distinction."""
+    """CR-2: When the caller passes `model="hermes_aux"` (policy alias, no
+    force), the audit row's `model_chosen_reason` is a `policy:<task>:default`
+    value (Story 9.2 vocabulary), NOT `"override:api:force_model"`.
+    Cost-attribution queries depend on this distinction.
+
+    Story AI-1 Phase 2 (10-6-1, AC-5): the tool-call default MODEL moved from
+    `hermes_aux` (haiku) to `chat_completions_tool_call` (local qwen), so the
+    default reason now keys on `chat_completions_tool_call` — it must still name
+    the entry that CHOSE the model (so cost queries attribute correctly), just a
+    different entry. The policy-default-vs-override distinction this test guards
+    is unchanged."""
     from mailbot_api.db.connection import fetchone
 
     app, _, db_path = _bootstrap(tmp_path, monkeypatch)
     with TestClient(app) as client:
-        register_adapter("claude-haiku-4-5-20251001", _FakeToolAdapter(
+        # The default now resolves to the local model — register qwen.
+        register_adapter("qwen2.5:3b-instruct-q4_K_M", _FakeToolAdapter(
             tool_calls_raw=[{"type": "text", "text": "ok"}],
         ))
         r = client.post(
@@ -1178,7 +1192,7 @@ def test_audit_records_policy_reason_when_hermes_aux_alias_used(
 
     row = _aio.run(_check())
     assert row is not None
-    assert row[0] == "policy:hermes_aux:default"
+    assert row[0] == "policy:chat_completions_tool_call:default"
 
 
 def test_audit_records_force_override_when_explicit_model_passed(

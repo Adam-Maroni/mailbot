@@ -2,6 +2,57 @@
 
 This file collects flags raised by `autonomous-story-run` runs. One block per invocation.
 
+## Story 10-6-1 (AI-1 Phase 2 — cheap-lane reachability) — 2026-07-13
+
+**Headline:** Default chat tool-call now routes to the LOCAL qwen lane (AC-5 dev-complete) via a dedicated `chat_completions_tool_call` policy default; `hermes_aux` retained as lane proxy. Latent Ollama multi-turn tool_calls arg-translation bug (reached only once the default routed to qwen) fixed. MANDATORY-CR NOTABLE (3-hunter, 5 patches, round-2 verify all hold). AC-6 = Adam-hands-on Phase 3.5 live walk. Epic 10.6 done-flip clause 3 (cheap lane REACHED) pending the live-turn DB proof.
+
+**Dev model:** claude-opus-4-8[1m]; **Review model:** claude-sonnet-5 (≠ dev, [[feedback_reviewer_model_substitution]]).
+
+**Root cause / fix:** `dispatch_tool_call` sourced its DEFAULT model from the `hermes_aux` policy entry (haiku) — both the dispatcher default-reason branch and `main.py`'s alias resolution — so every default chat tool-call landed on the paid lane regardless of Phase-1 capability (the layer-3 "wired+capable+tested ≠ reached" gap; live walk proved 100% haiku). Fix: new `chat_completions_tool_call` policy task (model=qwen) supplies the MODEL default; `hermes_aux` stays the LANE proxy (rate-limit/semaphore). Overrides (one-shot/persistent/force) + degraded demotion unchanged. Task 5 (persona): NO Hermes-side change — the persona delegates model choice to the Router (config.yaml `model: hermes_aux`; AGENTS.md Rule N); gap was 100% server-side.
+
+**Review rounds:** 2. Round 1 — 3-hunter panel (Blind / Edge Case / Acceptance). 5 actionable code findings → 5 APPLIED (100%): (1) valid-JSON-non-object args guard [only substitute when decoded is a dict]; (2) broadened `main.py` fallback except to (RuntimeError, AttributeError, KeyError); (3) missing-entry WARNING log; (4) stale `policy:hermes_aux:default` docstring fixed; (5) copy-semantics docstring + no-mutation test. 5 deferred/accepted with rationale. Round 2 — focused skeptic verify: ALL 5 HOLD, 0 defects, safety gates confirmed untouched by direct code read. Applied-rate 100% (>70% ✓).
+
+**Aggregated `[deferred:*]`:** hermes_aux lane-proxy fragility (documented); recursive nested-JSON decode (out of scope); redundant historical comments (style); /model force picker (concern doesn't apply symmetrically); malformed-args ollama-boundary assertion (testing ollama not our translator).
+
+**Gate verdicts:**
+- 2.3.5 (pre-review self-audit): PASS — all 5 sections + 11 posture sub-sections with command output (10-6-1.pre-review.md).
+- 2.4.4 (Dev Agent Record): PASS — model, per-AC completion notes, full File List, Status header = done.
+- 2.4.5 (UI-scope): N/A — no graphical frontend (PORTING.md).
+- 2.4.6 (File-List-vs-git): PASS — 2 untracked paths are NEW-this-story files (staged in 2.6), not missing-tracked regressions.
+- 2.4.7 (Middleware-Real-Bootstrap, Router reframing): PASS — real `_chat_completions_tools_dispatch` + real policy snapshot + real SQLite + TestClient HTTP-real; only the leaf ModelAdapter faked (permitted boundary).
+- 2.4.8 (Verbose-row truncation): PASS — sprint-status row is a concise headline + pointer; narrative in story Completion Notes + Review Findings.
+
+**Step 2.5 (env verification):** PASS (load-level) — real `router/policy.yaml` loads with the new entry (qwen); `hermes_aux` stays haiku; `main.py` imports OK. Full container boot = Adam's Phase 3.5 walk (AC-6).
+
+**Suite:** 1905 passed, 3 skipped, 3 deselected (+16 net vs 10-6-0 baseline 1889). 4 gates green (ruff on changed files, mypy-strict 134 files, boundary via ruff, full pytest).
+
+**FLAGS:**
+- **INFO — repo-wide `ruff check .` not green (pre-existing, out of scope):** 6 `T201 print` sites in `scratch/` (`walk_bootstrap.py`, `mcp_walk_106.py`) — owned by story **10-6-3** (scratch/ ruff, 3rd carry). ALL changed source + test files ruff-clean. Not staged.
+- **WARNING — privacy disposition needs Adam sign-off (surfaced, not silently changed):** default routing to the local lane means a **confidential** email tool-call is no longer `SENSITIVITY_BLOCKS_API`-refused on the default path — the API-block gate fires only for API-bound models, and local qwen reading confidential content never leaves the device. Consistent with NFR-PRIV-2 (PRD: `confidential: Qwen-only, no exception`), arguably closer to its letter than pre-diff (which defaulted confidential chat tool-calls to haiku, saved only by the refusal gate). Both directions tested; reviewer + Edge Case Hunter confirmed no path escalates confidential-content default dispatch from qwen to an API model. **Recommend Adam explicitly confirm at Phase 3.5.**
+- **INFO — AC-6 not dev-verifiable:** live Discord L3 walk (reversible served-by-qwen executes w/o prompt; irreversible prompts) is Adam-hands-on ($0). It is the per-story manual-verification prompt + Epic 10.6 done-flip clause 3 (cheap lane REACHED on a real Discord turn — the DB `router_calls` proof of AC-5 in production). MCP session-drop caveat: restart hermes after any api restart.
+
+**Permission prompts during run:** Zero. No permission log configured — all commands stayed within the settings.json envelope.
+
+**Staging:** 14 files staged explicitly (2 new tests + story `.md` + pre-review `.md` + sprint-status + 5 source + 4 modified tests). `scratch/`, `.claude/settings.json` (pre-existing), and `.autonomous-run-active.json` left unstaged. **Nothing committed.**
+
+### Story 10-6-1 Manual Verification — 2026-07-13 (DELEGATED: "Do manual verification yourself")
+
+**Verdict: PASS (L3, live local stack).** Restarted mailbot-api to load the new code + policy (bind-mount confirmed the container sees the `chat_completions_tool_call` entry + the `main.py` alias change; healthy in 1s). Drove real requests through the live `/v1/chat/completions` endpoint (exactly what Hermes calls) + the real drain-authorization path + real on-disk SQLite.
+
+- **CP-1 [AC-5] cheap lane REACHED — PASS(L3).** Real tool-bearing request with `model=hermes_aux` (the default alias) → served by **qwen** (`"model":"qwen2.5:3b-instruct-q4_K_M"`, valid `find_emails` tool_call emitted). DB `router_calls` row: `task_type=chat_completions_tool_call, model_chosen=qwen2.5:3b-instruct-q4_K_M, model_chosen_reason=policy:chat_completions_tool_call:default, outcome=ok, tool_calls_count=1`. The prior 338 tool-call rows were all haiku (pre-fix); this is the first qwen tool-call on the default path. **Epic 10.6 done-flip clause 3 (cheap lane REACHED) discharged for the endpoint boundary.**
+- **CP-2 [AC-6] safety-net live — PASS(L3).** Structural: `pending_actions` + `action_grants` have **no model-identity column** — the tier/grant gate keys on `(action_type, email_id)`, never on the proposer. Behavioral: `MARK_READ` tier=1 `requires_grant=False` → reversible, drains without confirmation (a real qwen-served read tool-call returned `ok`); `SEND_REPLY` tier=3 `requires_grant=True`, `is_grant_valid(no grant)=False` → drain **blocks dispatch and waits for confirmation**. A wrong id from the 3B model cannot silently touch the mailbox — identical gate to a haiku-proposed action.
+- **Privacy disposition (WARNING) — CONFIRMED live.** A confidential-email (`sensitivity=confidential`) default-path tool-call was **served locally by qwen** (`policy:chat_completions_tool_call:default`, HTTP 200, `ok`), NOT API-blocked and NOT escalated: **zero API-bound (`claude-*`) tool-call rows** in the window. Consistent with NFR-PRIV-2 (`confidential: Qwen-only, no exception`); content never left the device.
+
+**Honesty/scope tag:** the CP-1/CP-2/privacy checkpoints above were driven at the real `/v1/chat/completions` endpoint (the exact surface Hermes calls) + real drain-authorization + real SQLite — a faithful L3 exercise of every AC-5/AC-6 contract.
+
+**Full Discord round-trip (2026-07-13, Adam-typed, after restarting BOTH api + hermes for a fresh MCP session):** Adam typed "find my unread emails" in Discord. **The persona dispatched the tool-call through the Router and it ROUTED TO qwen** — 3 DB `router_calls` rows (10:11:57 / 10:12:30 / 10:13:05Z) all `model_chosen=qwen2.5:3b, model_chosen_reason=policy:chat_completions_tool_call:default`. This is AC-5 proven at the REAL Discord layer (persona → Router → cheap lane), and a direct contrast to the 2026-07-11 pre-fix log line "the local fallback **cannot serve tools**" — it now serves tools. **However**, each attempt then hit `AdapterTimeout` (30s): qwen-on-CPU takes ~20s for ONE full-context tool-call (11 MCP tools + big system prompt; measured), and the persona chains several per turn → >30s → HTTP 502. This is a **performance/infra finding, NOT a routing or safety regression** — filed as **F-10-6-1-W1** (Adam-decided 2026-07-13: file follow-up, keep 10-6-1 done). The routing/safety/privacy CONTRACTS the story owns are proven; the timeout is qwen-on-CPU latency tuning (bump adapter timeout / trim Hermes tool surface / GPU), owned by the follow-up.
+
+**Collateral:** none. No synthetic `pending_actions`/grants persisted (AC-6 `is_grant_valid` check was read-only). Only legitimate `router_calls` audit rows written (audit truth). Pause OFF, degraded OFF, all 3 containers healthy.
+
+**Per-AC:** AC-1..AC-4 PASS (Phase 1, committed) · AC-5 PASS(L3, endpoint) · AC-6 PASS(L3, drain-gate + structural model-independence). Story stays **done**.
+
+---
+
 ## Story 10-6-0 — 2026-07-12
 
 **Headline:** Graph 401-at-drain reachability fix — a stale in-memory access-token 401 now triggers an on-demand token-cache refresh + one bounded retry in `OutlookGraphWriteAdapter` (wired in the worker), instead of the drainer marking the proposed action terminal. Closes the AI-1 walk's `pending_actions` id=40 `provider_4xx_401` failure. First story of Epic 10.6.
