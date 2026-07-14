@@ -2,6 +2,79 @@
 
 This file collects flags raised by `autonomous-story-run` runs. One block per invocation.
 
+## Story 10-6-4 (cheap-lane latency — usable tool-call turn) — 2026-07-14
+
+**Headline:** Cheap-lane latency fix (F-10-6-1-W1). Seam A: `OllamaAdapter` gains env-configurable `keep_alive` (`OLLAMA_KEEP_ALIVE`, default `-1` never-evict) passed on both `chat` sites AND `embed()` (CR F1), + Ollama timeout `30→120s` (`OLLAMA_TIMEOUT_SECONDS`, robust-parse); Anthropic 60s untouched. Seam B: MCP tool-exec timeout `30→120` in `config.yaml`; B1 tool-trim + B3 retry-tame VERIFIED Hermes-runtime-owned (`dispatch_tool_call` already single-attempt `retryable=False`) → deferred to AC-6 walk. `num_ctx` NOT touched (AC-4, measured red herring). DONE at L1/L2; AC-6 live re-walk = Adam Phase 3.5 (Epic 10.6 done-flip clause 3).
+
+**Dev model:** claude-opus-4-8[1m]; **Review model:** claude-sonnet-5 (≠ dev, [[feedback_reviewer_model_substitution]]).
+
+**Story-file note:** the story was retro-drafted spec-only (had `## Story` + `## Acceptance Criteria` but no `## Tasks/Subtasks`, `## Dev Notes`, `## Dev Agent Record`). Augmented in place from its own Scope/Diagnosis rather than HALT on the formatting technicality — all requirements were present under bespoke headings + a full measured diagnosis (F-10-6-1-W1-diagnosis-2026-07-13.md).
+
+**Review rounds:** 1 (sonnet-5). Findings: 4 raised / **4 applied = 100%** (all `[Patch]`-class correctness/robustness on a load-bearing seam):
+- **F1 (nomic dead config)** — the reviewer caught that `embed()` ignored the `keep_alive`/`timeout_seconds` wired onto the nomic adapter, making the "registration symmetry" claim false. APPLIED: `embed()` now passes `keep_alive` (real residency benefit — ingest calls embed once per email); the `timeout_seconds` overclaim corrected (embed keeps the dedicated 15s `_EMBEDDING_TIMEOUT_SECONDS`, documented not silently dead). New test locks it; 2 embeddings fakes updated.
+- **F2 (timeout no validation / crash)** — new `_parse_ollama_timeout`: malformed/non-positive/non-finite → WARN + fall back to 120.0 instead of crashing boot / forwarding a nonsensical `asyncio.wait_for` timeout.
+- **F3 (whitespace-env bypass)** — `_parse_keep_alive` whitespace → `-1` fallback (never forwards `""` to Ollama); timeout parser handles the whitespace crash.
+- **F4 (`keep_alive=0` silently defeats fix)** — honored (legit Ollama value) but WARN-logged so a fat-finger that re-introduces the latency bug is visible.
+Round-2 not spawned — all 4 fixes localized to 2 helpers + 1 adapter method + tests, each gate-verified.
+
+**Aggregated `[deferred:*]`:** none from the CR (all applied). Two Seam-B levers DEFERRED to AC-6 with rationale (below).
+
+**Gate verdicts:**
+- 2.3.5 Pre-Review Self-Audit — PASS (5 sections + 12 posture checks; §3 6 tagged bullets; §4 dispositions each). Artifact: 10-6-4.pre-review.md.
+- 2.4.4 Dev Agent Record — PASS (model + per-AC completion notes + File List + Status=done in file).
+- 2.4.5 UI-scope — N/A (no graphical frontend).
+- 2.4.6 File-List-vs-git — PASS (6 source/test paths `git ls-files`-tracked; story `.md` + pre-review `.md` + diagnosis `.md` new artifacts staged at 2.6).
+- 2.4.7 Middleware-Real-Bootstrap (Router reframing) — PASS: touched files under `mailbot_api/` are the adapter dispatch seam; exercised by real-adapter unit tests (real `chat`/`embeddings` fake-capture) + the pre-existing real-drainer/real-DB integration suite (all green). No new HTTP endpoint/verb (adapter-internal + config only).
+- 2.4.8 Verbose-row truncation — PASS (sprint-status row = headline + pointer to story Completion Notes).
+
+**Step 2.5 dev-env verification:** N/A — no autonomous `<dev-env-skill>` configured; the adapter/registry change is exercised by the full green suite (1937 pass) incl. real-adapter + real-DB integration tests. Live behavioral proof of the latency fix is AC-6 (Adam-hands-on).
+
+**Suite:** 1937 passed + 3 skipped + 3 deselected (**+24 net** vs 10-6-3 baseline 1913 — 4 keep_alive adapter + 6 registry env + 1 embed-keep_alive + 6 CR parser/registry + others). ruff clean (mailbot_api+tests), mypy --strict mailbot_api = Success (134 files), boundaries clean. Re-run after CR fixes; all green.
+
+**FLAGS:** 0 CRITICAL / 0 WARNING.
+- **INFO — Seam B B1 (tool-surface trim) DEFERRED:** the ~11-tool per-turn surface is selected by the Hermes agent runtime from MCP auto-registration (19 verbs); no per-turn tool list in `config.yaml` to trim from this repo. Would need a Hermes-runtime skill-bundle change. Per the diagnosis Seam A alone clears the budget → NOT clause-3-blocking.
+- **INFO — Seam B B3 (retry-tame) DEFERRED:** VERIFIED the mailbot-api side already does a single attempt (`dispatch_tool_call` returns `retryable=False` on `AdapterTimeout`, router.py). The residual ~3× re-pay is Hermes-agent-runtime behavior, not exposed in `config.yaml`. Seam A removes the underlying cold-ingest cost.
+- **INFO — AC-6 not dev-verifiable:** the live Discord re-walk ("find my unread emails" served by qwen completes, no `AdapterTimeout`/502; warm ≈3.7s, cold-first tolerated within 120s; DB `router_calls` qwen rows) is Adam-hands-on ($0). It is the per-story manual-verification prompt + Epic 10.6 done-flip **clause 3** (REACHED → USABLE per Adam D1). Precondition: restart hermes after any api restart (F-10-5-1-W2 MCP session-drop). To pin qwen resident the api container must be (re)started with `OLLAMA_KEEP_ALIVE=-1` in its env (default) so `init_default_adapters` reads it — verify via `ollama ps` → `UNTIL=Forever`.
+- **INFO — cosmetic markdown-lint:** the story doc has non-blocking MD022/MD032 (heading/list spacing) + MD052 (`[Review][Patch]` bracket labels misparsed as ref-links) warnings. Not a code gate.
+
+**Permission prompts during run:** Zero. No permission log configured — all command shapes (rtk git, .venv pytest/ruff/mypy, Glob/Grep/Read/Edit/Write) stayed within the settings.json envelope.
+
+**Staging:** 10 story-scoped files staged explicitly (models.py + registry.py + config.yaml + 3 test files + story `.md` + pre-review `.md` + diagnosis `.md` + sprint-status). `.claude/settings.json` (pre-existing), `.autonomous-run-active.json` (run-state), and `epic-10-6-retro-2026-07-13-PARTIAL.md` (pre-existing retro artifact) left unstaged. **Nothing committed.**
+
+**#yolo mode:** active through Phase 2; OFF as of the Phase 3.3 final report.
+
+### Story 10-6-4 Manual Verification — 2026-07-14 (Adam-typed Discord walk + agent-driven endpoint probe)
+
+**Verdict: PASS WITH FINDINGS (1 finding — WALK-10-6-4-F1, Hermes-side tool-surface pollution, NOT a 10-6-4 regression).**
+
+**Adam-typed Discord turn (10:49–10:50 local / 08:49–08:50 UTC):** Adam typed "find my unread emails" in the real Discord DM. The bot replied `qwen (local, free)` with "None of the provided functions can be used to find unread emails... these functions are related to text-to-speech, managing task lists, analyzing images, writing files..." then improvised generic Gmail instructions.
+
+- **CP-6 [AC-6] LATENCY FIX — PASS(L3, real Discord persona path).** The turn **COMPLETED** — DB `router_calls` row `2026-07-14T08:50:21Z, task=chat_completions_tool_call, model_chosen=qwen2.5:3b, reason=policy:chat_completions_tool_call:default, outcome=ok` (~30s, no `AdapterTimeout`, no 502). This is the FULL persona path (Discord → Hermes persona → MCP → Router → qwen), the exact configuration that produced the `2026-07-13T10:13:05Z outcome=failed` timeout. **failed → ok through the real Discord persona — the story's latency contract is proven at L3 end-to-end, not just at the endpoint.** qwen stayed resident (`ollama ps UNTIL=Forever`), fresh MCP session confirmed api-side (session `187872887c…`, `POST /mcp/ 200`).
+- **CP-1 [AC-1] keep_alive resident — PASS(L3).** qwen `UNTIL=Forever` throughout the walk (new code default `-1`).
+
+**WALK-10-6-4-F1 (MEDIUM, Hermes-side, PRE-EXISTING, NOT a 10-6-4 regression):** the Discord turn's `router_calls` row shows **`tool_calls_count=0`** — qwen was handed the WRONG tool surface (TTS / task-list / image / write-file tools from unrelated user-installed Hermes skills) instead of the MailBot email verbs. Root cause is Hermes-side: this Hermes instance has a swarm of unrelated skills registered this session (hermes logs: songsee, gif-search, spotify, spike, debugging-hermes-tui, node-inspect-debugger, jupyter-live-kernel, etc.), which crowd out / replace the mailbot-api MCP tools on the persona's per-turn tool surface. **CONFIRMED the email verbs ARE registered + reachable:** `mailbot-api` FastMCP `ToolManager` exposes 26 tools including `find_emails`, `hydrate_email`, `count_emails`, `get_sender_summary`, `propose_action`, `draft_reply` (introspected live); the api served a `ListToolsRequest` on the fresh session at 08:50:39. So this is a tool-SELECTION/SURFACE problem, not a missing-capability problem. This is precisely the **Seam-B B1 "trim the per-turn tool surface"** lever 10-6-4 identified as Hermes-runtime-owned and DEFERRED — reality is sharper than "too many tools": the *right* tools aren't reaching the turn. Fix locus: Hermes skill/MCP registration config for this container (disable/prune the unrelated user skills so the mailbot-api MCP tools dominate the surface), OR a Hermes-side per-turn tool allow-list scoped to the mailbot server. **Does NOT reopen 10-6-4** (adapter keep_alive/timeout + config scope is complete + proven); file as a follow-up Hermes-config story.
+
+**Per-AC (Discord walk):** AC-6 latency PASS(L3, real persona path) · tool-surface fidelity FAIL→WALK-10-6-4-F1 (Hermes-side, out of 10-6-4 scope). The cost-thesis / usability contract 10-6-4 owns (a qwen tool-call turn completes within budget) is discharged; the turn's USEFULNESS is blocked by F1 upstream. **Epic 10.6 done-flip clause 3 (cheap lane REACHED → USABLE):** the *latency* half is proven end-to-end; the *useful-tool-call* half now depends on WALK-10-6-4-F1 being resolved (recommend a sibling Hermes-config story before the Epic 10.6 done-flip, analogous to how 10-6-4 itself was spawned from a walk finding).
+
+---
+
+### Story 10-6-4 Agent-Driven Endpoint Probe — 2026-07-14 (DELEGATED pre-check, before the Adam-typed walk)
+
+**Verdict: PASS (L3, endpoint).** Restarted `mailbot-api` (StartedAt 08:41:00Z) to load the new `init_default_adapters` under the default env (no `OLLAMA_KEEP_ALIVE` set → code default `-1`), then drove real full-context tool-call turns through the live `/v1/chat/completions` endpoint — the exact surface Hermes calls. (This probe supplied its OWN correct 4-tool email surface, which is why it got `tool_calls_count=1` where the Discord turn got 0 — isolating F1 to the Hermes tool-registration layer.)
+
+- **CP-6 [AC-6] turn completes within budget — PASS(L3).** 3 real tool-bearing turns ("find my unread emails", 4-tool surface + system prompt) all **status 200**, all picked `find_emails`, all `model=qwen2.5:3b-instruct-q4_K_M`. Latencies: **cold 4.9s / warm 1.8s / warm2 1.7s** — well under the 120s budget, **no `AdapterTimeout`, no 502.** DB `router_calls`: 3 fresh rows `2026-07-14T08:42:46–50Z`, `task=chat_completions_tool_call, model_chosen=qwen2.5:3b, reason=policy:chat_completions_tool_call:default, outcome=ok`. **Direct before/after contrast in the audit log:** the row immediately prior is `2026-07-13T10:13:05Z … outcome=failed` — the original F-10-6-1-W1 timeout this story fixes. failed → ok.
+- **CP-1 [AC-1] keep_alive=-1 pins qwen resident — PASS(L3).** `ollama ps` after the probe (which ran 1m46s after the api restart) shows `qwen2.5:3b … UNTIL=Forever` — set by the NEW code's `init_default_adapters` reading the `-1` default, not stale state. (nomic shows a finite window because no embedding ran via the new path post-restart — consistent; `embed()` now passes keep_alive but hadn't been exercised.)
+- **CP-2 [AC-2] timeout 120s live — PASS (structural).** The cold turn ran 4.9s against the new 120s ceiling; the old 30s ceiling is gone (the failed 07-13 row is the last 30s-class cut).
+- **Safety net — PASS(L3, structural).** `pending_actions` and `action_grants` have **no model column** — the tier/grant/confirmation gate keys on `(action_type, email_id)`, entirely model-independent. A qwen-served tool-call hits the identical gate as a haiku one; reversible executes / irreversible prompts is unchanged by the latency fix.
+
+**Honesty/scope tag:** driven at the real `/v1/chat/completions` endpoint + real live `mailbot-ollama` container + real `/data/mailbot.db` audit rows + real api restart — a faithful L3 exercise of the AC-6 latency contract and AC-1 residency effect. **Adam-only residual:** being the Hermes *persona* typing the turn in Discord end-to-end (persona → MCP → Router). That layer is model/latency-independent of what I proved (the endpoint IS the latency surface), but the full Discord round-trip + Adam's eyeball on the response is his to sign. The cold turn here happened to be 4.9s (qwen already warm from prior activity — itself the residency fix working); a truly cold-from-restart first call would be ~20s but is now tolerated within 120s rather than severed at 30s.
+
+**Per-AC:** AC-1 PASS(L3) · AC-2 PASS(L3 structural) · AC-3 PASS (config diff; B1/B3 deferred-with-rationale) · AC-4 PASS · AC-5 PASS · AC-6 PASS(L3 endpoint) + Adam-only Discord-persona sign-off. Story stays **done**. **Epic 10.6 done-flip clause 3 (cheap lane REACHED → USABLE per Adam D1) is discharged at the endpoint boundary** — the full Discord-persona confirmation is the remaining Adam-only L3 for the epic done-flip, not for this story.
+
+**Collateral:** none. No mailbox mutation (tool-calls emitted but not drained/executed — the probe only requested the completion). Only legitimate `router_calls` audit rows written. Pause/degraded OFF, all 3 containers healthy. In-container `/tmp/ac6_probe.py` (root-owned) left behind — ephemeral, cleared on container recreate.
+
+---
+
 ## Story 10-6-3 (AI-4 — scratch/ ruff cleanup) — 2026-07-13
 
 **Headline:** `scratch/` ruff cleanup — repo-wide `ruff check .` now GREEN (was 6 `T201 print` sites in `scratch/walk_bootstrap.py` + `scratch/mcp_walk_106.py`). Fixed via **exclude + gitignore** (Adam-decided this run): `scratch` added to `[tool.ruff] extend-exclude` + `scratch/` to `.gitignore`. Retires the recurring lint debt (3rd carry: A6 → Epic 9.5 → Epic 10 → Epic 10.6) permanently — the two walk helpers are preserved on disk (now untracked), not deleted. Standalone chore; NOT tied to any Epic 10.6 done-flip clause.

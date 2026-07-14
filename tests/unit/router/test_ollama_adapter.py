@@ -827,3 +827,83 @@ async def test_call_with_tools_non_tool_messages_pass_through_unchanged(
     assert fake.last_kwargs is not None
     # system prepended, then the three originals verbatim.
     assert fake.last_kwargs["messages"][1:] == messages
+
+
+# ---------------------------------------------------------------------------
+# Story 10-6-4 — keep_alive threaded onto every chat dispatch (AC-1).
+#
+# F-10-6-1-W1 diagnosis: with no keep_alive, Ollama evicts qwen after 5min idle,
+# discarding the prompt KV-cache → the next full-context tool-call turn re-ingests
+# ~1658 tokens (~19s cold) and crosses the 30s timeout. keep_alive=-1 pins the
+# model resident and preserves the cache → warm turns are ~3.7s. These tests lock
+# the kwarg onto BOTH the `call` and `call_with_tools` chat dispatches, and pin
+# the never-evict default.
+# ---------------------------------------------------------------------------
+
+
+async def test_keep_alive_default_is_minus_one_on_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No explicit keep_alive ⇒ -1 (never evict) reaches chat() on `call`."""
+    fake = _FakeAsyncClient()
+    _install_fake_client(monkeypatch, fake)
+    adapter = OllamaAdapter(model_id="x", base_url="http://localhost:11434")
+    assert adapter.keep_alive == -1
+
+    await adapter.call(system="s", user="u", max_tokens_out=1)
+    assert fake.last_kwargs is not None
+    assert fake.last_kwargs["keep_alive"] == -1
+
+
+async def test_keep_alive_default_is_minus_one_on_call_with_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No explicit keep_alive ⇒ -1 reaches chat() on `call_with_tools` too."""
+    fake = _FakeAsyncClient(response=_canned_tool_response())
+    adapter = _adapter(monkeypatch, fake)
+
+    await adapter.call_with_tools(
+        system="sys",
+        messages=[{"role": "user", "content": "archive ABC123"}],
+        tools=[_tool_def()],
+    )
+    assert fake.last_kwargs is not None
+    assert fake.last_kwargs["keep_alive"] == -1
+
+
+async def test_keep_alive_explicit_value_passes_through_on_both_call_sites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit keep_alive (e.g. a duration string) reaches chat() verbatim
+    on both `call` and `call_with_tools`."""
+    fake = _FakeAsyncClient(response=_canned_tool_response())
+    _install_fake_client(monkeypatch, fake)
+    adapter = OllamaAdapter(
+        model_id="x", base_url="http://localhost:11434", keep_alive="30m"
+    )
+    assert adapter.keep_alive == "30m"
+
+    await adapter.call(system="s", user="u", max_tokens_out=1)
+    assert fake.last_kwargs is not None
+    assert fake.last_kwargs["keep_alive"] == "30m"
+
+    await adapter.call_with_tools(
+        system="sys",
+        messages=[{"role": "user", "content": "archive ABC123"}],
+        tools=[_tool_def()],
+    )
+    assert fake.last_kwargs["keep_alive"] == "30m"
+
+
+async def test_keep_alive_is_top_level_kwarg_not_in_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """keep_alive is a sibling of `options` in the Ollama API — it must NOT be
+    smuggled inside the options dict (Ollama would ignore it there)."""
+    fake = _FakeAsyncClient()
+    _install_fake_client(monkeypatch, fake)
+    adapter = OllamaAdapter(model_id="x", base_url="http://localhost:11434")
+    await adapter.call(system="s", user="u", max_tokens_out=1)
+    assert fake.last_kwargs is not None
+    assert "keep_alive" not in fake.last_kwargs["options"]
+    assert "keep_alive" in fake.last_kwargs

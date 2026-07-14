@@ -510,10 +510,18 @@ class OllamaAdapter:
         model_id: str,
         base_url: str,
         timeout_seconds: float = 30.0,
+        keep_alive: int | str = -1,
     ) -> None:
         self.model_id = model_id
         self.base_url = base_url
         self.timeout_seconds = timeout_seconds
+        # Story 10-6-4 (F-10-6-1-W1): keep_alive controls Ollama's model-residency
+        # window. Default -1 = never evict, which pins qwen resident AND preserves
+        # the prompt KV-cache across turns. Without it, the 5-min idle eviction
+        # discards the cache → the next full-context tool-call turn re-ingests
+        # ~1658 tokens (~19s cold on CPU) and crosses the timeout. Passed as a
+        # top-level `chat()` kwarg (sibling of `options`), not inside options.
+        self.keep_alive = keep_alive
         self._client = ollama.AsyncClient(host=base_url)
 
     async def call(
@@ -536,6 +544,7 @@ class OllamaAdapter:
                     model=self.model_id,
                     messages=messages,
                     options=options,
+                    keep_alive=self.keep_alive,  # Story 10-6-4: prompt-cache preservation
                 ),
                 timeout=self.timeout_seconds,
             )
@@ -630,6 +639,11 @@ class OllamaAdapter:
         ollama_messages.extend(_translate_messages_openai_to_ollama(messages))
 
         # Temperature 0 is load-bearing for argument fidelity (see docstring).
+        # Story 10-6-4 (AC-4): do NOT set `num_ctx` here. The F-10-6-1-W1
+        # diagnosis measured it irrelevant to the ~19s cold-ingest latency
+        # (forcing num_ctx=8192 changed ingest by ~0); the real lever is
+        # keep_alive (prompt-cache preservation), applied below. A future dev
+        # tempted to add num_ctx should read that diagnosis first.
         options: dict[str, Any] = {
             "num_predict": max_tokens_out,
             "temperature": temperature,
@@ -639,6 +653,10 @@ class OllamaAdapter:
             "model": self.model_id,
             "messages": ollama_messages,
             "options": options,
+            # Story 10-6-4: keep_alive is a top-level chat() kwarg (sibling of
+            # options) — pins the model + preserves the prompt cache across the
+            # chained tool-calls within a turn (calls 2..N cache-hit at ~4s).
+            "keep_alive": self.keep_alive,
         }
         # tool_choice == "none" ⇒ omit tools entirely (disable tool use).
         if tool_choice != "none":
@@ -736,7 +754,16 @@ class OllamaAdapter:
         Used by ``mailbot_api/ingest/embedding.py`` (the sole writer of the
         ``emails.embedding`` BLOB column). Uses a separate, shorter timeout
         (``_EMBEDDING_TIMEOUT_SECONDS = 15.0``) than the chat path because
-        embeddings are typically much faster than chat completions.
+        embeddings are typically much faster than chat completions — the
+        instance ``timeout_seconds`` (chat budget, ~120s) is deliberately NOT
+        used here.
+
+        Story 10-6-4 (CR F1): ``keep_alive`` IS honored here — the ingest
+        pipeline calls ``embed`` once per email, so pinning nomic resident
+        (keep_alive=-1) avoids a per-email cold model-load, exactly the
+        residency benefit the registry wires onto this adapter. (Before this
+        fix ``embed`` passed neither field, so the nomic ``keep_alive`` was
+        dead config — the false-symmetry the reviewer caught.)
 
         Defensive contract: ``len(vector) == dim`` is asserted at the adapter
         boundary — a misbehaving Ollama can't corrupt downstream consumers
@@ -745,7 +772,11 @@ class OllamaAdapter:
         start_ns = time.monotonic_ns()
         try:
             response = await asyncio.wait_for(
-                self._client.embeddings(model=self.model_id, prompt=text),
+                self._client.embeddings(
+                    model=self.model_id,
+                    prompt=text,
+                    keep_alive=self.keep_alive,
+                ),
                 timeout=_EMBEDDING_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError as exc:

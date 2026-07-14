@@ -105,7 +105,15 @@ mcp_servers:
     headers:
       Authorization: "Bearer ${MAILBOT_ROUTER_KEY}"  # TODO(auth) — see comment above
     enabled: true
-    timeout: 30
+    # Story 10-6-4 (F-10-6-1-W1, Seam B): the MCP tool-execution call is a
+    # separate timeout from the inference dispatch. On the cold-first-call turn
+    # (qwen resident but the prompt cache not yet warm, ~20s ingest) a tool
+    # round can bump the old 30s ceiling and trip a spurious cutoff independent
+    # of the adapter fix. Align it with the adapter's new default budget
+    # (OLLAMA_TIMEOUT_SECONDS=120) so a slow-but-legitimate cold turn is not
+    # severed here. The load-bearing latency fix is Seam A (adapter keep_alive);
+    # this is the belt-and-suspenders tolerance band on the Hermes side.
+    timeout: 120
     connect_timeout: 10
 
 # --- Discord gateway behavior ---

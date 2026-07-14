@@ -4308,3 +4308,24 @@ Story files already drafted: `ai-1-local-tool-caller-and-chat-path-reachability.
 4. **Draft pipeline REACHED (10.6.2)** — a real Discord "draft a reply" turn produces an Opus `draft_reply` `router_calls` row (`model_chosen=claude-opus-*`), not a haiku-improvised draft; sensitivity gate preserved.
 
 Clause 3 is the load-bearing one. Epic 10.5 asked "does the perimeter behave?"; Epic 10.6 asks "does the real user path reach the behavior?" — and the cheap-lane-reached clause is where that question is answered for the founding cost thesis.
+
+---
+
+### Epic 10.6 roster addendum — walk-spawned stories (appended non-destructively)
+
+The story-list table above (10.6.0–10.6.3) is the create-epics-pass roster. Two stories were spawned from walk findings after that pass, per the N.5 walk-defect policy (`project_epic_6_scope_cleave`):
+
+| # | Story | Spawned | Headline | MANDATORY-CR | Real-spend? |
+| --- | --- | --- | --- | --- | --- |
+| 10.6.4 | Cheap-lane latency — make a full tool-call turn usable within budget | Epic 10.6 partial retro 2026-07-13 (Adam D1, from F-10-6-1-W1) | qwen-on-CPU >30s on full-context tool-call → 502; `keep_alive` unset → prompt-cache evicted each turn | high (adapter dispatch seam) | No ($0 re-walk) |
+| 10.6.5 | Hermes per-turn tool-surface fidelity — the MailBot email verbs must reach the chat turn | 10.6.4 Adam-typed Discord walk 2026-07-14 (WALK-10-6-4-F1) | a real "find my unread emails" turn ran on qwen `outcome=ok` but `tool_calls_count=0` — qwen was handed TTS/task/image tools from unrelated Hermes skills, not the 26 registered MailBot MCP verbs | high (persona/tool-registration seam) | No ($0 re-walk) |
+
+**10.6.4 outcome (done 2026-07-14):** adapter `keep_alive` (env `OLLAMA_KEEP_ALIVE`, default `-1` never-evict) on both `chat` sites + `embed()`, Ollama timeout `30→120s` (env `OLLAMA_TIMEOUT_SECONDS`), MCP timeout `30→120`. The latency fix is L3-proven end-to-end through the real Discord persona path: the `2026-07-13 outcome=failed` timeout became `2026-07-14 outcome=ok` on qwen. See `10-6-4-cheap-lane-latency-usable-tool-call-turn.md`.
+
+**10.6.5 rationale (backlog):** 10.6.4 proved a qwen chat turn now *completes* within budget (the latency half of clause 3), but the Adam-typed walk exposed that the turn's tools are polluted by unrelated user-installed Hermes skills, so the MailBot email verbs never reach the model — the turn is fast but useless. The 26 verbs ARE registered + reachable on `mailbot-api` (introspected live), so this is a Hermes-side tool-SELECTION/SURFACE problem: prune/scope the Hermes skill+MCP registration (or a per-turn allow-list scoped to the `mailbot-api` server) so the MailBot verbs dominate the surface. Fix locus is `hermes-config/` (this container's skill registration), NOT `mailbot_api`. See `WALK-10-6-4-F1-hermes-tool-surface-pollution.md`.
+
+**Clause 3 amendment (Adam-decided 2026-07-14):** the load-bearing "cheap lane REACHED → USABLE" clause now has two halves, both required for the Epic 10.6 done-flip:
+- **3a (latency, 10.6.4)** — a full tool-call turn served by qwen COMPLETES within budget on the real Discord path (no `AdapterTimeout`/502). **DISCHARGED** 2026-07-14 (failed→ok, live persona path).
+- **3b (tool fidelity, 10.6.5)** — that same turn actually invokes the correct MailBot email verb (`tool_calls_count ≥ 1`, `find_emails` or peer), not zero-tool-call improvisation on a polluted surface. **PENDING 10.6.5.**
+
+Sequencing: 10.6.5 before the Epic 10.6 done-flip (clause 3b). Standalone from 10.6.2 (draft reach, clause 4). The done-flip clause-1 roster now reads 10.6.0 through 10.6.5.

@@ -23,8 +23,12 @@ class _FakeOllamaClient:
         self._response = response
         self.call_log: list[dict[str, Any]] = []
 
-    async def embeddings(self, *, model: str, prompt: str) -> dict[str, Any]:
-        self.call_log.append({"model": model, "prompt": prompt})
+    async def embeddings(
+        self, *, model: str, prompt: str, keep_alive: int | str | None = None
+    ) -> dict[str, Any]:
+        self.call_log.append(
+            {"model": model, "prompt": prompt, "keep_alive": keep_alive}
+        )
         if isinstance(self._response, BaseException):
             raise self._response
         if self._response is None:
@@ -49,6 +53,30 @@ async def test_embed_happy_path_returns_embedding_response() -> None:
     assert result.raw["embedding"] == [0.1, 0.2, 0.3, 0.4]
 
 
+async def test_embed_passes_keep_alive_to_embeddings_call() -> None:
+    """Story 10-6-4 (CR F1): embed() must forward the instance keep_alive to the
+    Ollama embeddings call — otherwise the nomic keep_alive wired at registration
+    is dead config. The ingest pipeline calls embed once per email, so pinning
+    nomic resident (keep_alive=-1) avoids a per-email cold model-load."""
+    fake = _FakeOllamaClient({"embedding": [0.1, 0.2], "prompt_eval_count": 3})
+    adapter = OllamaAdapter(
+        model_id="nomic-embed-text", base_url="http://x:1", keep_alive=-1
+    )
+    adapter._client = fake
+
+    await adapter.embed("hello")
+    assert fake.call_log[-1]["keep_alive"] == -1
+
+    # An explicit duration string forwards verbatim too.
+    fake2 = _FakeOllamaClient({"embedding": [0.3], "prompt_eval_count": 1})
+    adapter2 = OllamaAdapter(
+        model_id="nomic-embed-text", base_url="http://x:1", keep_alive="30m"
+    )
+    adapter2._client = fake2
+    await adapter2.embed("hi")
+    assert fake2.call_log[-1]["keep_alive"] == "30m"
+
+
 async def test_embed_timeout_raises_adapter_timeout(monkeypatch) -> None:
     """AC-1: a timeout on the embeddings call raises AdapterTimeout with the
     Story 3-4 embedding-specific timeout (15s)."""
@@ -58,7 +86,9 @@ async def test_embed_timeout_raises_adapter_timeout(monkeypatch) -> None:
     )
 
     class _SlowClient:
-        async def embeddings(self, *, model: str, prompt: str) -> dict[str, Any]:
+        async def embeddings(
+            self, *, model: str, prompt: str, keep_alive: int | str | None = None
+        ) -> dict[str, Any]:
             await asyncio.sleep(60)
             return {}
 
