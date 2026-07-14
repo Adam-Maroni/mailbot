@@ -2,6 +2,50 @@
 
 This file collects flags raised by `autonomous-story-run` runs. One block per invocation.
 
+## Story 10-6-5 (Hermes per-turn tool-surface fidelity) — 2026-07-14
+
+**Headline:** Config-only clause-3b fix (WALK-10-6-4-F1). Added `platform_toolsets.discord` allow-list `[mailbot-api, messaging, cronjob, memory, clarify, skills]` to the git-tracked `hermes-config/config.yaml` so the 26 registered MailBot MCP verbs dominate the Discord per-turn tool surface, dropping the 12 noise built-in toolsets (tts/image_gen/vision/file/todo/…) that WALK-10-6-4-F1 saw qwen enumerate instead of the email verbs. DONE at L1/L2; AC-1/AC-6 live Discord walk = Adam Phase 3.5 (Epic 10.6 done-flip clause 3b).
+
+**Dev model:** claude-opus-4-8[1m]; **Review model:** claude-sonnet-5 (≠ dev, [[feedback_reviewer_model_substitution]]).
+
+**Fix-locus discovery (the load-bearing dev work):** the spawn spec offered two approaches (prune skills / per-turn allow-list) and hedged "may not be repo-trackable." Resolved by reading the LIVE container's `/opt/hermes/hermes_cli/tools_config.py`: `platform_toolsets.<platform>` is Hermes's per-platform allow-list (explicit-membership + MCP-server preservation). Repo-trackable → Approach B, dev-codeable. Verified through the REAL Hermes resolver (`_get_platform_tools(cfg,"discord")` → noise leaked=none, mailbot-api present), not just YAML shape.
+
+**Story-file note:** spawned spec-only (had `## Story` + `## Acceptance Criteria` but no `## Tasks/Subtasks` / `## Dev Notes` / `## Dev Agent Record`). Augmented in place (10-6-4 precedent) rather than HALT on the formatting technicality — the Diagnosis/Scope sections + WALK-10-6-4-F1 carried all requirements.
+
+**Review rounds:** 1 (sonnet-5). Findings: 4 raised / 3 FIXED + 1 ACCEPT-WITH-RATIONALE:
+- **CR-10-6-5-1 (test-coverage — future 2nd MCP server auto-injects) — FIXED.** Added `test_hermes_config_every_mcp_server_is_on_the_discord_allowlist` — Hermes preserves MCP-server names in `platform_toolsets`, so a new `mcp_servers` entry not also named in the discord allow-list would silently re-pollute. Test forces it to be an explicit reviewed decision.
+- **CR-10-6-5-2 (KeyError vs descriptive assert) — FIXED.** Extracted `_discord_allowlist()` helper → descriptive AssertionError on a regressed/absent block instead of bare KeyError.
+- **CR-10-6-5-3 (YAML scalar char-iterates) — FIXED.** Helper asserts `isinstance(discord_list, list)` before `set()`.
+- **CR-10-6-5-4 (skills-toolset sufficiency rests on live Hermes behavior) — ACCEPT WITH RATIONALE.** The §4-ESCALATED item. Not offline-testable (a Hermes image upgrade could re-admit skill tool schemas); documented at fix site + guarded by AC-6 walk + CP-1 `hermes tools list` runbook check.
+
+**Gate verdicts:** 2.3.5 pre-review PASS (all 5 sections + 11 posture checks, §5.12 MANDATORY-CR criteria 3+6) · 2.4.4 Dev Agent Record PASS · 2.4.5 UI-scope N/A (no graphical frontend) · 2.4.6 File-List-vs-git PASS (pre-review is a new artifact staged this run) · 2.4.7 middleware-real-bootstrap N/A (config-only; no mailbot_api verb/route/state-write — the "real" verification is the live `_get_platform_tools` resolver run) · 2.4.8 truncation PASS.
+
+**Step 2.5 dev-env:** N/A — no `<dev-env-skill>` configured; the live-container resolver run IS the environment verification for a Hermes-config change.
+
+**Deferred items:** CR-10-6-5-4 (skills-toolset live-schema residual) — accepted, guarded by AC-6 walk.
+
+**Permission prompts:** none observed during the run (settings envelope covered rtk-git / pytest / ruff / mypy / docker exec).
+
+### Story 10-6-5 Manual Verification — 2026-07-14 (delegated: "Run manual verification yourself")
+
+**Verdict (updated after 2 live walks): PASS WITH FINDINGS** — surface fix L3-PROVEN; done-flip clause 3b NOT closed (qwen fidelity residual → dedicated qwen-management epic, Adam-decided).
+
+**LIVE WALK OUTCOME (2 Adam-typed turns, orchestrator DB-verified):**
+- **Walk 1** (allow-list incl. `skills`): qwen picked `gmail_get_unread_emails` + `skills_list` (router_calls 14913/14914, tool_calls_count=1), never `find_emails`. Root cause = the `skills` toolset resolves the 88-skill catalog's tools onto the surface at runtime (a 2nd pollution channel, invisible to `hermes tools list`). = CR-10-6-5-4 residual CONFIRMED live. **FIXED:** dropped `skills`; drift forbidden-set extended to red-gate it.
+- **Walk 2** (skills off): pollution GONE. But qwen picked `send_message` (messaging toolset) + emitted the call as literal `<tool_call>…</tool_call>` TEXT → not dispatched → router_calls 14937 tool_calls_count=0. api logs confirm `find_emails` WAS on qwen's tool list (ListToolsRequest). = qwen tool-SELECTION/FORMAT fidelity on a clean surface, NOT a tool-surface defect. Sibling class to 10-6-1/10-6-4.
+- **Ops finding (deploy, not code):** mid-walk `PermissionError /opt/data/sessions/sessions.json` — manual `docker restart` left runtime dirs root:root; fixed via `chown -R hermes:hermes /opt/data/{sessions,gateway,logs,cron}`. CP-1 runbook item.
+
+**Adam decision (2026-07-14):** "save current advancement and wrap up this story; we will plan a whole epic toward qwen management." Story DONE at its owned scope (surface fidelity — 2 channels closed, find_emails reaches the turn). **F-10-6-5-W1** (qwen tool-selection/format fidelity on a clean surface) filed → qwen-management epic. Epic 10.6 clause 3b stays PENDING on that epic, not on this story.
+
+- **AC-2 — PASS (L3, live).** Restarted `mailbot-hermes` (config reload), then `hermes tools list --platform discord`: the 12 noise built-in toolsets (`tts/image_gen/vision/video/file/web/browser/terminal/code_execution/todo/delegation/computer_use`) all flipped `✗ disabled` (were `✓ enabled` pre-fix, same-run capture); `mailbot-api all tools enabled`; kept `[skills, memory, clarify, cronjob, messaging]`. The exact WALK-10-6-4-F1 pollution is gone — the email verbs now dominate the Discord surface. This is the load-bearing clause-3b mechanism, proven on the running container.
+- **AC-3 (drain safety gate) — PASS.** Keys on `(action_type, email_id)`, no model/surface column; 75 gate+drift tests green against real DB.
+- **AC-4 (sensitivity gate) — PASS.** Enforced in `mailbot_api/router/router.py` (25 refs), router precondition layer — structurally independent of the Hermes tool-surface config; a `platform_toolsets` change cannot touch it. `mailbot-api` MCP server stays fully enabled → verbs reachable.
+- **AC-1 / AC-6 — FINDING (owed).** A live Discord "find my unread emails" turn where qwen actually selects+invokes `find_emails` (`tool_calls_count ≥ 1`) + returns real unread emails, then a chained "mark first as read", is NOT drivable from this host (can't type into the DM; the MCP tool-call session is driven by Hermes's own persona turn). The NECESSARY condition is now met + proven live (email verbs dominate the surface); WALK-10-6-4-F1's isolating contrast already showed qwen picks `find_emails` = `tool_calls_count=1` when handed the correct 4-tool surface. **AC-6 remains the Adam-hands-on Phase 3.5 walk that closes Epic 10.6 done-flip clause 3b.** Runbook caveat verified: `mailbot-hermes` restarted this session so the key is live; restart hermes after any api restart (F-10-5-1-W2).
+
+Recommendation: story stays `done` (dev+CR complete, fix L3-proven at the surface level); Epic 10.6 done-flip clause 3b stays PENDING the Adam-typed Discord turn (same posture as 10-6-2 clause 4 and 10-6-0 AC-6).
+
+---
+
 ## Story 10-6-4 (cheap-lane latency — usable tool-call turn) — 2026-07-14
 
 **Headline:** Cheap-lane latency fix (F-10-6-1-W1). Seam A: `OllamaAdapter` gains env-configurable `keep_alive` (`OLLAMA_KEEP_ALIVE`, default `-1` never-evict) passed on both `chat` sites AND `embed()` (CR F1), + Ollama timeout `30→120s` (`OLLAMA_TIMEOUT_SECONDS`, robust-parse); Anthropic 60s untouched. Seam B: MCP tool-exec timeout `30→120` in `config.yaml`; B1 tool-trim + B3 retry-tame VERIFIED Hermes-runtime-owned (`dispatch_tool_call` already single-attempt `retryable=False`) → deferred to AC-6 walk. `num_ctx` NOT touched (AC-4, measured red herring). DONE at L1/L2; AC-6 live re-walk = Adam Phase 3.5 (Epic 10.6 done-flip clause 3).

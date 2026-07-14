@@ -126,6 +126,146 @@ def test_hermes_config_discord_at_top_level_not_under_gateway(
         )
 
 
+# --- Story 10-6-5: per-turn tool-surface fidelity (WALK-10-6-4-F1) ----------
+#
+# The Discord chat surface was polluted by unrelated user-installed Hermes
+# toolsets (tts / image_gen / vision / file / todo / …), so a real "find my
+# unread emails" turn ran on qwen but emitted tool_calls_count=0 — the 26
+# registered mailbot-api MCP verbs were drowned. The fix is a repo-tracked
+# `platform_toolsets.discord` allow-list in config.yaml that keeps only the
+# toolsets a MailBot email turn needs + the mailbot-api MCP server, so the
+# email verbs dominate the surface. These are offline YAML-shape drift gates
+# (no Docker/Discord/Anthropic dependency) that red-gate a re-pollution
+# regression. AC-1/AC-6 live-Discord proof is a Phase 3.5 manual item.
+
+# Toolsets that must NOT be on the Discord surface — the exact noise
+# WALK-10-6-4-F1 observed qwen enumerate ("TTS / task / image / write-file"),
+# PLUS `skills` (added after the 10-6-5 AC-1 live walk). The `skills` toolset
+# resolves the installed 88-skill catalog's tools onto the turn surface at
+# runtime (incl. a competing `gmail_get_unread_emails`); on "find my unread
+# emails" qwen picked that over the MailBot `find_emails` verb (router_calls
+# id=14913/14914, tool_calls_count=1, wrong tool). It is a distinct pollution
+# channel from the built-in toolsets and must stay OFF Discord so the
+# mailbot-api MCP verbs are the dominant email surface.
+_NOISE_TOOLSETS_FORBIDDEN_ON_DISCORD = frozenset(
+    {
+        "tts",
+        "image_gen",
+        "vision",
+        "video",
+        "file",
+        "browser",
+        "terminal",
+        "code_execution",
+        "web",
+        "todo",
+        "delegation",
+        "computer_use",
+        "skills",
+    }
+)
+
+# The minimal keep-set a MailBot email turn actually needs.
+_REQUIRED_DISCORD_TOOLSETS = frozenset(
+    {
+        "mailbot-api",  # the 26 email verbs — the whole point (MCP server name)
+        "messaging",  # Rule R cross-platform notification send
+        "cronjob",  # Story 6-10 digest / notification-pull jobs
+        "memory",  # defender-persona session hygiene
+        "clarify",  # AGENTS.md "ask for clarification" tiebreaker
+    }
+)
+
+
+def _discord_allowlist(config: dict[str, Any]) -> list[str]:
+    """Resolve `platform_toolsets.discord` with descriptive failures.
+
+    CR-10-6-5-2 / CR-10-6-5-3 (reviewer sonnet-5): the three drift gates below
+    previously indexed `config["platform_toolsets"]["discord"]` directly, which
+    raised a bare `KeyError` when the block regressed to absent (obscuring the
+    real regression during triage) and silently char-iterated when the value
+    was authored as a YAML scalar/string instead of a list (`set("a,b")`
+    produces a misleading missing/leaked diff instead of a clear type error).
+    This helper turns both into descriptive AssertionErrors."""
+    platform_toolsets = config.get("platform_toolsets")
+    assert isinstance(platform_toolsets, dict), (
+        "config.platform_toolsets must be a mapping keyed by platform "
+        "(WALK-10-6-4-F1 tool-surface fidelity fix); got "
+        f"{type(platform_toolsets).__name__}"
+    )
+    discord_list = platform_toolsets.get("discord")
+    assert isinstance(discord_list, list), (
+        "platform_toolsets.discord must be a YAML LIST of toolset names, not "
+        f"a {type(discord_list).__name__} — a bare scalar would silently "
+        "char-iterate under set(); author it as a `- item` block"
+    )
+    return [str(entry) for entry in discord_list]
+
+
+def test_hermes_config_has_discord_toolset_allowlist(config: dict[str, Any]) -> None:
+    """`platform_toolsets.discord` exists and is a non-empty explicit list.
+    This is the WALK-10-6-4-F1 fix: without an explicit allow-list Hermes
+    enables the full built-in toolset swarm on the Discord surface, drowning
+    the mailbot-api verbs."""
+    discord_list = _discord_allowlist(config)
+    assert discord_list, (
+        "platform_toolsets.discord must be a non-empty explicit allow-list "
+        "so only the listed toolsets reach the per-turn surface"
+    )
+
+
+def test_hermes_config_discord_allowlist_keeps_mailbot_verbs(
+    config: dict[str, Any],
+) -> None:
+    """The allow-list keeps the mailbot-api MCP server + the minimal
+    MailBot-turn toolsets. If mailbot-api is dropped, the 26 email verbs
+    leave the surface — the exact failure this story closes."""
+    discord_list = set(_discord_allowlist(config))
+    missing = _REQUIRED_DISCORD_TOOLSETS - discord_list
+    assert not missing, (
+        f"platform_toolsets.discord is missing required entries: {sorted(missing)}; "
+        f"mailbot-api (the email verbs) MUST stay on the surface"
+    )
+
+
+def test_hermes_config_discord_allowlist_excludes_noise_toolsets(
+    config: dict[str, Any],
+) -> None:
+    """The noise built-in toolsets WALK-10-6-4-F1 saw qwen enumerate
+    (tts / image_gen / vision / file / todo / …) MUST NOT be on the Discord
+    surface — they are what drowned the email verbs. Red-gates a
+    re-pollution regression."""
+    discord_list = set(_discord_allowlist(config))
+    leaked = _NOISE_TOOLSETS_FORBIDDEN_ON_DISCORD & discord_list
+    assert not leaked, (
+        f"noise toolsets leaked back onto the Discord surface: {sorted(leaked)}; "
+        f"these crowd out the mailbot-api email verbs (WALK-10-6-4-F1)"
+    )
+
+
+def test_hermes_config_every_mcp_server_is_on_the_discord_allowlist(
+    config: dict[str, Any],
+) -> None:
+    """CR-10-6-5-1 (reviewer sonnet-5): guard against a future SECOND MCP
+    server auto-injecting its tools onto the Discord surface, bypassing the
+    allow-list and re-polluting it without any test catching it. Hermes
+    preserves MCP-server names in `platform_toolsets` separately from
+    configurable toolsets (`_save_platform_tools.preserved_entries`), so a
+    new `mcp_servers` entry that is NOT also named in `platform_toolsets.discord`
+    is exactly that silent re-pollution vector. This test forces any new MCP
+    server to be an explicit, reviewed decision in the Discord allow-list."""
+    mcp_servers = config.get("mcp_servers") or {}
+    assert isinstance(mcp_servers, dict)
+    discord_list = set(_discord_allowlist(config))
+    unlisted = set(mcp_servers) - discord_list
+    assert not unlisted, (
+        f"mcp_servers {sorted(unlisted)} are registered but NOT named in "
+        f"platform_toolsets.discord; a new MCP server's tools would auto-inject "
+        f"onto the Discord surface unaccounted-for (WALK-10-6-4-F1 re-pollution "
+        f"vector). Add each to the allow-list deliberately, or scope it off Discord."
+    )
+
+
 # Patterns that smell like hard-coded secrets — none should appear anywhere
 # in the rendered config.yaml text. Compiled once at module load.
 _SECRET_LIKE_PATTERNS = (

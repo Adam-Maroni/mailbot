@@ -116,6 +116,68 @@ mcp_servers:
     timeout: 120
     connect_timeout: 10
 
+# --- Per-turn tool-surface allow-list (Story 10-6-5, WALK-10-6-4-F1) ---
+#
+# Hermes resolves the per-turn Discord tool surface from this key
+# (hermes_cli/tools_config.py `_get_platform_tools` / `_save_platform_tools`).
+# When `platform_toolsets.discord` holds an explicit list of configurable
+# toolset keys, ONLY those toolsets are enabled (direct membership); MCP
+# server names listed alongside (mailbot-api) are preserved separately.
+#
+# WHY THIS EXISTS: the 10-6-4 Adam-typed Discord walk (WALK-10-6-4-F1) proved a
+# real "find my unread emails" turn ran on qwen (outcome=ok, latency fix works)
+# but emitted tool_calls_count=0 — qwen was handed the built-in TTS / task /
+# image / write-file toolsets from Hermes's default swarm, so the 26 registered
+# mailbot-api email verbs never dominated the surface. `hermes tools list
+# --platform discord` showed web/browser/terminal/file/code_execution/vision/
+# image_gen/tts/todo/… all enabled. Without this allow-list Hermes defaults the
+# whole swarm on; with it, only a MailBot email turn's toolsets reach the model.
+#
+# KEEP-SET rationale:
+#   - mailbot-api : the 26 email verbs (the whole point; MCP server name)
+#   - messaging   : Rule R cross-platform notification send
+#   - cronjob     : Story 6-10 digest + notification-pull jobs run attached skills
+#   - memory      : defender-persona session hygiene
+#   - clarify     : AGENTS.md "when in doubt, ask for clarification" tiebreaker
+# Everything else is dropped — the built-in noise (tts/image_gen/vision/video/
+# file/browser/terminal/code_execution/web/todo/delegation/computer_use) that
+# WALK-10-6-4-F1 observed, PLUS the `skills` toolset.
+#
+# WHY `skills` IS DROPPED (learned at the 10-6-5 AC-1 live walk 2026-07-14):
+# the `skills` toolset does NOT merely surface list/view/manage meta-tools — at
+# turn time it resolves the installed 88-skill catalog's tools into the model's
+# function list, including a competing `gmail_get_unread_emails` (Google-
+# Workspace skill). On "find my unread emails" qwen picked `gmail_get_unread_
+# emails` + `skills_list` (router_calls id=14913/14914, tool_calls_count=1) and
+# NEVER reached the MailBot `find_emails` verb — a DIFFERENT pollution channel
+# than the built-in toolsets, invisible to `hermes tools list` (which shows only
+# toolset NAMES, not their turn-time tool expansion). Keeping `skills` kept that
+# channel open. Dropping it leaves the mailbot-api MCP verbs as the dominant
+# email surface. The MailBot SKILL.md persona reference is injected via the
+# separate `.skills_prompt_snapshot.json` mechanism, NOT the `skills` toolset —
+# so dropping the toolset does not cost the persona its verb reference.
+#
+# VERIFY (runbook carry-forward for CP-1, like `hermes fallback add`):
+#   docker exec mailbot-hermes hermes tools list --platform discord
+# Restart the mailbot-hermes container after editing so the key takes effect;
+# restart hermes after any mailbot-api restart before a walk (F-10-5-1-W2).
+#
+# CR-10-6-5-4 (RESOLVED at the 2026-07-14 AC-1 live walk): the reviewer flagged
+# that keeping `skills` rested on the assumption it exposed only meta-tools, not
+# offline-verifiable. The live walk DISPROVED the assumption (the `skills`
+# toolset resolved `gmail_get_unread_emails` onto the surface and qwen picked it
+# over the MailBot verbs) — so `skills` was DROPPED from the allow-list (see the
+# "WHY `skills` IS DROPPED" note above). The residual is closed by removal, not
+# accepted. Standing guard for any FUTURE surface regression stays the same:
+# `hermes tools list --platform discord` + the AC-6 live re-walk before deploy.
+platform_toolsets:
+  discord:
+    - mailbot-api
+    - messaging
+    - cronjob
+    - memory
+    - clarify
+
 # --- Discord gateway behavior ---
 #
 # Discord-side env vars (DISCORD_BOT_TOKEN, DISCORD_ALLOWED_USERS,
