@@ -70,6 +70,24 @@ Ran the item-6 top-split probe on the live model (`scratch/… tree`, log `scrat
 - **Residual still owed (do NOT over-claim):** this proves qwen picks the right *branch*, not yet the right *leaf tool inside* the branch. That is a 3–5-tool menu — the regime where it already scored 14–20/20 — so low risk, but a leaf-level probe (offer the ~4 email-reading tools, confirm `find_emails` over `count_emails`/`get_thread`) should run before committing the design.
 - **Cost:** a true tree = 2 model round-trips/turn on the CPU-bound local model — weigh against Epic 10.6 latency work (`project_qwen_cpu_toolcall_latency`). A single well-scoped flat menu (if it tests reliable at the leaf level) avoids the extra hop.
 
+### 4.3 Leaf-level probe RESULT (2026-07-15) — the branch is NOT free; combination fix needed (still no ceiling)
+
+Ran the owed leaf probe (`scratch/… leaves`, log `scratch/10-7-0-leaf.log`): offer ONLY the 5 real email_reading tools (`find_emails`, `count_emails`, `get_thread`, `get_sender_summary`, `hydrate_email`) with their **real production MCP descriptions** (incl. find_emails's jargon "email projections… Rule J"), and measure whether qwen picks `find_emails` for "find my unread emails".
+
+| Mode | find_emails correct | wrong pick | no tool (just chatted) |
+|---|---|---|---|
+| leaf (bare, real descriptions) | **0/20** | 11 (count_emails / get_thread) | 9 |
+| leaf_hint (+ ablated hygiene prompt) | **15/20** | 5 (count_emails) | 0 |
+
+**The leaf choice is NOT free — this corrects the §4.2 "low risk" optimism.** With the bare real descriptions qwen scored 0/20: it either picked a sibling or **didn't call any tool at all** (9×), instead starting to chat ("To find your unread emails, I will need to query… how many do you want?"). The jargon description actively pushed it toward a clarifying question rather than acting. **But a light hygiene prompt recovered it 0→15/20** — so the leaf level is fixable, it just genuinely needs help.
+
+**The consistent pattern across all three probe levels:**
+- Coarse 4-category split → works on **good descriptions alone** (20/20, no prompt needed).
+- 5-tool leaf pick → needs **good descriptions AND/OR a prompt nudge** (real jargon descriptions alone = 0/20; + light prompt = 15/20).
+- Flat 26 → fails even with a strong prompt (0/N) — too many choices at once.
+
+**Conclusion: HARNESS-FIXABLE, but by a COMBINATION, not a single lever.** The fix is (a) shrink each choice (tree or scoped flat menu) + (b) fix `find_emails`'s description — its "projections/Rule J" wording is *measurably* harmful (drove the 0/20 + the chat-instead-of-act behavior) + (c) a light system prompt. Every failure mode responded to a cheap $0 harness lever — **no 3B ceiling surfaced at any level.** 15/20 is not yet production-grade, so the fix stories (10.7.2 prompt + 10.7.3 trim + description work) still own the tuning to push it higher (a sharper `find_emails` description + stronger prompt should lift it) — but the direction is now measured, not guessed. 10.7.4 (model swap) recedes further toward unlikely-fallback.
+
 ## 5. Cost thesis + safety framing (AC-6)
 
 - **Cost thesis intact — $0.** Every lever discussed (system prompt, tool descriptions, surface trim, even a model swap) stays local. No paid API floor introduced. `project_local_model_is_safety_net` holds.
