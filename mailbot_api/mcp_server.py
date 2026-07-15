@@ -966,27 +966,43 @@ def _build_wrappers(server_ctx: _ServerContext) -> dict[str, Any]:
 
 
 _TOOL_DESCRIPTIONS: dict[str, str] = {
+    # Story 10.7.5 — descriptions rewritten from implementation jargon
+    # ("email projections… Rule J") to natural language a user would say.
+    # The spike (10-7-0 §4.4) measured the jargon as the load-bearing tool-
+    # SELECTION defect for the local qwen lane: the jargon `find_emails`
+    # description scored 0/20 (qwen chatted or mis-picked), the natural-
+    # language rewrite scored 20/20 with no system prompt. Each verb keeps
+    # its cost-relevant constraint (100-cap, 5/turn cap) in plain words; the
+    # underlying verbs still enforce those caps regardless of wording.
     "find_emails": (
-        "Return up to `limit` email projections matching `filter`. "
-        "Capped at 100 results — Rule J projections only; "
-        "use hydrate_email for full bodies."
+        "Find, list, show, or search the user's emails — the primary tool "
+        "for reading the inbox, including unread mail. Give it a `filter` "
+        "(sender, unread-only, date range, keyword) and it returns matching "
+        "emails, newest first, up to 100 at a time. Use this whenever the "
+        "user asks to see, check, or look through their email or inbox. "
+        "Returns a summary per email; call hydrate_email for a full body."
     ),
     "hydrate_email": (
-        "Return the full hydration of one email by `email_id`. "
-        "Rate-limited to 5 calls per chat turn — Rule J hydration discipline. "
-        "Confidential emails are refused."
+        "Open one email and read its full body by `email_id`, after "
+        "find_emails or get_thread has surfaced it. Use only when the "
+        "summary is not enough and you need the whole message. Limited to "
+        "5 opens per chat turn; confidential emails are refused."
     ),
     "get_thread": (
-        "Return all projections in a thread, ordered ASC by received_at, "
-        "plus the cached thread continuity note. Rule J — projections only."
+        "Show the full back-and-forth conversation thread for a `thread_id` "
+        "— every email in the thread, oldest first, plus a short continuity "
+        "note. Use when the user asks about a conversation or a reply chain."
     ),
     "count_emails": (
-        "Return the count of emails matching `filter` (cheap signal). "
-        "Rule J — projections only; returns count, no rows."
+        "Count how many emails match a `filter` (e.g. how many from a sender, "
+        "how many since a date) and return only the number, not the emails. "
+        "Use ONLY when the user explicitly asks 'how many'; to actually see or "
+        "read the emails, use find_emails instead."
     ),
     "get_sender_summary": (
-        "Return per-sender enrichment for a sender_address. "
-        "Rule J — cached sender enrichment (reputation + last-seen)."
+        "Look up who a sender is by `sender_address` — their reputation and "
+        "when you last heard from them. Use when the user asks about a "
+        "specific person or address."
     ),
     "propose_action": (
         "Propose an action against an email or email-less. "
@@ -1246,11 +1262,20 @@ def build_mcp_server(*, db_path: str | None = None) -> FastMCP:
             ],
         ),
         instructions=(
+            # Story 10.7.5 — read-verb clause rewritten from jargon
+            # ("projection-first per Rule J") to natural language. This
+            # server-level instructions string is a SECOND model-facing surface
+            # (delivered alongside the tool list every session); leaving the
+            # jargon here would fight the per-tool description rewrite the story
+            # shipped (spike 10-7-0 §4.4 measured this jargon as the selection
+            # defect). The verbs still return projection-only rows regardless.
             "MailBot agent-facing verb surface. Read verbs (find_emails, "
-            "hydrate_email, get_thread, count_emails, get_sender_summary) are "
-            "projection-first per Rule J. Write verbs (propose_action, "
-            "mint_grant, revoke_grant, cancel_action, revert_action, "
-            "mint_sensitivity_token) follow the second-auth-check pattern. "
+            "hydrate_email, get_thread, count_emails, get_sender_summary) let "
+            "you find, read, and count the user's emails; use find_emails as "
+            "the primary tool for reading the inbox. Write verbs "
+            "(propose_action, mint_grant, revoke_grant, cancel_action, "
+            "revert_action, mint_sensitivity_token) follow the "
+            "second-auth-check pattern. "
             "Slash-command-surface verbs (cost_breakdown, reset_degraded_mode, "
             "pause_router, resume_router, mute_category, render_spend_chart) "
             "are the verb side of Discord slash commands; agent invocations "

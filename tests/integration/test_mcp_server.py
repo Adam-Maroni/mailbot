@@ -295,15 +295,34 @@ async def test_list_tools_returns_constraint_phrases(tmp_path: Path) -> None:
     assert len(by_name) == 26
     # draft_reply must mention its Opus draft + sensitivity gate.
     assert "draft" in by_name["draft_reply"].description.lower()
-    # find_emails must mention the 100-cap + Rule J.
-    assert "100" in by_name["find_emails"].description
-    assert "Rule J" in by_name["find_emails"].description
-    # hydrate_email must mention the 5/turn cap.
+    # Story 10.7.5 — find_emails description rewritten from jargon
+    # ("email projections… Rule J") to natural language. The spike
+    # (10-7-0 §4.4) measured the jargon as the load-bearing selection
+    # defect (0/20), and the natural-language rewrite as the fix (20/20).
+    # So the description must now read like a user's inbox request and
+    # must NOT lead with the harmful jargon.
+    _find_desc = by_name["find_emails"].description
+    _find_desc_l = _find_desc.lower()
+    # Natural-language reading cue: names the user's own unread mail.
+    assert "unread" in _find_desc_l
+    # Leads with a plain-English action verb a user would say.
+    assert any(_verb in _find_desc_l for _verb in ("find", "list", "show", "search"))
+    # The measured-harmful jargon is gone from find_emails.
+    assert "Rule J" not in _find_desc
+    assert "projection" not in _find_desc_l
+    # AC-2: the 100-result cost cap is preserved (in plain language).
+    assert "100" in _find_desc
+    # hydrate_email must still mention the 5/turn cap (constraint preserved).
     assert "5" in by_name["hydrate_email"].description
     assert "turn" in by_name["hydrate_email"].description.lower()
-    # Other constraint-tagged tools.
-    assert "Rule J" in by_name["count_emails"].description
-    assert "Rule J" in by_name["get_thread"].description
+    # Sibling read verbs: jargon "Rule J" swept out (10.7.5 AC-3), but each
+    # verb's user-facing purpose is still named.
+    assert "Rule J" not in by_name["count_emails"].description
+    assert "count" in by_name["count_emails"].description.lower()
+    assert "Rule J" not in by_name["get_thread"].description
+    assert "thread" in by_name["get_thread"].description.lower()
+    assert "Rule J" not in by_name["get_sender_summary"].description
+    assert "sender" in by_name["get_sender_summary"].description.lower()
     assert "10-min" in by_name["mint_sensitivity_token"].description
     assert "Tier-1" in by_name["revert_action"].description
     # Story 5-6 additions name their recognized-phrase / plain-NL intent
@@ -326,6 +345,23 @@ async def test_list_tools_returns_constraint_phrases(tmp_path: Path) -> None:
         assert _slash not in by_name[_name].description, (
             f"{_name} description still carries the dead '{_slash}' form"
         )
+
+
+@pytest.mark.asyncio
+async def test_server_instructions_read_verbs_natural_language(tmp_path: Path) -> None:
+    """Story 10.7.5 (CR HIGH finding) — the server-level ``instructions=``
+    string is a SECOND model-facing surface delivered alongside the tool list
+    every session. It must NOT re-introduce the ``projection-first per Rule J``
+    read-verb jargon that the per-tool description rewrite removed (spike
+    10-7-0 §4.4 measured that jargon as the qwen tool-selection defect)."""
+    db_path = _setup_db(tmp_path)
+    server = build_mcp_server(db_path=db_path)
+    instructions = server.instructions or ""
+    # The measured-harmful read-verb framing is gone from the instructions.
+    assert "projection-first per Rule J" not in instructions
+    # find_emails is still named as the primary inbox-reading tool.
+    assert "find_emails" in instructions
+    assert "primary tool for reading the inbox" in instructions
 
 
 @pytest.mark.asyncio

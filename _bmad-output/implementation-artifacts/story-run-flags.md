@@ -2,6 +2,56 @@
 
 This file collects flags raised by `autonomous-story-run` runs. One block per invocation.
 
+## Story 10-7-5 (find_emails tool-description rewrite — jargon→natural-language) — 2026-07-15
+
+**Headline:** Rewrote `find_emails` + 4 sibling read-verb MCP tool descriptions AND the server-level `FastMCP(instructions=...)` read-verb clause from implementation jargon ("email projections… Rule J") to natural language — the Story 10.7.0 §4.4-measured PRIMARY $0 fix for local-qwen tool selection (0/20 → 20/20 at the 5-tool leaf, direct-ollama drive). Description/instruction strings only; no schema/wiring/behavior change.
+
+**Dev model:** claude-opus-4-8[1m]; **Review model:** claude-sonnet-5 (≠ dev, [[feedback_reviewer_model_substitution]]).
+
+**Review rounds:** 1. Findings 6 (1 HIGH + 2 MEDIUM actionable + 3 LOW). Actionable applied = **3/3 = 100%** (≥70% ✓). The **HIGH** was a genuine dev-miss the reviewer earned its keep on: the same measured-harmful jargon on the same 5 read verbs survived one surface up in the server-level `instructions=` string (a 2nd model-facing surface delivered every session), untested — now swept to natural language + guarded by a new `test_server_instructions_read_verbs_natural_language`. The 2 MEDIUM: added missing `get_sender_summary` contract-test coverage (AC-4 gap); reworded `count_emails` to remove the "unread" trigger collision with `find_emails`. 3 LOW ACCEPT/defer: persona files out-of-scope (positively pinned by `test_hermes_persona_files.py:66`); cron-only `compose_digest` never agent-selected; AC-2 "at a time" precision note (verb `since`-refilter path exists).
+
+**Deferred/carried items:** none blocking. `compose_digest` + persona-file "Rule J" left for any future full jargon sweep (both correctly out of this story's read-verb scope).
+
+**Gate verdicts:** 2.3.5 pre-review — PASS (5 sections + 12 posture checks; §5.12 = MANDATORY-CR criterion 3+6) · 2.4.4 Dev Agent Record — PASS · 2.4.5 UI-scope — N/A (no graphical frontend) · 2.4.6 File-List-vs-git — PASS (both source files tracked; story + pre-review staged) · 2.4.7 Middleware-Real-Bootstrap (MailBot Router-contract reframing) — PASS: description-only change (no new verb / no `ask_router` site / no state-changing write), exercised via real `build_mcp_server` + connected MCP client session in the two contract tests (not mocked) · 2.4.8 verbose-row truncation — PASS.
+
+**Step 2.5 dev-env:** N/A — no `<dev-env-skill>` configured; description-string change already validated by real-MCP-server-boot integration tests.
+
+**Gates:** ruff clean · mypy --strict mailbot_api clean · pytest **1942 passed** / 3 skipped / 3 deselected (+1 net: the new instructions-guard test).
+
+**Scope honesty (clause 3 NOT discharged):** direct-ollama-drive PRIMARY-fix scope only. Epic 10.7 clause 3 (a live Discord turn with `model_chosen=qwen2.5:*` AND `tool_calls_count≥1` invoking `find_emails`) remains the load-bearing Adam-hands-on L3 walk, owed — this discharges Epic 10.6 clause 3b. A real-N temp-0 arg-fidelity re-check on the Hermes path is also owed there (spike §4.3). Flat-26 surface still 0/N → getting qwen to a small menu is 10.7.3's remaining engineering.
+
+**Permission prompts:** none observed; no permission log configured — count unknown.
+
+**Staging:** 5 story-scoped files staged (mcp_server.py + test_mcp_server.py + story `.md` + pre-review `.md` + sprint-status). `.claude/settings.json` + `10-7-0-spike-finding.md` (pre-existing background) + `.autonomous-run-active.json` (run-state) left unstaged. **Nothing committed.**
+
+**#yolo mode:** active through Phase 2; OFF as of the Phase 3.3 final report.
+
+### Story 10-7-5 Manual Verification — 2026-07-15
+
+**Verdict: PASS WITH FINDINGS.** Dev-owned scope verified by me at L3 (leaf level); Adam-typed Discord walk surfaced a 2nd live reproduction of the FORMAT defect (belongs to 10.7.1, not this story). Clause 3 stays OPEN as forecast.
+
+**Self-driven checkpoints (all PASS):**
+- **CP-1 [AC-1] / CP-2 [AC-2] / CP-3 [AC-3]** — live `_TOOL_DESCRIPTIONS` inspection + `build_mcp_server` boot: find_emails leads find/list/show/search, names unread/inbox, no projections/Rule J; 100-cap + hydrate_email pointer retained; 4 siblings natural-language with constraints preserved (hydrate 5/turn + confidential-refused); `pull_pending_notifications` untouched. Server-level `instructions=` clause also swept (`primary tool for reading the inbox` present, `projection-first per Rule J` gone).
+- **CP-4 [AC-4]** — both contract tests pass; `_EXPECTED_TOOL_COUNT == 26 == len(_TOOL_DESCRIPTIONS)`.
+- **CP-5 [AC-5]** — `git diff --cached mcp_server.py` shows ZERO non-string/non-comment changed lines; suite 1942 passed.
+- **CP-6 [AC-6]** — direct-drive scope honestly recorded; clause 3 + arg-fidelity re-check marked owed.
+- **BONUS — live leaf-selection probe (12/12).** Drove the real `mailbot-ollama` qwen at temp 0 with the 5 email_reading verbs pulled live from the running `mailbot-api` MCP server (their CURRENT shipped descriptions, incl. the find_emails rewrite). find_emails correct **12/12**, 0 wrong picks, 0 chat-instead-of-act. Reproduces spike §4.4 `leaf_desc` (0/20→20/20) against production. `scratch/10-7-5-verify-live-leaf.py` (gitignored).
+
+**WALK-10-7-5-F1 (Adam-typed Discord "find my unread emails", 2026-07-15 ~22:14 local) — FORMAT defect, belongs to 10.7.1, NOT a 10-7-5 regression.**
+- Discord reply: qwen emitted `<tool_call>{"name": "memory", "action": "add", ...}</tool_call>` as **literal text** in message content (labelled `qwen (local, free)`).
+- Ground-truth audit row `router_calls id=15022`: `model_chosen=qwen2.5:3b-instruct-q4_K_M`, `task=chat_completions_tool_call`, `tool_calls_count=0`, `outcome=ok`. api logs: `ListToolsRequest` at 20:13:51 (surface assembled for the turn), NO `CallToolRequest` for the turn (the per-60s `pull_pending_notifications` CallToolRequests are the background notification poller — different session ids, 1ms latency — not this turn).
+- **This is F-10-6-5-W1 defect #2 (the `<tool_call>`-as-text FORMAT defect), reproduced LIVE a 2nd time on the real Hermes path.** The spike found this defect never reproduced via direct ollama drive (0/172); its sole prior evidence was walk id=14937. This is the 2nd live sample → confirms the format defect is real and **Hermes-template-coupled** (appears through Hermes's chat-template/request assembly, which direct-drive can't replicate). **Promotes 10.7.1 (rescue parser) from "defensive/thin-evidence" to "confirmed-needed."**
+- **10-7-5's description lever was never exercised by this turn** — the call died at the FORMAT layer (emitted as text, count=0) BEFORE selection reached dispatch, and qwen picked `memory` (a `memory`-toolset tool still on the Discord allow-list `[mailbot-api, messaging, cronjob, memory, clarify]`, broader than the leaf where the description fix is proven). A defect in another story's lever, firing upstream of this story's lever, cannot fail this story.
+
+**Fire-list sharpened by the walk (live evidence):**
+1. **10.7.1 (rescue parser) — CONFIRMED-NEEDED** (was defensive/thin). 2nd live `<tool_call>`-as-text sample. Without it, qwen calls die as text regardless of description quality.
+2. **10.7.3 (surface trim) — still needed.** `memory`/`messaging`/all 26 mailbot-api verbs still on the surface; the allow-list is broader than the proven leaf.
+3. **Empirical order-of-operations for clause 3:** 10.7.1 (dispatch at all) → 10.7.3 (trim so selection lands) → 10-7-5 description fix (shipped) does the leaf-level discrimination → then re-walk.
+
+**Per-AC:** AC-1 PASS(L3) · AC-2 PASS · AC-3 PASS · AC-4 PASS · AC-5 PASS(L3) · AC-6 PASS. Story stays **done**. Epic 10.7 clause 3 stays OPEN (needs 10.7.1 + 10.7.3, then Adam re-walk) — as forecast before the walk.
+
+---
+
 ## Story 10-7-0 (characterization spike — harness-fixable vs 3B ceiling) — 2026-07-15
 
 **Headline:** Characterization spike DONE. Verdict REVERSED by MANDATORY code-review: the load-bearing defect is qwen tool-**SELECTION at real scale** (0/N correct on the real 26-verb MCP surface — fixates on `pull_pending_notifications`), NOT the `<tool_call>`-text FORMAT defect, and NOT cheaply fixable by a system prompt (the 5-tool stub's 20/20 was a small-surface artifact). Discharges Epic 10.7 done-flip clause 1; clause 3 NOT yet de-risked.
