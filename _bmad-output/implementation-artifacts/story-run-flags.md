@@ -2,6 +2,50 @@
 
 This file collects flags raised by `autonomous-story-run` runs. One block per invocation.
 
+## Story 10-7-0 (characterization spike — harness-fixable vs 3B ceiling) — 2026-07-15
+
+**Headline:** Characterization spike DONE. Verdict REVERSED by MANDATORY code-review: the load-bearing defect is qwen tool-**SELECTION at real scale** (0/N correct on the real 26-verb MCP surface — fixates on `pull_pending_notifications`), NOT the `<tool_call>`-text FORMAT defect, and NOT cheaply fixable by a system prompt (the 5-tool stub's 20/20 was a small-surface artifact). Discharges Epic 10.7 done-flip clause 1; clause 3 NOT yet de-risked.
+
+**Dev model:** claude-opus-4-8[1m]; **Review model:** claude-sonnet-5 (≠ dev, [[feedback_reviewer_model_substitution]]).
+
+**The reversal (why the review earned its keep):** initial pass tested only a hand-authored 5-tool stub and measured system-prompt 14/20→20/20 → concluded HARNESS-FIXABLE / do-not-fire-10.7.4. Reviewer Finding #1 caught the cardinality mismatch (5-tool stub ≠ real ~26-verb surface that produced walk id=14937). Re-ran on the REAL MCP surface pulled live from `mailbot-api`: selection collapsed to **0/32 (baseline), 0/32 (persona), 0/32 (persona+prompt), 0/12 (strong prompt), 0/16 (find_emails description rewrite)** — qwen picks `pull_pending_notifications` 100%. Attractor named: `find_emails` leads with jargon ("email projections matching filter, Rule J"); `pull_pending_notifications` reads as "pull unread things." Fire-list revised: RE-OPEN 10.7.3 (surface-trim) + tool-description work (most promising cheap path); DEMOTE 10.7.2 (system prompt insufficient at scale); KEEP 10.7.1 defensive; **DO NOT CLOSE 10.7.4** (3B ceiling not ruled out). Required next: combined description+surface-scope experiment on the real surface.
+
+**Review rounds:** 1. 11 findings raised → **10 FIXED/reframed (91%)** + 1 DEFER (mixed-intent turns → 10.7.2 impl walk). The load-bearing #1 triggered the real-surface re-run that reversed the finding; #3 (fidelity spot-check underpowered) caveated + owed to 10.7.2; #5/#6/#11 fixed in harness (sample-size honesty, finditer + malformed bucket, run-log capture). No round-2 subagent: spike (no product code, no MANDATORY-CR); the change was finding-reframe + one decisive re-run, not code churn.
+
+**Deferred/owed items:**
+- `[deferred: 10.7.2 impl walk]` — mixed-intent / legitimately-send_message turns untested (CR #10).
+- `[owed: 10.7.2 impl time]` — temp-0 arg-fidelity re-check at AI-1-comparable N (3/3 spot-check underpowered vs ~10-20% adversarial baseline; CR #3).
+- `[required next]` — combined description + surface-scoping experiment on the real 26-verb surface (harness-vs-ceiling not fully resolved; cheap lever proved insufficient).
+
+**Gate verdicts:** 2.3.5 pre-review §5.12 self-audit — PASS (5 sections + 11 posture checks; product-code checks N/A-justified) · 2.4.4 Dev Agent Record — PASS · 2.4.5 UI-scope — N/A (no graphical frontend) · 2.4.6 File-List-vs-git — PASS (3 tracked artifacts staged; scratch/ harness+logs correctly gitignored/untracked, marked "NOT staged") · 2.4.7 Middleware-Real-Bootstrap — N/A (no product code, no mailbot_api verb/route touched) · 2.4.8 Verbose-row truncation — PASS.
+
+**Step 2.5 dev-env:** N/A — no source file in File List (spike, no product code).
+
+**Gates:** ruff clean (scratch excluded); pytest 1941 passed / 3 skipped / 3 deselected — UNCHANGED from baseline 1941 (no product code perturbed). mypy N/A.
+
+**Permission prompts:** Zero. No permission log configured.
+
+**Staging:** 4 files staged explicitly (story `.md` + finding `.md` + pre-review `.md` + sprint-status). `.claude/settings.json` (pre-existing), `.autonomous-run-active.json` (run-state), scratch/ harness+logs (gitignored) left unstaged. **Nothing committed.**
+
+**#yolo mode:** active through Phase 2; OFF as of the Phase 3.3 final report.
+
+### Story 10-7-0 Manual Verification — 2026-07-15 (DELEGATED: "do the manual verification yourself")
+
+**Verdict: PASS (L3, live).** Drove all 6 AC checkpoints against the live stack + artifacts.
+
+- **CP-1 [AC-1] defect reproduces — PASS(L3).** Independent fresh re-run (`SPIKE_N=3 … realsurface`, 12 calls) against the live `mailbot-ollama` + real 26-verb MCP surface: **0/12 correct, `pull_pending_notifications` 100%**. Confirms the dev-pass measurement is reproducible, not a one-off.
+- **CP-2 [AC-2] SELECTION isolated from FORMAT — PASS.** Finding §1–§2 correctly names selection-at-scale as load-bearing; FORMAT (`<tool_call>` text) did not reproduce on direct-drive (0/152) and is honestly scoped as "not reproducible via direct drive," not "proven absent under Hermes templating."
+- **CP-3 [AC-3] levers measured — PASS.** System-prompt (stub 20/20 → real 0/N, both ablated + strong) and description-rewrite (0/16) both actually measured, not asserted.
+- **CP-4 [AC-4] temp-0 fidelity not silently traded — PASS.** §3 flags 3/3 as an underpowered spot-check with a real-N re-check owed at 10.7.2 — not claimed discharged.
+- **CP-5 [AC-5] go/no-go finding — PASS.** §4 fire-list (RE-OPEN 10.7.3 + tool-description work; DEMOTE 10.7.2; KEEP 10.7.1 defensive; DO-NOT-CLOSE 10.7.4; required combined experiment) is clear and matches the data.
+- **CP-6 [AC-6] $0 + safety framing — PASS.** Every lever stays local/$0; no product code changed; propose→grant→drain (F28) pipeline unperturbed.
+
+**Honesty tag:** CP-1 driven live (fresh probe vs the real ollama container + real MCP surface); CP-2–CP-6 verified by reading the finding artifact for internal consistency against the measurements. The spike has no Discord/persona surface, so this is complete verification — nothing is Adam-only. **Note:** the review-driven reversal (5-tool stub → real-surface 0/N) is exactly what this cadence exists to catch; it flipped the epic's fire-list before it shipped.
+
+**Per-AC:** AC-1 PASS(L3) · AC-2 PASS · AC-3 PASS · AC-4 PASS · AC-5 PASS · AC-6 PASS. Story stays **done**. No new findings. **Recommended next:** the §4 combined description + surface-scoping experiment on the real surface (natural first task for whichever fix-story fires next — likely 10.7.3 + tool-description work).
+
+---
+
 ## Story 10-6-5 (Hermes per-turn tool-surface fidelity) — 2026-07-14
 
 **Headline:** Config-only clause-3b fix (WALK-10-6-4-F1). Added `platform_toolsets.discord` allow-list `[mailbot-api, messaging, cronjob, memory, clarify, skills]` to the git-tracked `hermes-config/config.yaml` so the 26 registered MailBot MCP verbs dominate the Discord per-turn tool surface, dropping the 12 noise built-in toolsets (tts/image_gen/vision/file/todo/…) that WALK-10-6-4-F1 saw qwen enumerate instead of the email verbs. DONE at L1/L2; AC-1/AC-6 live Discord walk = Adam Phase 3.5 (Epic 10.6 done-flip clause 3b).
