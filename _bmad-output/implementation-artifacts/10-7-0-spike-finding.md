@@ -53,6 +53,23 @@
 
 **Net:** the epic does NOT collapse to "just 10.7.2." The evidence points at a **description + surface-scoping** fix (10.7.3 re-opened + tool-description work) as the most promising cheap path; the **hierarchical/tree tool-selection** lever (item 6) is the stronger, more scalable variant of that same "fewer choices at once" principle and is worth measuring (top-split probe first) if the flat description/trim fixes don't get selection reliable enough. 10.7.4 stays explicitly open pending the §4.1 experiment.
 
+### 4.2 Top-split probe RESULT (2026-07-15, post-close follow-up) — points HARNESS-FIXABLE
+
+Ran the item-6 top-split probe on the live model (`scratch/… tree`, log `scratch/10-7-0-topsplit.log`): offer qwen ONLY 4 category choices (`email_reading` / `notifications` / `email_actions` / `admin`, sharp plain-English descriptions that frame notifications as "app-generated alerts, NOT your emails"), and measure whether "find my unread emails" + paraphrases route to `email_reading`.
+
+| Mode | correct category (`email_reading`) | structured |
+|---|---|---|
+| topsplit (bare, no hint) | **20/20** | 20/20 |
+| topsplit_hint (+ ablated hygiene prompt) | **20/20** | 20/20 |
+
+**The same model that scored 0/N on the flat 26-tool surface makes the coarse 4-way split perfectly (20/20).** This is strong evidence the defect is **discrimination-across-a-large-flat-option-set, NOT comprehension and NOT a hard 3B ceiling** — collapsing the choice to a few well-separated, well-worded categories recovers selection completely. Critically, the top split is exactly where the failure could have recurred (qwen had jumped to *notifications* on the flat menu); it did **not**, because the category descriptions separate "your emails" from "app-generated alerts." **The `pull_pending_notifications` distractor problem dissolves with category-level wording.**
+
+**Implications for the fire-list:**
+- **HARNESS-FIXABLE is now the leading hypothesis** (was "unresolved"). 10.7.4 (model swap) drops toward unlikely — keep open only as a fallback, no longer co-equal.
+- **A tree/hierarchical design is viable** (top-split proven). It is also indirect evidence the cheaper flat **trim + description** lever (10.7.3 + description work) can work, since both rest on "fewer/clearer choices."
+- **Residual still owed (do NOT over-claim):** this proves qwen picks the right *branch*, not yet the right *leaf tool inside* the branch. That is a 3–5-tool menu — the regime where it already scored 14–20/20 — so low risk, but a leaf-level probe (offer the ~4 email-reading tools, confirm `find_emails` over `count_emails`/`get_thread`) should run before committing the design.
+- **Cost:** a true tree = 2 model round-trips/turn on the CPU-bound local model — weigh against Epic 10.6 latency work (`project_qwen_cpu_toolcall_latency`). A single well-scoped flat menu (if it tests reliable at the leaf level) avoids the extra hop.
+
 ## 5. Cost thesis + safety framing (AC-6)
 
 - **Cost thesis intact — $0.** Every lever discussed (system prompt, tool descriptions, surface trim, even a model swap) stays local. No paid API floor introduced. `project_local_model_is_safety_net` holds.
