@@ -12,8 +12,8 @@ status: 'complete'
 completedAt: '2026-05-31'
 requirementsConfirmed: true
 epicsApproved: true
-epicCount: 11  # +Epic 10.6 (Capability Reachability), appended 2026-07-11 at Epic 10.5 retro
-storyCount: 82  # +4 (10.6.0 Graph-auth, 10.6.1 AI-1 Phase 2, 10.6.2 AI-2, 10.6.3 scratch/ ruff)
+epicCount: 12  # +Epic 10.7 (Qwen Tool-Call Fidelity), appended 2026-07-15 at Epic 10.6 retro (Adam D2)
+storyCount: 93  # Epic 10.6 grew 4→6 (+10.6.4 latency, +10.6.5 tool-surface); +5 for Epic 10.7 (10.7.0 spike [firm] + 10.7.1-10.7.4 provisional/contingent, spike-gated). Prev comment "+4" was pre-10.6 walk-spawns.
 frCoverage: '62/62'
 nfrCoverage: '24/24'
 ---
@@ -441,6 +441,14 @@ Epic 10.5's own live walks (and the AI-1 walk that followed the retro) surfaced 
 **FRs covered:** none net-new — makes the already-shipped FR surface (F1–F8, esp. the Router cost-routing + draft pipeline) actually reachable from the live chat path (closes the L2-green/L3-capable → L3-reached gap AI-1's walk found)
 **NFRs:** NFR-COST-\* (the cheap local lane must carry real work for the cost thesis to hold — memory `project_local_model_is_safety_net.md`), NFR-OPS-\* (Graph-auth drain must work or no action completes)
 **AR-\*:** AR-PAT-4 (errors-as-data on the chat path preserved), Router↔policy cost-routing seam, persona/dispatch-contract (hermes-config) reach
+
+### Epic 10.7: Qwen Tool-Call Fidelity — Make the Local Lane Actually Invoke the Right Tool
+
+Epic 10.6 climbed the reachability ladder to its top rung and found one more: **routed → usable → *faithful*.** 10.6.4 made a full qwen tool-call turn *complete* within budget; 10.6.5 made the 26 MailBot verbs *reach* qwen's function list (ListTools-proven). But the same live walk exposed that qwen — on a clean surface, at temperature 0 — still (a) mis-**selects** (picks `send_message` over `find_emails`) and (b) emits the tool call as literal `<tool_call>{…}</tool_call>` **text** in the response content instead of a structured function-call object, so the harness sees `tool_calls_count=0` and dispatches nothing. That is the last thing standing between "the cheap lane got the turn" and "the cheap lane did the work" — the founding cost thesis rendered as its final gate (Epic 10.6 done-flip clause 3b, reassigned here per Adam D1 at the 2026-07-15 retro). This is a **model/harness fidelity** problem, not a routing, latency, or surface problem — the sibling class to 10.6.1 (argument fidelity) and 10.6.4 (latency). The epic opens with a **characterization spike** (Charlie's retro flag: is this a prompt-template/harness-parser fix, or Qwen-3B hitting its capability ceiling?) whose finding gates whether the rest is "tune the harness" or "swap the local model." Spawned at the Epic 10.6 retrospective (2026-07-14 walk + Adam D2 2026-07-15); sequenced BEFORE Epic 7 — calibrating routing quality (Epic 7) while the cheap lane can't reliably invoke a tool would calibrate a product nobody can use.
+
+**FRs covered:** none net-new — makes the already-reached cheap-lane tool-call path (Epic 10.6) actually *fire* a tool from a real user turn (closes the L3-reached → L3-*faithful* gap the 10.6.5 walk found)
+**NFRs:** NFR-COST-\* (the cheap local lane must carry real tool-driven work or the cost thesis fails — memory `project_local_model_is_safety_net.md`), NFR-PERF-1 (chat p95 preserved — temp-0 argument fidelity is load-bearing, `models.py:596-628`)
+**AR-\*:** AR-PAT-4 (errors-as-data preserved), OllamaAdapter tool-call parse/translate seam (`models.py`), Router capability-gate + dispatch seam (`router.py`), Hermes tool-surface/persona reach (`hermes-config/`)
 
 ---
 
@@ -4329,3 +4337,54 @@ The story-list table above (10.6.0–10.6.3) is the create-epics-pass roster. Tw
 - **3b (tool fidelity, 10.6.5)** — that same turn actually invokes the correct MailBot email verb (`tool_calls_count ≥ 1`, `find_emails` or peer), not zero-tool-call improvisation on a polluted surface. **PENDING 10.6.5.**
 
 Sequencing: 10.6.5 before the Epic 10.6 done-flip (clause 3b). Standalone from 10.6.2 (draft reach, clause 4). The done-flip clause-1 roster now reads 10.6.0 through 10.6.5.
+
+---
+
+## Epic 10.7 Detail — Qwen Tool-Call Fidelity: Make the Local Lane Actually Invoke the Right Tool
+
+**Spawned:** 2026-07-14 (Story 10.6.5 Adam-typed Discord walk, `WALK-10-6-4-F1` fidelity residual) + Adam D2 at the Epic 10.6 full retrospective 2026-07-15 (`epic-10-6-retro-2026-07-15.md`). Sequenced **before Epic 7**. Appended non-destructively per the N.5 walk-defect/spawn policy (memory `project_epic_6_scope_cleave`), like Epics 10.5 and 10.6.
+
+**Epic identity:** Epic 10.6 got the cheap-lane tool-call turn to *complete* (10.6.4 latency) and got the 26 MailBot verbs to *reach* qwen's function list (10.6.5 surface, ListTools-proven). Epic 10.7 makes qwen actually *fire the right tool*. The organizing lesson is the third rung of the ladder the last two epics climbed: **routed → usable → faithful.** A `router_calls` row proving qwen got the turn, at 3.7s, with `find_emails` on its function list, is still worth nothing if the model picks `send_message` and emits the call as text the harness can't dispatch (`tool_calls_count=0`). This is the **founding cost thesis's final gate** — Epic 10.6 done-flip **clause 3b**, reassigned here per Adam D1 because it is a **model/harness fidelity** problem, not a routing, latency, or surface defect (10.6.5 delivered its scope).
+
+**The two concrete defects (F-10-6-5-W1), measured live at the 10.6.5 walk:**
+1. **Tool SELECTION** — qwen (`qwen2.5:3b-instruct-q4_K_M`) picks a plausible-but-wrong tool (`send_message`, from the `messaging` toolset) over `find_emails`, even when `find_emails` is provably on its function list.
+2. **Tool-call FORMAT** — qwen emits the call as literal `<tool_call>{"name":…,"arguments":…}</tool_call>` **text** in `message.content` instead of a structured `message.tool_calls` object, so the adapter sees no tool call and the harness dispatches nothing.
+
+**Code-recon grounding (2026-07-15, read-only):**
+- `OllamaAdapter.call_with_tools` (`mailbot_api/router/models.py:586-749`) decides tool-call presence **solely** from the structured `message["tool_calls"]` array (`:700`, `:729-738`); `message.content` is captured only as `text` (`:691`). **There is NO parsing of `<tool_call>`-as-text anywhere in `mailbot_api/`** (grep-verified) — this is the mechanism behind `tool_calls_count=0`.
+- `tool_calls_count` is recorded to `router_calls` at `router.py:2514` as `len(tool_response.tool_calls)`; `0` (not NULL) marks "a tool-call dispatch that produced no calls."
+- **No system prompt or tool-format/selection instruction is injected anywhere on the qwen tool-call path** — `main.py` forwards the client's messages/tools verbatim; `router.py:2442-2459` only concatenates system messages the client already sent; the adapter adds no format guidance. Natural insertion seams: `main.py` `_dispatch_tool_call_from_request` (`:760-848`) or `router.py` system-prompt assembly (`:2442-2459`).
+- **The chat tool list comes from the client request (`request.tools`), NOT a server-side curated MCP set** — the 26 verbs are registered in `mcp_server.py` (`_EXPECTED_TOOL_COUNT = 26`, `:1117`) as a separate HTTP surface. So "narrow the surface / drop `send_message`" is a **`hermes-config/` allow-list lever** (extending 10.6.5's `platform_toolsets.discord`), NOT a `mailbot_api` one.
+- **Temperature 0 is already load-bearing** for argument fidelity (`models.py:596-628`, a prior probe saw a non-zero temp corrupt `ABC123`→`ABC132`). Selection/format failures therefore persist *despite* temp 0 — turning temp down further is not the lever.
+- Existing tool-call test surface: `tests/unit/router/test_ollama_adapter.py` — every test feeds **structured** `tool_calls`; `test_call_with_tools_text_only_response` (`:301`) asserts empty for a content-only response but does **not** parse `<tool_call>` text. That gap is what the fix stories must fill.
+
+**FRs covered:** none net-new — makes the already-reached cheap-lane tool-call path (Epic 10.6) actually *fire* a tool from a real user turn.
+**NFRs:** NFR-COST-\* (cheap local lane must carry real tool-driven work), NFR-PERF-1 (chat p95 preserved; temp-0 fidelity load-bearing), NFR-PRIV-\* (sensitivity/authorization gates preserved through any new reach — a faithful tool-call must not bypass the propose/grant/drain pipeline).
+**AR-\*:** AR-PAT-4 (errors-as-data preserved), OllamaAdapter tool-call parse/translate seam, Router capability-gate + dispatch seam, Hermes tool-surface/persona reach.
+
+**Epic 10.7 Story List** (sprint-status keys use hyphen notation; dotted `10.7.N` in headers for readability):
+
+| # | Story | Priority | Headline | MANDATORY-CR | Real-spend? |
+| --- | --- | --- | --- | --- | --- |
+| 10.7.0 | **Characterization spike** — is the mis-select + `<tool_call>`-as-text a harness-fixable problem or a Qwen-3B ceiling? | **HIGHEST — gates 10.7.1–10.7.4** | qwen picks `send_message` over `find_emails` + emits calls as text at temp 0 on a clean surface (F-10-6-5-W1) | §5.12 self-audit (spike, no product code) | small (live qwen probes, $0 local; any Anthropic A/B is minimal) |
+| 10.7.1 | *(PROVISIONAL)* Tool-call-as-text **rescue parser** — promote a `<tool_call>{…}</tool_call>` content block to a structured tool call when `message["tool_calls"]` is empty | High *(spike may merge/drop)* | `models.py:695-724` decides tool-call presence only from structured `tool_calls`; text-emitted calls → `tool_calls_count=0` | high (adapter parse seam) | No ($0) |
+| 10.7.2 | *(PROVISIONAL)* Tool-format + selection **system prompt** — inject a qwen-specific instruction on HOW to emit calls + prefer MailBot verbs | High *(spike may merge with 10.7.1)* | no system-prompt/format instruction exists on the qwen tool-call path (recon-confirmed) | high (dispatch seam) | small (A/B probe) |
+| 10.7.3 | *(PROVISIONAL)* **Allow-list trim** toward `mailbot-api`-only — remove the mis-pickable `send_message` from the Discord surface | Medium *(only if spike shows surface-narrowing helps selection)* | `messaging` toolset still exposes a mis-pickable `send_message` peer to `find_emails` | high (hermes-config seam, drift-tested) | No ($0) |
+| 10.7.4 | *(CONTINGENT — fires only if 10.7.0 finds a 3B ceiling)* **Swap the local tool-calling model** — evaluate a bigger/better local model that still runs $0 on the local lane | High *(if fired)* | Qwen-3B may be structurally too small for reliable multi-tool selection/format even with harness help | high (adapter/registry + re-validate cost thesis) | No ($0 — stays local) |
+
+Story files to be context-engineered at create-story time. Only 10.7.0 is firm; 10.7.1–10.7.4 are **provisional** and re-scoped by the spike's finding (per Adam's 2026-07-15 scoping decision).
+
+**Sequencing (within the epic):** **10.7.0 (the spike) is HIGHEST and gates everything.** Its go/no-go finding decides the shape of the rest:
+- *Harness-fixable* → 10.7.1 (rescue parser) and/or 10.7.2 (system prompt) — the spike may show a system prompt alone makes qwen emit structured calls, collapsing 10.7.1 into 10.7.2, or that a rescue parser is the robust belt-and-suspenders regardless. 10.7.3 fires only if surface-narrowing measurably improves selection.
+- *3B ceiling* → 10.7.4 (swap local model) replaces the harness-surgery stories. **The cost thesis stays intact** — the fallback is still a *local, $0* model (a larger Qwen or a function-calling-tuned local model), not a jump to a paid API floor (memory `project_local_model_is_safety_net.md`). If even that fails, the spike surfaces it to Adam as a founding-assumption decision (bigger local model vs. accept haiku-as-floor vs. GPU host at CP-1) rather than dev auto-resolving it.
+
+**Discipline (carried from Epics 10.5/10.6):** MANDATORY-CR on every product-code story with **reviewer model ≠ dev model** (memory `feedback_reviewer_model_substitution`, held 6/6 in Epic 10.6). Boundary-honesty — file residuals rather than editing config to look busy. Measure-before-fix — 10.7.0 mirrors 10.6.4's `num_ctx`-red-herring discipline (characterize the root cause before committing to a fix approach). The temp-0 argument-fidelity invariant (`models.py:596-628`) must not be traded away for selection/format gains without a walk proving arguments still round-trip exactly.
+
+**Done-flip gate (Epic 10.7, 4 clauses):**
+
+1. Story 10.7.0 (spike) = done, with a recorded go/no-go finding and a recommended fix path (harness vs. model-swap).
+2. All spike-selected fix stories (a subset/variant of 10.7.1–10.7.4) status=done in sprint-status.yaml.
+3. **Faithful tool invocation REACHED (load-bearing)** — a real Discord "find my unread emails" turn produces a `router_calls` row with `model_chosen=qwen2.5:*` **and `tool_calls_count ≥ 1`** invoking `find_emails` (or a correct MailBot verb), not `send_message`, not a text-emitted call. **This discharges Epic 10.6 clause 3b** and closes the cost thesis's final gate. Adam-hands-on live walk (L3), $0.
+4. **Safety preserved through the new fidelity** — the sensitivity/authorization pipeline (propose_action → grant → drain, F28 gate) still fires on a now-faithful qwen tool call; a reversible action served by qwen executes while an irreversible one prompts for confirmation (the safety-net design, live). No fidelity fix bypasses the Cluster-B confirmation machinery (memory `project_local_model_is_safety_net.md`).
+
+Clause 3 is the load-bearing one — it is Epic 10.6 clause 3b, now the whole reason this epic exists. Epic 10.6 asked "does the cheap lane get the turn?"; Epic 10.7 asks "does the cheap lane actually *do* the turn?" — the founding cost thesis's last unanswered question.
