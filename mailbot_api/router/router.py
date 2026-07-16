@@ -130,6 +130,71 @@ _API_BOUND_MODEL_RE = re.compile(r"^claude-(haiku|opus|sonnet)\b")
 _TOOL_CAPABLE_LOCAL_MODEL_RE = re.compile(r"^qwen2\.5:")
 
 
+# Story 10.7.2 — qwen-only tool-call system-prompt instruction (DEFENSIVE).
+#
+# SCOPE / STANDING (READ BEFORE EDITING): this is DEMOTED to optional /
+# belt-and-suspenders by the 10.7.0 characterization spike (§4.4,
+# `10-7-0-spike-finding.md`). The spike measured a system prompt adding ZERO on
+# a GOOD tool description (leaf selection 20/20 with or without a prompt) and
+# recovering NOTHING on the flat-26 surface (0/N even with a strong enumerating
+# prompt). The LOAD-BEARING fix was the `find_emails` description rewrite
+# (Story 10.7.5, shipped); getting qwen to a small menu is Story 10.7.3's
+# surface-trim. This instruction exists only so a residual on the real Hermes
+# chat path has a cheap $0 lever to lean on — it is NOT the clause-3 fix.
+#
+# Deliberately SHORT: a 3B/Q4 model degrades with long prompts, and the spike
+# saw strong enumerating prompts add nothing while crowding context. It nudges
+# two things: (a) emit a STRUCTURED tool call (never print `<tool_call>{…}`
+# as literal text — the FORMAT defect the 10.7.1 rescue parser also guards),
+# and (b) prefer the concrete MailBot inbox verbs over generic/notification
+# tools for an email request. Injected ONLY on the local qwen tool-call path
+# (`_TOOL_CAPABLE_LOCAL_MODEL_RE`); the API-bound (`claude-*`) path is untouched.
+_QWEN_TOOLCALL_SYSTEM_INSTRUCTION = (
+    "You have tools available. When the user asks you to do something a tool "
+    "can do, CALL THE TOOL by emitting a structured function call — do not "
+    "write the call out as text (never print a <tool_call>{...}</tool_call> "
+    "block in your reply). For a request about the user's email or inbox "
+    "(finding, reading, listing, searching, counting mail), prefer the "
+    "email-reading tools (such as find_emails) over generic messaging or "
+    "notification tools. Pass the tool arguments exactly as given; do not "
+    "alter ids or other values."
+)
+
+# CR-6 Story 6-9 system-block separator. Shared by the client-system-message
+# concatenation in `dispatch_tool_call` AND the qwen-instruction composition
+# below so the two never drift (10.7.2 review [Patch]): if the join separator
+# changes, both sites move together.
+_SYSTEM_BLOCK_SEPARATOR = "\n\n"
+
+
+def _compose_qwen_toolcall_system_text(model: str, system_text: str) -> str:
+    """Story 10.7.2 — compose the qwen instruction into ``system_text`` for the
+    local tool-call path only.
+
+    Returns ``system_text`` UNCHANGED for any non-qwen model (the API-bound
+    ``claude-*`` path is byte-for-byte unaffected). For a ``qwen2.5:*`` model
+    the qwen instruction is APPENDED after the client-sent system blocks,
+    joined with the same ``_SYSTEM_BLOCK_SEPARATOR`` the caller used to
+    concatenate them (CR-6 Story 6-9 contract) — appended, not prepended, so
+    the client's SOUL/AGENTS/SKILL persona leads and the mechanical tool-call
+    nudge trails (a trailing instruction reads as the most-recent, operative
+    directive to the model without displacing the persona framing). An empty
+    OR whitespace-only client ``system_text`` yields the instruction alone —
+    the ``.strip()`` truthiness test (10.7.2 review [Patch]) prevents a leading
+    blank-line artifact when the client sends an empty/all-whitespace system
+    message.
+
+    Gated on ``_TOOL_CAPABLE_LOCAL_MODEL_RE`` (qwen-only), NOT
+    ``_model_supports_tool_calls`` — the latter is also True for ``claude-*``
+    and would wrongly inject on the API path.
+    """
+    if _TOOL_CAPABLE_LOCAL_MODEL_RE.match(model) is None:
+        return system_text
+    if system_text.strip():
+        return system_text + _SYSTEM_BLOCK_SEPARATOR + _QWEN_TOOLCALL_SYSTEM_INSTRUCTION
+    return _QWEN_TOOLCALL_SYSTEM_INSTRUCTION
+
+
 def _model_supports_tool_calls(model: str) -> bool:
     """Story AI-1 — CAPABILITY predicate for tool-calling (capability ONLY).
 
@@ -2456,7 +2521,15 @@ async def dispatch_tool_call(
                 # else content is None or non-string — silently skip; the
                 # validator already kept this message in the list, just
                 # don't contribute to system_text.
-        system_text = "\n\n".join(system_parts)
+        system_text = _SYSTEM_BLOCK_SEPARATOR.join(system_parts)
+        # Story 10.7.2 (DEFENSIVE, qwen-only): compose the qwen tool-call
+        # instruction into system_text for the local tool-capable path. A no-op
+        # for `claude-*` (returns system_text unchanged). `model` here is the
+        # effective, post-degraded-demotion target (see :1964-1967), so a
+        # demotion landing on qwen correctly receives the instruction. See the
+        # constant's docstring for why this is belt-and-suspenders, not the
+        # load-bearing clause-3 fix (10.7.0 §4.4).
+        system_text = _compose_qwen_toolcall_system_text(model, system_text)
         # Filter system-role messages from the messages list — Anthropic
         # carries system as a separate top-level field, not in messages.
         non_system_messages = [

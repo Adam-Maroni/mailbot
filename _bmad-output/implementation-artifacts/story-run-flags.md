@@ -2,6 +2,49 @@
 
 This file collects flags raised by `autonomous-story-run` runs. One block per invocation.
 
+## Story 10-7-2 (tool-format + selection system prompt — qwen dispatch seam) — 2026-07-16
+
+**Headline:** Defensive qwen-only tool-call system-prompt injection at the `dispatch_tool_call` seam (`_QWEN_TOOLCALL_SYSTEM_INSTRUCTION` + `_compose_qwen_toolcall_system_text`, gated `_TOOL_CAPABLE_LOCAL_MODEL_RE`, injected into `system_text` at the assembly site; `claude-*` path byte-for-byte unchanged). Belt-and-suspenders per the 10-7-0 spike §4.4 (a system prompt adds ZERO on a good description — 10.7.5's rewrite was the load-bearing lever). Ships **ON-by-default on a zero-measured-benefit / zero-measured-cost basis** (NOT a symmetric strong pass). Does NOT discharge Epic 10.7 clause 3 (the live-Discord qwen→`find_emails` turn), owed at the epic live walk.
+
+**Dev model:** claude-opus-4-8[1m]; **Review model:** claude-sonnet-5 (≠ dev, [[feedback_reviewer_model_substitution]]).
+
+**Live measurement (Task 4, AC-4):** drove the running `mailbot-ollama` qwen directly at temp 0 with the PRODUCTION instruction (`scratch/qwen_toolcall_10_7_2_measure.py`, imports the real constant). Selection **20/20** on the leaf surface with 10.7.5's shipped `find_emails` description — no regression vs the description-only baseline. Adversarial Graph-style id round-trip **20/20 exact** — the load-bearing temp-0 fidelity invariant ([[project_local_tool_caller_gates_epic_7]]) is preserved with the instruction present. Evidence: `10-7-2-measurement-evidence.md`.
+
+**Review rounds:** 1 (sonnet-5). 5 Patch findings → **5/5 applied (100%)** + 3 Defers (all correctly out-of-scope). Fixes: (1) added `test_budget_degraded_demotion_to_qwen_receives_instruction` (the exact scenario the late-call-site gating exists for — degraded haiku→qwen still gets the instruction); (2) `if system_text:` → `if system_text.strip():` so an all-whitespace client system message yields instruction-only (no leading blank-line junk) + test; (3) 7 direct unit tests on the pure helper pinning the regex boundary (case-sensitive, colon-required, empty-model no-op); (4) extracted `_SYSTEM_BLOCK_SEPARATOR = "\n\n"` so the caller-join + helper can't drift; (5) rewrote the AC-6 disposition to state "zero-benefit/zero-cost, ship anyway for defensive coverage of the untested regime" rather than implying a symmetric strong pass. Defers: adversarial prompt-injection (codebase-wide property, not introduced here); stale `1964-1967` line-cite (underlying post-demotion claim independently verified true); test-path spec-text vs actual `tests/integration/` mismatch (cosmetic). No round-2 — all fixes mechanical/low-risk.
+
+**Deferred / accepted items:** none owed by this story (the 3 CR Defers are genuine out-of-scope, not deferred debt).
+
+**Gate verdicts:** 2.3.5 pre-review — PASS (5 sections + 11 posture checks; §5.12 = MANDATORY-CR criterion 6, load-bearing dispatch seam) · 2.4.4 Dev Agent Record — PASS · 2.4.5 UI-scope — N/A (no graphical frontend) · 2.4.6 File-List-vs-git — PASS (both code paths `git ls-files`-tracked; 3 docs staged at 2.6) · 2.4.7 Middleware-Real-Bootstrap (Router reframing) — PASS: the 4 seam tests drive the REAL `dispatch_tool_call` with real SQLite (`apply_pending_migrations`) + real policy snapshot + registered adapters — only the adapter boundary is a spy (the sanctioned seam), not a mocked `ask_router` · 2.4.8 verbose-row truncation — PASS.
+
+**Step 2.5 dev-env:** N/A — no `<dev-env-skill>` configured; the in-process Router seam change is validated by real-Router integration tests + the live-Ollama measurement (which exercised the running mailbot-ollama + mailbot-api stack).
+
+**4 gates (post-CR):** ruff clean · mypy `--strict mailbot_api` clean (134 files) · boundary exit 0 · pytest **1970 passed / 3 skipped / 3 deselected** (+13 net vs the 1957 pre-story baseline; +9 CR-driven tests this round).
+
+**Scope flag (INFO, not a defect):** 10-7-2 was DEMOTED to optional/defensive by the 10-7-0 spike before this run; it was run at explicit user request. The measurement confirms the spike's prediction (a system prompt adds nothing on a good description) and the story ships honestly framed as defensive scaffolding under clause 3. Empirical clause-3 order still: 10.7.1 (shipped) → 10.7.3 (surface trim, backlog) → Adam Discord re-walk.
+
+**Permission prompts:** Zero observed. No permission log configured.
+
+**Staging:** 6 story-scoped files staged (router.py + test file + story `.md` + measurement `.md` + pre-review `.md` + sprint-status). `.claude/settings.json` + `10-7-0-spike-finding.md` (pre-existing background) + `.autonomous-run-active.json` (run-state) left unstaged; `scratch/qwen_toolcall_10_7_2_measure.py` gitignored. **Nothing committed.**
+
+**#yolo mode:** active through Phase 2; OFF as of the Phase 3.3 final report.
+
+**No CRITICAL / WARNING flags raised.**
+
+### Story 10-7-2 Manual Verification — 2026-07-16 (DELEGATED: "Can you run it yourself?")
+
+**Verdict: PASS (L3, live).** Backend Router-seam change, no Discord/persona surface → L3-live is complete verification, nothing Adam-only. Drove all 6 AC checkpoints; AC-1/AC-2/AC-3 against the REAL `dispatch_tool_call` seam (fresh scratch harness, independent of the committed tests), AC-4 as a fresh live re-measurement against the running `mailbot-ollama` qwen.
+
+- **CP-1 [AC-1] — PASS(L3).** Real `dispatch_tool_call` (real SQLite + real policy snapshot, only the adapter is a spy): a `qwen2.5:*` dispatch's `system` kwarg carries `_QWEN_TOOLCALL_SYSTEM_INSTRUCTION`; a `claude-*` (force-override haiku) dispatch does NOT — its `system` is the client block verbatim (`"SOUL"`). Injection is qwen-only, API path byte-for-byte unchanged.
+- **CP-2 [AC-2] — PASS(L3).** persona blocks (`SOUL`+`AGENTS`) preserved AND the instruction appended AFTER them (index check); zero-client-system → instruction-only; whitespace-only client system → instruction-only with no leading blank-line junk (the `.strip()` guard).
+- **CP-3 [AC-3] — PASS.** `_compose_qwen_toolcall_system_text` has exactly one call-site (router.py:2532, inside `dispatch_tool_call`); zero references in `ask_router` / the non-tool `call()` path.
+- **CP-4 [AC-4] — PASS(L3).** Fresh independent direct-drive of the running qwen at temp 0 with the PRODUCTION instruction: selection **20/20** (`find_emails`, no regression vs description-only baseline), adversarial Graph-id round-trip **20/20 exact** (`AAMkAGI2TG93AAA=ABC123XyZ789` byte-identical). Reproduces the dev-pass measurement independently — the instruction is neutral-on-selection + fidelity-safe.
+- **CP-5 [AC-5] — PASS.** 13/13 committed seam tests green.
+- **CP-6 [AC-6] — PASS.** Disposition honestly framed (zero-benefit/zero-cost, defensive under clause 3), not over-claimed.
+
+**Honesty tag:** CP-1/CP-2/CP-4 driven live (real seam + real ollama); CP-3/CP-5/CP-6 verified by grep/test-run/artifact-read. Containers healthy (`mailbot-api` up 2d, `mailbot-ollama` up 10d, qwen `UNTIL=Forever`). **Per-AC:** AC-1 PASS(L3) · AC-2 PASS(L3) · AC-3 PASS · AC-4 PASS(L3) · AC-5 PASS · AC-6 PASS. Story stays **done**. Clause 3 (live Discord qwen→`find_emails` turn) stays OPEN as forecast — this story is defensive scaffolding under it, not its closer.
+
+---
+
 ## Story 10-7-1 (`<tool_call>`-as-text rescue parser — FORMAT channel) — 2026-07-16
 
 **Headline:** STRICT `<tool_call>`-as-text rescue added to `OllamaAdapter.call_with_tools`. When structured `message["tool_calls"]` is empty and content holds a `<tool_call>{…}</tool_call>` block, a clean `name`+`arguments` block is promoted to a real `OpenAIToolCall` (`tool_calls_count≥1`, shape-identical downstream); a malformed sibling-key block (WALK-10-7-5-F1 `memory` shape) is STRICTLY declined + logged, never fabricated ([[project_local_model_is_safety_net]]). FORMAT channel only.
