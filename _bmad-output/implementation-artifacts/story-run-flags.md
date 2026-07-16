@@ -2,6 +2,51 @@
 
 This file collects flags raised by `autonomous-story-run` runs. One block per invocation.
 
+## Story 10-7-1 (`<tool_call>`-as-text rescue parser — FORMAT channel) — 2026-07-16
+
+**Headline:** STRICT `<tool_call>`-as-text rescue added to `OllamaAdapter.call_with_tools`. When structured `message["tool_calls"]` is empty and content holds a `<tool_call>{…}</tool_call>` block, a clean `name`+`arguments` block is promoted to a real `OpenAIToolCall` (`tool_calls_count≥1`, shape-identical downstream); a malformed sibling-key block (WALK-10-7-5-F1 `memory` shape) is STRICTLY declined + logged, never fabricated ([[project_local_model_is_safety_net]]). FORMAT channel only.
+
+**Dev model:** claude-opus-4-8[1m]; **Review model:** claude-sonnet-5 (≠ dev, [[feedback_reviewer_model_substitution]]).
+
+**Review rounds:** 1. 9 findings → **8 FIXED + 1 ACCEPT-WITH-RATIONALE (89% applied, ≥70% ✓).** The review earned its keep: caught a **ReDoS** (backtracking regex `<tool_call>\s*(.*?)\s*</tool_call>` DOTALL → ~64s on 20k unclosed prefixes; replaced with a linear `str.find` scan), `NaN`/`Infinity` silently accepted by `json.loads` (now `parse_constant`-rejected → decline), `.text` retaining raw `<tool_call>` markup on promote (now stripped for the AC-1 shape-identity claim), and a decline-log field logging the whole content instead of the matched block (now scoped + redaction-regression-tested). Also declined the misleading "log the rest" multi-block claim (corrected to honest single-call semantics). ACCEPT: `id="call_0"` cross-turn collision is a pre-existing whole-adapter property (structured path emits `call_{i}` identically), out of scope for the format channel.
+
+**Deferred / accepted items:**
+- CR F6 `id="call_0"` cross-turn collision — ACCEPT-WITH-RATIONALE (pre-existing whole-adapter property; the rescue matches structured-path behavior exactly). Latent whole-adapter concern, not a regression introduced here.
+
+**Gate verdicts:** 2.3.5 pre-review — PASS (5 sections + 11 posture sub-checks; §3 non-empty; §4 dispositions; §5.12 = MANDATORY-CR criterion 6) · 2.4.4 Dev Agent Record — PASS · 2.4.5 UI-scope — N/A (no graphical frontend) · 2.4.6 File-List-vs-git — PASS (both source paths `git ls-files` exit 0) · 2.4.7 Middleware-Real-Bootstrap (Router reframing) — PASS: adapter parse method (no new verb / `ask_router` site / state-changing write); exercised via real `call_with_tools` + fake-ollama-client tests (the established seam pattern) · 2.4.8 verbose-row truncation — PASS.
+
+**Step 2.5 dev-env:** N/A — no `<dev-env-skill>` configured; pure response-parse function fully exercised by the green suite.
+
+**4 gates (post-CR):** ruff clean · mypy `--strict mailbot_api` clean (134 files) · boundary exit 0 · pytest **1957 passed / 3 skipped / 3 deselected** (+15 net vs 1942 baseline; +5 CR-driven tests).
+
+**Scope-fence flag (INFO):** Clause 3 (Epic 10.7 done-flip, load-bearing) is NOT claimed closed. This fixes only the FORMAT channel. A live Discord `find_emails` turn with `tool_calls_count≥1` still requires **10.7.3** (surface trim) + an **Adam re-walk**. Empirical order: 10.7.1 → 10.7.3 → (10.7.5 shipped) → re-walk.
+
+**Permission prompts:** Zero observed. No permission log configured.
+
+**Staging:** 5 story-scoped files staged (models.py + test_ollama_adapter.py + story `.md` + pre-review `.md` + sprint-status). `.claude/settings.json` + `10-7-0-spike-finding.md` (pre-existing background) + `.autonomous-run-active.json` (run-state) left unstaged. **Nothing committed.**
+
+**#yolo mode:** active through Phase 2; OFF as of the Phase 3.3 final report.
+
+**No CRITICAL / WARNING flags raised.**
+
+### Story 10-7-1 Manual Verification — 2026-07-16 (DELEGATED: "Can you run it yourself?")
+
+**Verdict: PASS (L3, live).** Pure adapter parser, no Discord/persona surface → L3-live is complete verification, nothing Adam-only. All 7 ACs driven directly:
+
+- **CP-1 [AC-1] promote — PASS(L3).** Direct-drive `_rescue_text_tool_call` + full `call_with_tools`: a well-formed `find_emails` block promotes to one call, args exact (`{"filter":{"unread":true}}`), synthesized `id=call_0`, `finish_reason=tool_calls`. Count seam: `len(tool_calls)=1` → `router.py:2514` `tool_calls_count=1` (was 0 in the live walk).
+- **CP-2 [AC-2] decline on ground-truth — PASS(L3).** The EXACT WALK-10-7-5-F1 wire shape (`<tool_call>{"name":"memory","action":"add","target":"user","content":"unread_emails"}</tool_call>`, the block that died as `router_calls id=15022`) → **DECLINED (None)**, `tool_calls_count=0`, `finish_reason=stop`, `tool_call.rescue.declined` WARNING fired. Never fabricated toward action (safety-net direction proven on the real shape).
+- **CP-3 [AC-3] no over-trigger — PASS(L3).** Plain "I can't do that." → zero calls.
+- **CP-4 [AC-4] structured wins — PASS.** (unit) content not scanned when structured array non-empty; no double-count.
+- **CP-5 [AC-5] fidelity — PASS(L3).** Long Graph id round-trips byte-exact through the rescue; temperature untouched.
+- **CP-6 [AC-6] observability — PASS(L3).** Both events captured live: `tool_call.rescue.promoted` (INFO, tool_name=find_emails) + `tool_call.rescue.declined` (WARNING, raw_block scoped to the matched block, F7).
+- **CP-7 [AC-7] scope fence — PASS.** Clause 3 explicitly NOT claimed; owed 10.7.3 + Adam re-walk.
+
+**Bonus CR-fix live confirmation:** F3 ReDoS — 20k unclosed `<tool_call>` prefixes returned in **0.05 ms** (linear `str.find`; was ~64s with the backtracking regex). F5 — `NaN` argument DECLINED. F2 — `.text` stripped of markup on promote (`'Let me look.'` residual prose only).
+
+15/15 rescue unit tests PASSED. **Story stays done.** Epic 10.7 clause 3 stays OPEN as forecast (needs 10.7.3 surface-trim + Adam Discord re-walk).
+
+---
+
 ## Story 10-7-5 (find_emails tool-description rewrite — jargon→natural-language) — 2026-07-15
 
 **Headline:** Rewrote `find_emails` + 4 sibling read-verb MCP tool descriptions AND the server-level `FastMCP(instructions=...)` read-verb clause from implementation jargon ("email projections… Rule J") to natural language — the Story 10.7.0 §4.4-measured PRIMARY $0 fix for local-qwen tool selection (0/20 → 20/20 at the 5-tool leaf, direct-ollama drive). Description/instruction strings only; no schema/wiring/behavior change.

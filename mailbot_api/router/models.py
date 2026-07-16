@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import Any, Literal, Protocol
 
@@ -25,6 +26,12 @@ import anthropic
 import ollama
 from pydantic import BaseModel, ConfigDict
 
+from mailbot_api.observability._redaction import (
+    BEARER_TOKEN_RE,
+    SECRET_FILE_RE,
+    SK_KEY_RE,
+    URL_TOKEN_QUERY_RE,
+)
 from mailbot_api.router.errors import (
     ChatCompletionToolChoice,
     ChatCompletionToolChoiceObject,
@@ -33,6 +40,154 @@ from mailbot_api.router.errors import (
     OpenAIToolCallFunction,
     sanitize_error,
 )
+
+_log = logging.getLogger(__name__)
+
+
+def _sanitize_text(raw: str) -> str:
+    """Redact secrets from a raw string for logging (Story 10-7-1).
+
+    ``sanitize_error`` only accepts a ``BaseException``; the declined-block log
+    records qwen's raw emitted text (a ``str``), so apply the same shared
+    redaction regexes (``observability._redaction``) in the same order — Bearer
+    tokens, ``sk-`` keys, URL query tokens, secret file paths — and collapse
+    newlines to a single line. Mirrors ``sanitize_error``'s redaction body.
+    """
+    out = BEARER_TOKEN_RE.sub("[REDACTED_BEARER]", raw)
+    out = SK_KEY_RE.sub("[REDACTED_SK_KEY]", out)
+    out = URL_TOKEN_QUERY_RE.sub(r"\1[REDACTED_QUERY_TOKEN]", out)
+    out = SECRET_FILE_RE.sub("[REDACTED_PATH]", out)
+    return out.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "; ")
+
+# Story 10-7-1: Qwen 2.5 3B on the Hermes chat-template path sometimes emits a
+# tool call as a literal `<tool_call>{…}</tool_call>` text block inside
+# message.content instead of the structured message.tool_calls array (the call
+# is chosen but silently no-ops, tool_calls_count=0).
+_TOOL_CALL_OPEN = "<tool_call>"
+_TOOL_CALL_CLOSE = "</tool_call>"
+
+
+def _extract_first_tool_call_block(text: str) -> str | None:
+    """Return the FIRST ``<tool_call>…</tool_call>`` block (opener+inner+closer,
+    inclusive) via a linear string scan, or ``None`` if there is no complete
+    block.
+
+    Story 10-7-1 CR (F3/F4): a regex ``<tool_call>\\s*(.*?)\\s*</tool_call>``
+    with DOTALL backtracks quadratically on many unclosed ``<tool_call>``
+    prefixes (measured ~64s on 20k prefixes) — a ReDoS on a live path fed by an
+    unpredictable local 3B model. ``str.find`` is linear and cannot backtrack.
+    We take the FIRST opener and the FIRST closer after it (single-call
+    semantics). A stray ``</tool_call>`` substring inside a JSON string value
+    still truncates the block early → the inner JSON fails to parse → STRICT
+    decline (the safe direction), same as the regex approach but without the
+    catastrophic-backtracking cost.
+    """
+    open_idx = text.find(_TOOL_CALL_OPEN)
+    if open_idx == -1:
+        return None
+    inner_start = open_idx + len(_TOOL_CALL_OPEN)
+    close_idx = text.find(_TOOL_CALL_CLOSE, inner_start)
+    if close_idx == -1:
+        return None
+    return text[open_idx : close_idx + len(_TOOL_CALL_CLOSE)]
+
+
+def _reject_json_constant(_token: str) -> object:
+    """``json.loads`` ``parse_constant`` hook (Story 10-7-1 CR F5).
+
+    Python's ``json`` accepts the non-standard tokens ``NaN`` / ``Infinity`` /
+    ``-Infinity`` by default. For the STRICT rescue those are malformed values
+    (they would re-serialize into a non-JSON-standard ``arguments`` string and
+    contradict the wrong-shaped-call-declines intent), so raise to force a
+    decline.
+    """
+    raise ValueError("non-standard JSON constant rejected by strict rescue")
+
+
+def _strict_json_object(raw: str) -> dict[str, Any] | None:
+    """Parse ``raw`` as a JSON object, STRICTLY. Returns the dict, or ``None`` if
+    it is not valid standard JSON, not an object, or contains
+    ``NaN``/``Infinity`` (CR F5). Never raises (AR-PAT-4)."""
+    try:
+        obj = json.loads(raw, parse_constant=_reject_json_constant)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    return obj
+
+
+def _rescue_text_tool_call(text: str) -> OpenAIToolCall | None:
+    """Story 10-7-1 — STRICT rescue of a `<tool_call>`-as-text block.
+
+    When qwen emits its tool call as literal text in ``message.content`` rather
+    than the structured ``message.tool_calls`` array, promote the FIRST
+    well-formed ``<tool_call>{…}</tool_call>`` block to a real ``OpenAIToolCall``
+    that is byte-shape-identical to a natively-structured one (so everything
+    downstream — ``router.py`` ``tool_calls_count``, the drain/gate pipeline — is
+    unchanged).
+
+    STRICT tolerance (Adam architectural decision 2026-07-15): promote ONLY a
+    clean call — a non-empty ``name`` and either a dict ``arguments`` (or a JSON
+    string that parses to a dict) or NO ``arguments`` key at all (→ empty args).
+    A malformed block — stray sibling keys instead of a proper ``arguments``
+    object (the real walk shape ``{"name":"memory","action":"add",…}``) — is
+    NOT promoted. Fabricating an ad-hoc ``arguments`` object from a
+    half-hallucinated block would push ambiguous 3B output *toward* action
+    through propose→grant→drain, the wrong failure direction for the local
+    safety-net lane. A wrong-shaped call is worse than no call; selection is
+    10.7.3's job, not this parser's.
+
+    Returns the promoted ``OpenAIToolCall`` on success, or ``None`` when there is
+    no block or the block is malformed. Never raises across the adapter boundary
+    (AR-PAT-4: errors-as-data). The caller is responsible for logging the
+    promote/decline telemetry.
+    """
+    block = _extract_first_tool_call_block(text)
+    if block is None:
+        return None
+    inner = block[len(_TOOL_CALL_OPEN) : -len(_TOOL_CALL_CLOSE)]
+    obj = _strict_json_object(inner)
+    if obj is None:
+        return None
+
+    name = obj.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None  # a call with no tool name is meaningless — decline
+
+    if "arguments" in obj:
+        arg_input = obj["arguments"]
+        # Some emitters nest arguments as a JSON STRING rather than a dict.
+        if isinstance(arg_input, str):
+            arg_input = _strict_json_object(arg_input)
+            if arg_input is None:
+                return None
+        if not isinstance(arg_input, dict):
+            return None  # arguments present but not an object — decline
+    else:
+        # No `arguments` KEY at all. This branch is where the walk's malformed
+        # shape lands: `{"name":"memory","action":"add","target":"user",
+        # "content":"unread_emails"}` has no `arguments` key, so its extra
+        # top-level keys (`action`/`target`/`content`) are `stray` and it is
+        # STRICTLY declined rather than fabricated into an arguments object.
+        # (CR F8: this is NOT the arguments-present path — a block WITH an
+        # `arguments` key never reaches here; it is validated above.) A bare
+        # `{"name": ...}` with no stray keys promotes with empty args.
+        stray = {k for k in obj if k != "name"}
+        if stray:
+            return None
+        arg_input = {}
+
+    try:
+        args_json = json.dumps(arg_input, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return None
+
+    return OpenAIToolCall(
+        id="call_0",
+        type="function",
+        function=OpenAIToolCallFunction(name=name, arguments=args_json),
+    )
 
 
 class AdapterResponse(BaseModel):
@@ -721,6 +876,42 @@ class OllamaAdapter:
                             arguments=args_json,
                         ),
                     )
+                )
+
+        # Story 10-7-1: fallback ONLY when the structured array yielded nothing.
+        # Structured calls always win (AC-4) — content is not scanned when they
+        # are present. When empty, attempt a STRICT rescue of a
+        # `<tool_call>`-as-text block that qwen emitted in message.content.
+        if not tool_calls and text and _TOOL_CALL_OPEN in text:
+            block = _extract_first_tool_call_block(text)
+            rescued = _rescue_text_tool_call(text)
+            if rescued is not None:
+                tool_calls.append(rescued)
+                # CR F2: strip the promoted block from `.text` so a rescued turn
+                # is shape-identical to a natively-structured one (whose `.text`
+                # is prose, not raw `<tool_call>` markup). `tool_calls` is
+                # authoritative for dispatch; `.text` becomes the residual prose.
+                if block is not None:
+                    text = text.replace(block, "", 1).strip()
+                _log.info(
+                    "rescued text-emitted tool call",
+                    extra={
+                        "event": "tool_call.rescue.promoted",
+                        "tool_name": rescued.function.name,
+                        "source": "message.content",
+                    },
+                )
+            else:
+                # CR F7: log the matched block (sanitized), not the whole
+                # content — a long prose response would otherwise truncate the
+                # actual offending block out of the 500-char window. Fall back to
+                # the full text only when no complete block was found.
+                _log.warning(
+                    "malformed <tool_call> block declined, not promoted",
+                    extra={
+                        "event": "tool_call.rescue.declined",
+                        "raw_block": _sanitize_text(block if block is not None else text)[:500],
+                    },
                 )
 
         tokens_in = int(raw_dict.get("prompt_eval_count") or 0)

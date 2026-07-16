@@ -907,3 +907,419 @@ async def test_keep_alive_is_top_level_kwarg_not_in_options(
     assert fake.last_kwargs is not None
     assert "keep_alive" not in fake.last_kwargs["options"]
     assert "keep_alive" in fake.last_kwargs
+
+
+# ---------------------------------------------------------------------------
+# Story 10-7-1 — `<tool_call>`-as-text rescue parser.
+#
+# Qwen 2.5 3B on the Hermes chat-template path sometimes emits its tool call as
+# a literal `<tool_call>{…}</tool_call>` text block inside `message.content`
+# instead of the structured `message.tool_calls` array — the call is chosen but
+# silently no-ops (tool_calls_count=0). These tests pin the STRICT rescue: a
+# well-formed block (non-empty `name` + a dict `arguments`, or no `arguments`)
+# is promoted to a real structured call; a malformed sibling-key block (the
+# actual walk shape) is DECLINED and logged, never fabricated into a call.
+# Ground truth: WALK-10-7-5-F1 / router_calls id=15022.
+# ---------------------------------------------------------------------------
+
+
+# Log-event names the rescue emits (mirrors router.py's extra={"event": ...}).
+_RESCUE_PROMOTED_EVENT = "tool_call.rescue.promoted"
+_RESCUE_DECLINED_EVENT = "tool_call.rescue.declined"
+
+
+def _canned_text_block_response(
+    *,
+    content: str,
+    prompt_eval: int = 40,
+    eval_count: int = 9,
+    done_reason: str = "stop",
+) -> dict[str, Any]:
+    """A response with NO structured tool_calls — the tool call (if any) lives
+    only as text inside `message.content` (the qwen `<tool_call>`-as-text bug)."""
+    return {
+        "model": "qwen2.5:3b-instruct-q4_K_M",
+        "created_at": "2026-07-16T00:00:00Z",
+        "message": {"role": "assistant", "content": content},
+        "done": True,
+        "done_reason": done_reason,
+        "prompt_eval_count": prompt_eval,
+        "eval_count": eval_count,
+    }
+
+
+def _log_events(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        getattr(r, "event", None)
+        for r in caplog.records
+        if getattr(r, "event", None) is not None
+    ]
+
+
+async def test_rescue_wellformed_text_block_is_promoted(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """AC-1: a well-formed `<tool_call>{name, arguments}</tool_call>` in content
+    (empty structured array) is promoted to one structured call, finish_reason
+    flips to `tool_calls`, and name + args are exact."""
+    block = (
+        '<tool_call>\n'
+        '{"name": "find_emails", "arguments": {"filter": {"unread": true}}}\n'
+        '</tool_call>'
+    )
+    fake = _FakeAsyncClient(response=_canned_text_block_response(content=block))
+    adapter = _adapter(monkeypatch, fake)
+
+    with caplog.at_level("INFO", logger="mailbot_api.router.models"):
+        result = await adapter.call_with_tools(
+            system="sys",
+            messages=[{"role": "user", "content": "find my unread emails"}],
+            tools=[_tool_def("find_emails")],
+        )
+
+    assert result.finish_reason == "tool_calls"
+    assert len(result.tool_calls) == 1
+    tc = result.tool_calls[0]
+    assert tc.type == "function"
+    assert tc.function.name == "find_emails"
+    assert isinstance(tc.function.arguments, str)
+    assert json.loads(tc.function.arguments) == {"filter": {"unread": True}}
+    assert tc.id  # synthesized id present
+    assert _RESCUE_PROMOTED_EVENT in _log_events(caplog)
+
+
+async def test_rescue_malformed_sibling_key_block_is_declined_and_logged(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """AC-2: the real walk shape — `name` plus stray sibling keys and NO
+    `arguments` object — is STRICTLY declined (not promoted) and logged. A
+    wrong-shaped call is worse than no call for the local safety-net lane."""
+    block = (
+        '<tool_call>\n'
+        '{"name": "memory", "action": "add", "target": "user", '
+        '"content": "unread_emails"}\n'
+        '</tool_call>'
+    )
+    fake = _FakeAsyncClient(response=_canned_text_block_response(content=block))
+    adapter = _adapter(monkeypatch, fake)
+
+    with caplog.at_level("WARNING", logger="mailbot_api.router.models"):
+        result = await adapter.call_with_tools(
+            system="sys",
+            messages=[{"role": "user", "content": "find my unread emails"}],
+            tools=[_tool_def("find_emails")],
+        )
+
+    assert result.tool_calls == []
+    assert result.finish_reason == "stop"
+    assert _RESCUE_DECLINED_EVENT in _log_events(caplog)
+    assert _RESCUE_PROMOTED_EVENT not in _log_events(caplog)
+
+
+async def test_rescue_plain_text_no_block_still_zero_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC-3: a content-only response with NO `<tool_call>` block continues to
+    return zero calls (the over-trigger guard). The rescue fires ONLY on a real
+    block."""
+    fake = _FakeAsyncClient(
+        response=_canned_text_block_response(content="I can't do that.")
+    )
+    adapter = _adapter(monkeypatch, fake)
+
+    result = await adapter.call_with_tools(
+        system="sys",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[_tool_def()],
+    )
+    assert result.tool_calls == []
+    assert result.finish_reason == "stop"
+    assert result.text == "I can't do that."
+
+
+async def test_rescue_structured_calls_win_content_not_scanned(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """AC-4: when structured `tool_calls` is non-empty, `content` is NOT scanned
+    even if it also holds a `<tool_call>` string — no double count, no override,
+    no rescue log."""
+    block = '<tool_call>{"name": "other_tool", "arguments": {}}</tool_call>'
+    response = _canned_tool_response(
+        name="archive_email",
+        arguments={"email_id": "ABC123"},
+        content=block,  # a stray text block alongside the real structured call
+    )
+    fake = _FakeAsyncClient(response=response)
+    adapter = _adapter(monkeypatch, fake)
+
+    with caplog.at_level("INFO", logger="mailbot_api.router.models"):
+        result = await adapter.call_with_tools(
+            system="sys",
+            messages=[{"role": "user", "content": "archive ABC123"}],
+            tools=[_tool_def()],
+        )
+
+    assert result.finish_reason == "tool_calls"
+    assert len(result.tool_calls) == 1  # not 2 — content not scanned
+    assert result.tool_calls[0].function.name == "archive_email"
+    assert _RESCUE_PROMOTED_EVENT not in _log_events(caplog)
+
+
+async def test_rescue_argument_fidelity_long_graph_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC-5: a rescued call's arguments round-trip EXACTLY, including a long
+    Graph-style id (mirrors the structured-path fidelity guard)."""
+    graph_id = (
+        "AAMkAGI1AAAt3AABGAAAAAABQ8h1i_QeRZ2GJHu8mMj7BwB9J_"
+        "AAAAAAEMAAB9J-AAAAAA=="
+    )
+    inner = json.dumps({"name": "move_email",
+                        "arguments": {"email_id": graph_id, "folder": "Archive"}})
+    block = f"<tool_call>{inner}</tool_call>"
+    fake = _FakeAsyncClient(response=_canned_text_block_response(content=block))
+    adapter = _adapter(monkeypatch, fake)
+
+    result = await adapter.call_with_tools(
+        system="sys",
+        messages=[{"role": "user", "content": "move it"}],
+        tools=[_tool_def("move_email")],
+    )
+    assert len(result.tool_calls) == 1
+    parsed = json.loads(result.tool_calls[0].function.arguments)
+    assert parsed["email_id"] == graph_id  # exact, no corruption
+    assert parsed["folder"] == "Archive"
+
+
+async def test_rescue_bare_block_no_arguments_promotes_empty_args(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC-1 edge: a bare `<tool_call>{"name": ...}</tool_call>` with NEITHER an
+    `arguments` key NOR stray sibling keys promotes with empty args `{}`."""
+    block = '<tool_call>{"name": "count_emails"}</tool_call>'
+    fake = _FakeAsyncClient(response=_canned_text_block_response(content=block))
+    adapter = _adapter(monkeypatch, fake)
+
+    result = await adapter.call_with_tools(
+        system="sys",
+        messages=[{"role": "user", "content": "how many"}],
+        tools=[_tool_def("count_emails")],
+    )
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].function.name == "count_emails"
+    assert json.loads(result.tool_calls[0].function.arguments) == {}
+
+
+async def test_rescue_arguments_as_json_string_is_reserialized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC-1 edge: some emitters nest `arguments` as a JSON STRING rather than a
+    dict. The rescue parses it to a dict then re-serializes to the compact wire
+    shape so downstream sees a normal `arguments` JSON string."""
+    inner = '{"name": "find_emails", "arguments": "{\\"limit\\": 5}"}'
+    block = f"<tool_call>{inner}</tool_call>"
+    fake = _FakeAsyncClient(response=_canned_text_block_response(content=block))
+    adapter = _adapter(monkeypatch, fake)
+
+    result = await adapter.call_with_tools(
+        system="sys",
+        messages=[{"role": "user", "content": "find 5"}],
+        tools=[_tool_def("find_emails")],
+    )
+    assert len(result.tool_calls) == 1
+    assert json.loads(result.tool_calls[0].function.arguments) == {"limit": 5}
+
+
+async def test_rescue_multiple_blocks_promotes_first_only(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """AC-1 edge: when content holds multiple `<tool_call>` blocks, only the
+    FIRST is promoted (single-call semantics — the structured Ollama path
+    likewise yields whatever the model emitted; the rescue intentionally does
+    not try to reconstruct a multi-call turn from text). The promote event fires
+    (a walk can see a rescue happened); extra blocks are simply not promoted.
+    CR F1: earlier wording claimed a per-extra log — there is none, and that was
+    the misleading claim; single-call semantics is the intended contract."""
+    block = (
+        '<tool_call>{"name": "find_emails", "arguments": {"filter": {}}}</tool_call>'
+        '<tool_call>{"name": "count_emails", "arguments": {}}</tool_call>'
+    )
+    fake = _FakeAsyncClient(response=_canned_text_block_response(content=block))
+    adapter = _adapter(monkeypatch, fake)
+
+    with caplog.at_level("INFO", logger="mailbot_api.router.models"):
+        result = await adapter.call_with_tools(
+            system="sys",
+            messages=[{"role": "user", "content": "find then count"}],
+            tools=[_tool_def("find_emails"), _tool_def("count_emails")],
+        )
+
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].function.name == "find_emails"
+    assert _RESCUE_PROMOTED_EVENT in _log_events(caplog)
+
+
+async def test_rescue_whitespace_and_newlines_inside_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC-1 edge: leading/trailing/interior whitespace and newlines around the
+    inner JSON must not defeat the rescue."""
+    block = (
+        "  <tool_call>\n\n"
+        '   {"name": "find_emails",\n     "arguments": {"filter": {"unread": true}}}\n'
+        "  </tool_call>  "
+    )
+    fake = _FakeAsyncClient(response=_canned_text_block_response(content=block))
+    adapter = _adapter(monkeypatch, fake)
+
+    result = await adapter.call_with_tools(
+        system="sys",
+        messages=[{"role": "user", "content": "find unread"}],
+        tools=[_tool_def("find_emails")],
+    )
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].function.name == "find_emails"
+    assert json.loads(result.tool_calls[0].function.arguments) == {
+        "filter": {"unread": True}
+    }
+
+
+async def test_rescue_empty_name_block_is_declined(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """AC-2 edge: a block whose `name` is empty/missing is declined (a call with
+    no tool name is meaningless), logged, not promoted."""
+    block = '<tool_call>{"name": "", "arguments": {"x": 1}}</tool_call>'
+    fake = _FakeAsyncClient(response=_canned_text_block_response(content=block))
+    adapter = _adapter(monkeypatch, fake)
+
+    with caplog.at_level("WARNING", logger="mailbot_api.router.models"):
+        result = await adapter.call_with_tools(
+            system="sys",
+            messages=[{"role": "user", "content": "do it"}],
+            tools=[_tool_def()],
+        )
+    assert result.tool_calls == []
+    assert result.finish_reason == "stop"
+    assert _RESCUE_DECLINED_EVENT in _log_events(caplog)
+
+
+# ---------------------------------------------------------------------------
+# Story 10-7-1 — code-review-driven hardening (CR round 1).
+# ---------------------------------------------------------------------------
+
+
+async def test_rescue_unclosed_prefix_is_fast_and_declines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CR F3 (ReDoS): a pathological input of many unclosed `<tool_call>`
+    prefixes must NOT catastrophically backtrack. The linear `str.find` scan
+    finds no closing tag → no block → zero calls, returning promptly. (We assert
+    behavior, not wall-clock; the point is the code path is O(n) `str.find`, not
+    a backtracking regex.)"""
+    content = "<tool_call>" * 20000  # no closing tag anywhere
+    fake = _FakeAsyncClient(response=_canned_text_block_response(content=content))
+    adapter = _adapter(monkeypatch, fake)
+
+    result = await adapter.call_with_tools(
+        system="sys",
+        messages=[{"role": "user", "content": "spam"}],
+        tools=[_tool_def()],
+    )
+    assert result.tool_calls == []
+    assert result.finish_reason == "stop"
+
+
+async def test_rescue_close_tag_inside_string_value_declines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CR F4: a literal `</tool_call>` inside a JSON string value truncates the
+    tag-anchored block early → invalid inner JSON → STRICT decline (safe
+    direction, not an over-promote)."""
+    block = '<tool_call>{"name": "find_emails", "arguments": {"note": "</tool_call>"}}</tool_call>'
+    fake = _FakeAsyncClient(response=_canned_text_block_response(content=block))
+    adapter = _adapter(monkeypatch, fake)
+
+    result = await adapter.call_with_tools(
+        system="sys",
+        messages=[{"role": "user", "content": "note it"}],
+        tools=[_tool_def("find_emails")],
+    )
+    # Truncated at the inner `</tool_call>` → inner JSON is `{"name": ...
+    # "note": "` which is invalid → decline, not a mangled promote.
+    assert result.tool_calls == []
+    assert result.finish_reason == "stop"
+
+
+async def test_rescue_nan_infinity_argument_is_declined(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CR F5: `json` accepts non-standard `NaN`/`Infinity` by default. STRICT
+    rescue must reject them (they would re-serialize into a non-JSON-standard
+    arguments string) → decline."""
+    for token in ("NaN", "Infinity", "-Infinity"):
+        block = f'<tool_call>{{"name": "find_emails", "arguments": {{"limit": {token}}}}}</tool_call>'
+        fake = _FakeAsyncClient(response=_canned_text_block_response(content=block))
+        adapter = _adapter(monkeypatch, fake)
+        result = await adapter.call_with_tools(
+            system="sys",
+            messages=[{"role": "user", "content": "find"}],
+            tools=[_tool_def("find_emails")],
+        )
+        assert result.tool_calls == [], f"{token} should have declined"
+        assert result.finish_reason == "stop"
+
+
+async def test_rescue_promote_strips_block_from_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CR F2: on a successful promote, the raw `<tool_call>` markup is stripped
+    from `.text` so a rescued turn is shape-identical to a natively-structured
+    one (whose `.text` is prose, not markup). Residual prose is preserved."""
+    block = (
+        "Sure, let me look. "
+        '<tool_call>{"name": "find_emails", "arguments": {"filter": {"unread": true}}}</tool_call>'
+    )
+    fake = _FakeAsyncClient(response=_canned_text_block_response(content=block))
+    adapter = _adapter(monkeypatch, fake)
+
+    result = await adapter.call_with_tools(
+        system="sys",
+        messages=[{"role": "user", "content": "find unread"}],
+        tools=[_tool_def("find_emails")],
+    )
+    assert len(result.tool_calls) == 1
+    assert "<tool_call>" not in result.text
+    assert "</tool_call>" not in result.text
+    assert result.text == "Sure, let me look."  # residual prose, trimmed
+
+
+async def test_rescue_decline_log_redacts_secrets_in_raw_block(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """CR F9: the decline log's `raw_block` must be sanitized — a Bearer token
+    embedded in a malformed block must NOT leak into the WARNING log."""
+    block = (
+        '<tool_call>{"name": "memory", "action": "add", '
+        '"content": "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.secret.sig"}</tool_call>'
+    )
+    fake = _FakeAsyncClient(response=_canned_text_block_response(content=block))
+    adapter = _adapter(monkeypatch, fake)
+
+    with caplog.at_level("WARNING", logger="mailbot_api.router.models"):
+        result = await adapter.call_with_tools(
+            system="sys",
+            messages=[{"role": "user", "content": "remember"}],
+            tools=[_tool_def()],
+        )
+    assert result.tool_calls == []
+    decline_records = [
+        r for r in caplog.records if getattr(r, "event", None) == _RESCUE_DECLINED_EVENT
+    ]
+    assert len(decline_records) == 1
+    raw_block = getattr(decline_records[0], "raw_block", "")
+    # CR F7: the logged block is the matched block, not the whole content, and
+    # CR F9: the secret is redacted.
+    assert "eyJhbGciOiJIUzI1NiJ9" not in raw_block
+    assert "[REDACTED_BEARER]" in raw_block
+    assert raw_block.startswith("<tool_call>")  # scoped to the matched block
