@@ -2,6 +2,68 @@
 
 This file collects flags raised by `autonomous-story-run` runs. One block per invocation.
 
+## Residual F-10-7-3-R1 (filed by Story 10.7.3) — per-verb mailbot-api surface scoping NOT achievable via platform_toolsets
+
+**Severity:** WARNING (blocks nothing in 10.7.3; owed before clause-3 selection can be reliable on the flat surface).
+
+Per-verb scoping of the `mailbot-api` MCP surface — dropping `pull_pending_notifications` and the notification/digest/cron verbs from the chat "find my unread emails" turn — is **NOT** achievable via `hermes-config/config.yaml` `platform_toolsets.discord`. That allow-list operates at **toolset granularity** (keep/drop whole toolsets); `pull_pending_notifications` is registered *inside* the single `mailbot-api` MCP server (`mcp_server.py`, `_EXPECTED_TOOL_COUNT=26`), so dropping it would drop all 26 email verbs including `find_emails`.
+
+The 10-7-0 spike (§1) measured `pull_pending_notifications` as the **dominant** real-surface mis-pick (100% of wrong picks on the flat-26 surface, 0/N even with the 10.7.5 description rewrite). Story 10.7.3 removed the *other* attractor (`send_message`, via dropping the `messaging` toolset) — a genuine but partial selection lever. Getting qwen to a genuinely small email-only menu (the "remaining real engineering" the spike names, §4.4 item 2) requires one of:
+- a **mailbot_api-side per-platform verb filter** (curate which of the 26 verbs the MCP server exposes on a chat vs. cron surface), OR
+- a **hierarchical / tree tool-selection** design (spike §4.2 top-split 20/20, §6) — costs a 2nd model round-trip on the CPU-bound local model (weigh vs. [[project_qwen_cpu_toolcall_latency]]).
+
+Filed as owed work toward Epic 10.7 done-flip **clause 3** (faithful qwen `find_emails` invocation on a live Discord turn). Not in scope for 10.7.3 (a config-only toolset trim). Candidate as a follow-up story or folded into the epic live-walk triage.
+
+**WALK-10-7-3 live evidence (2026-07-16, Adam Discord turn "find my unread emails", post-trim + hermes restarted) — 10.7.3 PASSES its scope; new attractor + FORMAT defect confirm F-10-7-3-R1 + F-10-7-1 are the load-bearing residuals:**
+Router rows 15082–15093, all `model=qwen2.5:3b-instruct-q4_K_M`, `outcome=ok`, $0 (routing + latency hold). Tool picks in the turn: `memory` ×9, `email_search` ×1. Reading:
+- **10.7.3 scope PASS:** `send_message` picked **0 times** (removed from the surface — the trim's whole job) and the old `pull_pending_notifications` attractor was NOT picked either. Live-resolver already confirmed `messaging ✗ disabled` / `mailbot-api all tools enabled`.
+- **NEW dominant attractor = `memory`** (9/11 picks, degenerate args: `{}`, `{"action":"None"}`, `remove "unmute category"`). `memory` is a KEPT built-in toolset (defender session hygiene). With `send_message` + notification verbs gone, qwen's mis-pick relocated to `memory`. **This is exactly F-10-7-3-R1** (flat surface still has non-email attractors a toolset trim leaves; the real fix is a small email-only menu). `memory` IS a built-in toolset (unlike `pull_pending_notifications`), so it is a *candidate for a future trim* — but weigh against its defender-persona use; new engineering, not 10.7.3.
+- **`email_search` hallucination (id=15083):** qwen's FIRST pick was `email_search {"query":"unread"}` — right intent, but `email_search` is NOT a real verb (the real one is `find_emails`, mcp_server.py:270). Pure selection/naming-fidelity miss → clause-3 "small menu" problem (F-10-7-3-R1) + possible `find_emails` discoverability revisit for 10.7.5.
+- **`<tool_call>`-as-text FORMAT defect, 3rd live sighting (id=15093, tcc=0):** the final `memory` call emitted as literal `<tool_call>{…}</tool_call>` text (visible in Discord). This is the F-10-7-1 defect. 10.7.1's rescue parser shipped STRICT (declines malformed sibling-key blocks) and this `memory` block is malformed → 10.7.1 **correctly declined to fabricate it** (safety-net working as designed, [[project_local_model_is_safety_net]]), NOT a regression.
+- **Net:** 10.7.3 removed its target attractor cleanly and did not regress routing; but the turn still fails to reach `find_emails` because (a) a new non-email attractor (`memory`) dominates and (b) qwen hallucinates a verb name — both are the clause-3 "get qwen to a small, correctly-named menu" work that F-10-7-3-R1 owns, NOT this config-trim story. Clause 3 remains OPEN.
+
+**Companion owed check (CR-10-7-3 Decision, option a) — live-resolver sanity for the `messaging` removal:** 10.7.3 dropped the whole `messaging` toolset on the *inference* that it exposes only `send_message` (epics.md §4350 + the inherited 10.6.5 comment; NOT a verified enumeration). 10.6.5's precedent ran the real Hermes resolver (`_get_platform_tools(cfg,"discord")` / `hermes tools list --platform discord`) and found a non-obvious preserved entry (`kanban`). 10.7.3 has no equivalent live re-run (offline drift gates only). At the epic live-walk, run `docker exec mailbot-hermes hermes tools list --platform discord` against the trimmed config once and record the actual resolved verb set — confirm no benign `messaging` verb was collaterally dropped, and confirm the surface now favors the email verbs. Cheaper than and shares the same walk as clause 3. If a benign verb WAS dropped, re-scope (narrower lever or re-add `messaging` + pair with per-verb scoping via F-10-7-3-R1).
+
+## Story 10-7-3 Manual Verification — 2026-07-16 (Adam)
+
+**Verdict: PASS WITH FINDINGS.** All 6 offline ACs verified by the orchestrator (12 drift gates green) + the CR-promoted live-resolver check discharged (`hermes tools list --platform discord`: `messaging ✗ disabled`, `mailbot-api all tools enabled`, all noise off). The live Discord "find my unread emails" turn confirmed 10.7.3's scope PASSES (`send_message` picked 0/11; old `pull_pending_notifications` attractor also not picked) but the turn still failed to reach `find_emails` for reasons OUTSIDE 10.7.3's declared scope.
+
+**Findings (feed F-10-7-3-R1 / next story — NOT 10.7.3 defects):**
+1. **`memory` is the new dominant attractor** (9/11 picks). It is a KEPT built-in toolset → a *tractable* candidate for the same allow-list lever if email turns don't need it (weigh vs defender-persona session hygiene). Distinct from `pull_pending_notifications` (which is intra-mailbot-api, untrimmable).
+2. **`email_search` hallucination** (id=15083) — qwen invented a non-existent verb name over the real `find_emails`; discoverability signal for 10.7.5's description work.
+3. **`<tool_call>`-as-text FORMAT defect, 3rd live sighting** (id=15093, tcc=0) — F-10-7-1; the STRICT rescue parser correctly DECLINED the malformed `memory` block (safety-net working, not a regression).
+
+Clause 3 (a faithful qwen→`find_emails` Discord turn) remains OPEN — owed to the "small correctly-named menu" work (F-10-7-3-R1). 10.7.3 stays `done`. Nothing committed.
+
+## Story 10-7-3 (allow-list trim toward mailbot-api-only — Discord tool-surface scope) — 2026-07-16
+
+**Headline:** Dropped the `messaging` toolset (the `send_message` mis-pick peer, F-10-6-5-W1 defect #1) from `hermes-config/config.yaml` `platform_toolsets.discord`, and documented + drift-gated the honest BOUNDARY — the spike's DOMINANT attractor `pull_pending_notifications` is an intra-`mailbot-api` MCP verb the toolset-level allow-list structurally CANNOT remove (residual F-10-7-3-R1 filed). Config + tests + docs only; NO `mailbot_api/` product source. A **partial** selection lever: removes one attractor, does NOT get qwen to a small email-only menu on the flat-26 surface and does NOT discharge Epic 10.7 clause 3 (the live Discord qwen→`find_emails` turn).
+
+**Dev model:** claude-opus-4-8[1m]; **Review model:** claude-sonnet-5 (≠ dev, [[feedback_reviewer_model_substitution]]).
+
+**Review rounds:** 1 (sonnet-5). 3 findings → 1 Decision + 1 Patch + 1 Defer. **Actionable applied: 2/2 (100%).**
+- **[Decision] messaging membership unverified** (10.6.5 ran a live Hermes resolver check; this story has offline drift gates only) → **RESOLVED via option (b):** the inference-only risk (that `messaging` exposes only `send_message`) is now explicitly accepted in the story's OWN Dev Notes/Completion Notes, not just the pre-review. Option (a) live-resolver sanity check (`hermes tools list --platform discord`) is not runnable in this non-interactive session → **promoted to the epic live-walk** (recorded above under F-10-7-3-R1's companion note). Shares the same walk as clause 3, materially cheaper than the live-turn proof.
+- **[Patch] boundary-doc test was an unscoped whole-file substring match** → **FIXED (CR-10-7-3-P):** `test_hermes_config_10_7_3_boundary_documented` now scopes the `pull_pending_notifications` + `F-10-7-3-R1` assertions to the `# BOUNDARY` comment block (text between `# BOUNDARY` and `platform_toolsets:`), so deleting the boundary prose red-gates even if the strings survive elsewhere.
+- **[Defer] `_REQUIRED_DISCORD_TOOLSETS` vs `_TRIMMED_TOOLSETS_10_7_3` disjointness not asserted** → reviewer self-accepted (pre-existing pattern; `_NOISE_TOOLSETS_FORBIDDEN_ON_DISCORD` has the same characteristic). Genuine out-of-scope, not deferred debt.
+
+No round-2 — both fixes mechanical/low-risk (a test-scoping tightening + doc-honesty additions).
+
+**Deferred / accepted items:** the [Defer] above (out-of-scope). The [Decision]'s accepted-risk (inference-only messaging membership) is owed a live-resolver sanity check at the epic walk (F-10-7-3-R1 companion). No deferred production debt.
+
+**Gate verdicts:** 2.3.5 pre-review — PASS (5 sections + 11 posture checks; §5.12 = MANDATORY-CR, criteria 1+3+6) · 2.4.4 Dev Agent Record — PASS · 2.4.5 UI-scope — N/A (no graphical frontend) · 2.4.6 File-List-vs-git — PASS (all 4 File-List paths `git ls-files`-tracked) · 2.4.7 Middleware-Real-Bootstrap — N/A (config+tests+docs; no new controller/route/verb/state-changing SQLite write; the config change is validated by the REAL offline YAML-parse of the actual production `config.yaml`, not a mock) · 2.4.8 verbose-row truncation — PASS (sprint-status row headlined, narrative in story Completion Notes).
+
+**Step 2.5 dev-env:** N/A — no `<dev-env-skill>` configured; no runtime `mailbot_api/` source touched. The config change is exercised by the 12 offline `test_hermes_config.py` drift gates parsing the real production file.
+
+**4 gates (post-CR):** ruff clean · mypy `--strict mailbot_api` clean (134 files) · boundary exit 0 · pytest **1972 passed / 3 skipped / 3 deselected** (+2 net vs the 1970 pre-story baseline — the 2 new drift tests; CR-10-7-3-P re-scoped one, still green).
+
+**Scope flag (INFO, not a defect):** 10-7-3 is a config-only toolset trim and is HONESTLY a PARTIAL lever. It removes the `send_message`/`messaging` attractor but the spike (§1) measured the flat-26 surface still fails 0/N even with 10.7.5's description rewrite; the DOMINANT attractor (`pull_pending_notifications`) is intra-`mailbot-api` and NOT trimmable here → F-10-7-3-R1 (needs a mailbot_api per-verb filter or a hierarchical/tree selection design). Clause-3 order unchanged: 10.7.1 (shipped) + 10.7.5 (shipped, description) + 10.7.3 (this, surface trim) → then the real "small menu" engineering (F-10-7-3-R1) + Adam Discord re-walk.
+
+**Permission prompts:** Zero observed. No permission log configured.
+
+**Staging:** 6 story-scoped files staged (config.yaml + test file + story `.md` + pre-review `.md` + story-run-flags.md + sprint-status.yaml). `.claude/settings.json` + `10-7-0-spike-finding.md` (pre-existing background) + `.autonomous-run-active.json` (run-state) left unstaged. **Nothing committed.**
+
+**#yolo mode:** active through Phase 2; OFF as of the Phase 3.3 final report.
+
 ## Story 10-7-2 (tool-format + selection system prompt — qwen dispatch seam) — 2026-07-16
 
 **Headline:** Defensive qwen-only tool-call system-prompt injection at the `dispatch_tool_call` seam (`_QWEN_TOOLCALL_SYSTEM_INSTRUCTION` + `_compose_qwen_toolcall_system_text`, gated `_TOOL_CAPABLE_LOCAL_MODEL_RE`, injected into `system_text` at the assembly site; `claude-*` path byte-for-byte unchanged). Belt-and-suspenders per the 10-7-0 spike §4.4 (a system prompt adds ZERO on a good description — 10.7.5's rewrite was the load-bearing lever). Ships **ON-by-default on a zero-measured-benefit / zero-measured-cost basis** (NOT a symmetric strong pass). Does NOT discharge Epic 10.7 clause 3 (the live-Discord qwen→`find_emails` turn), owed at the epic live walk.

@@ -135,13 +135,41 @@ mcp_servers:
 #
 # KEEP-SET rationale:
 #   - mailbot-api : the 26 email verbs (the whole point; MCP server name)
-#   - messaging   : Rule R cross-platform notification send
 #   - cronjob     : Story 6-10 digest + notification-pull jobs run attached skills
 #   - memory      : defender-persona session hygiene
 #   - clarify     : AGENTS.md "when in doubt, ask for clarification" tiebreaker
 # Everything else is dropped — the built-in noise (tts/image_gen/vision/video/
 # file/browser/terminal/code_execution/web/todo/delegation/computer_use) that
 # WALK-10-6-4-F1 observed, PLUS the `skills` toolset.
+#
+# TRIMMED (Story 10.7.3): `messaging` was REMOVED from the keep-set. Its
+# `send_message` verb is the F-10-6-5-W1 defect-#1 mis-pick — qwen picks
+# `send_message` (from `messaging`) over `find_emails` on a "find my unread
+# emails" turn (10-7-0 spike §1). On the Adam-only, DM-first, single-platform
+# Discord deploy the Rule R cross-platform PUSH `messaging` provides is NOT
+# exercised by email-reading turns: Hermes delivers to Discord via its native
+# gateway, and the urgent/digest notification path is the PULL-based
+# `pull_pending_notifications` + cron skill (Story 6-3 / 6-10), not this
+# toolset. So `messaging` was a mis-pick attractor with no load-bearing use on
+# the email surface; trimming it shrinks the per-turn menu toward the email
+# verbs. A FUTURE multi-platform deploy that needs Rule R cross-platform push
+# must re-add `messaging` deliberately (and accept the send_message mis-pick
+# risk or pair it with per-verb scoping), NOT inherit this cut silently.
+#
+# BOUNDARY — what this toolset-level allow-list CANNOT do (Story 10.7.3 AC-5):
+# the 10-7-0 spike's DOMINANT real-surface mis-pick is
+# `pull_pending_notifications` (100% of wrong picks on the flat 26-verb
+# surface, §1) — but that verb is registered INSIDE the `mailbot-api` MCP
+# server, not a separable toolset. `platform_toolsets.discord` keeps/drops
+# WHOLE toolsets; dropping `mailbot-api` would drop all 26 email verbs
+# INCLUDING `find_emails`. So this allow-list CANNOT remove the
+# `pull_pending_notifications` attractor. Per-verb scoping of the mailbot-api
+# MCP surface (a mailbot_api-side per-platform verb filter, or a
+# hierarchical/tree tool-selection design — spike §4.2/§6) is filed as residual
+# F-10-7-3-R1 in story-run-flags.md and is NOT delivered by this story. This
+# trim removes ONE attractor (`send_message`); it does not by itself get qwen
+# to a small email-only menu on the flat surface (the spike measured flat-26
+# still 0/N even with the 10.7.5 description rewrite).
 #
 # WHY `skills` IS DROPPED (learned at the 10-6-5 AC-1 live walk 2026-07-14):
 # the `skills` toolset does NOT merely surface list/view/manage meta-tools — at
@@ -173,7 +201,6 @@ mcp_servers:
 platform_toolsets:
   discord:
     - mailbot-api
-    - messaging
     - cronjob
     - memory
     - clarify

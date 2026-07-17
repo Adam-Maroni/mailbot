@@ -166,15 +166,33 @@ _NOISE_TOOLSETS_FORBIDDEN_ON_DISCORD = frozenset(
 )
 
 # The minimal keep-set a MailBot email turn actually needs.
+#
+# Story 10.7.3: `messaging` REMOVED from the required set. Its `send_message`
+# verb is the F-10-6-5-W1 defect-#1 mis-pick (qwen picks `send_message` from
+# `messaging` over `find_emails`). On the Adam-only, DM-first, single-platform
+# Discord deploy the `messaging`/Rule R cross-platform PUSH is not exercised by
+# email-reading turns — Hermes delivers to Discord via its native gateway and
+# the urgent/digest path is the PULL-based pull_pending_notifications + cron
+# skill (Story 6-3 / 6-10), not the messaging toolset. So messaging is a
+# mis-pick attractor with no load-bearing use on the email surface; trimming it
+# shrinks the per-turn menu toward the email verbs.
 _REQUIRED_DISCORD_TOOLSETS = frozenset(
     {
         "mailbot-api",  # the 26 email verbs — the whole point (MCP server name)
-        "messaging",  # Rule R cross-platform notification send
         "cronjob",  # Story 6-10 digest / notification-pull jobs
         "memory",  # defender-persona session hygiene
         "clarify",  # AGENTS.md "ask for clarification" tiebreaker
     }
 )
+
+# Story 10.7.3: toolsets trimmed off the Discord surface as mis-pick attractors
+# (distinct rationale from the built-in noise set above — these are functional
+# toolsets deliberately scoped OFF the email-reading surface). `messaging`
+# exposes `send_message`, the F-10-6-5-W1 defect-#1 peer qwen mis-picks over
+# `find_emails`. A regression that re-adds it red-gates here. A future
+# multi-platform deploy that needs Rule R cross-platform push must re-evaluate
+# this trade-off deliberately, not inherit the cut silently.
+_TRIMMED_TOOLSETS_10_7_3 = frozenset({"messaging"})
 
 
 def _discord_allowlist(config: dict[str, Any]) -> list[str]:
@@ -240,6 +258,67 @@ def test_hermes_config_discord_allowlist_excludes_noise_toolsets(
     assert not leaked, (
         f"noise toolsets leaked back onto the Discord surface: {sorted(leaked)}; "
         f"these crowd out the mailbot-api email verbs (WALK-10-6-4-F1)"
+    )
+
+
+def test_hermes_config_discord_allowlist_excludes_messaging_send_peer(
+    config: dict[str, Any],
+) -> None:
+    """Story 10.7.3: the `messaging` toolset MUST NOT be on the Discord
+    surface. Its `send_message` verb is F-10-6-5-W1 defect #1 — qwen picks
+    `send_message` over `find_emails` on a "find my unread emails" turn
+    (10-7-0 spike §1 / epics.md §4350). On the Adam-only single-platform
+    deploy, `messaging` has no load-bearing use on email turns (native-gateway
+    delivery + pull-based notifications), so it is trimmed as a mis-pick
+    attractor. Red-gates a regression that re-adds it."""
+    discord_list = set(_discord_allowlist(config))
+    leaked = _TRIMMED_TOOLSETS_10_7_3 & discord_list
+    assert not leaked, (
+        f"Story 10.7.3-trimmed toolsets leaked back onto the Discord surface: "
+        f"{sorted(leaked)}; `messaging` exposes the `send_message` mis-pick peer "
+        f"(F-10-6-5-W1 defect #1). A multi-platform deploy needing Rule R push "
+        f"must re-add it deliberately, not by regression."
+    )
+
+
+def test_hermes_config_10_7_3_boundary_documented() -> None:
+    """Story 10.7.3 AC-5: the config file must honestly record what this
+    toolset-level allow-list CANNOT do — remove the intra-`mailbot-api`
+    `pull_pending_notifications` attractor (the spike's dominant real-surface
+    mis-pick, §1). That verb lives inside the `mailbot-api` MCP server, not a
+    separable toolset, so `platform_toolsets.discord` (toolset granularity)
+    cannot drop it without dropping all 26 email verbs. This gate red-gates a
+    future edit that quietly claims full surface-scoping without the filed
+    intra-mailbot-api residual.
+
+    CR-10-7-3-P (reviewer sonnet-5): scope the substring match to the actual
+    `# BOUNDARY` comment block (between the `# BOUNDARY` marker and the
+    `platform_toolsets:` key), NOT the whole file. An unscoped `in raw_text`
+    would pass if the two strings survived anywhere else (a stray reference,
+    an unrelated future comment) even after the BOUNDARY prose was deleted —
+    exactly the drift this gate is meant to catch."""
+    raw_text = _HERMES_CONFIG.read_text(encoding="utf-8")
+    boundary_start = raw_text.find("# BOUNDARY")
+    assert boundary_start != -1, (
+        "config.yaml must contain the Story 10.7.3 `# BOUNDARY` comment block "
+        "documenting what the toolset-level allow-list CANNOT do (AC-5)"
+    )
+    # The BOUNDARY note ends at the `platform_toolsets:` key it precedes.
+    boundary_end = raw_text.find("platform_toolsets:", boundary_start)
+    assert boundary_end != -1, (
+        "the `# BOUNDARY` block must precede the `platform_toolsets:` key it "
+        "annotates (AC-5 scoping)"
+    )
+    boundary_block = raw_text[boundary_start:boundary_end]
+    assert "pull_pending_notifications" in boundary_block, (
+        "the Story 10.7.3 `# BOUNDARY` note must name the "
+        "pull_pending_notifications attractor (AC-5) — it is the intra-"
+        "mailbot-api verb the toolset-level allow-list cannot remove"
+    )
+    assert "F-10-7-3-R1" in boundary_block, (
+        "the Story 10.7.3 `# BOUNDARY` note must reference the F-10-7-3-R1 "
+        "residual (per-verb mailbot-api surface scoping) so the boundary is "
+        "not silently claimed as delivered"
     )
 
 
