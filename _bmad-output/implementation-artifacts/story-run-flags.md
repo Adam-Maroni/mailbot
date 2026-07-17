@@ -1600,3 +1600,68 @@ Orchestrator drove the live walk as far as $0 permits (stack up; `mailbot_api/` 
 
 **Phase 3.5 (delegated, 2026-07-11 — Adam "run the manual verification yourself"):** orchestrator verified the **infrastructure half PASS** ($0, live prod stack) — all 5 dispatch-target verbs (cancel_action/pause_router/resume_router/mint_sensitivity_token/set_model_oneshot) registered as MCP tools + descriptions de-slashed in live-code build; F-10-5-6-W1 target (oneshot arm/consume/TTL) intact; F-10-5-2-W2 target (`escalation_armed` + `user_confirmations`, 10-5-2 mig 027) present in prod DB; 10-5-1 pause/resume DB-authoritative cross-process seam + resume-allowlist present; charter docs drift-gated zero-dead-slash. **AC-6 persona-dispatch half NOT orchestrator-verifiable** (external Hermes LLM + real Opus spend) → **Adam-decided: KEEP `review`, Adam walks the 4 Discord checkpoints himself** (cancel / pause+resume / yes-escalate / use-qwen — each must ISSUE the verb, not narrate). No done-flip on infra-only evidence (avoids the Epic-10 perimeter-L3≠subsystem-L3 trap this epic exists to close). Full evidence → story § Phase 3.5 evidence. `#yolo` OFF; run complete.
 
+
+---
+
+## Story 10-7-4 — 2026-07-17 (autonomous-story-run; DISPOSITION / verification-only CLOSE)
+
+**Headline:** 10.7.4 (swap the local tool-calling model) CLOSED as SUPERSEDED — the contingency did not fire. Adam-decided disposition "Close as superseded (verification-only)." No source code.
+
+**Why closed, not implemented:** 10.7.4 was filed CONTINGENT on the 10-7-0 spike finding a Qwen-3B ceiling. The spike found NO ceiling (coarse 20/20 §4.2, leaf 20/20 §4.4; fire-list line 111 "10.7.4 (model swap) — CLOSE. No ceiling at coarse OR leaf. Nothing licenses a swap."), and its selected harness fixes (10-7-5 primary + 10-7-3 + 10-7-1 + 10-7-2) all shipped `done`. Auto-authoring a model-swap implementation would have built the wrong thing; the run halted at Blocker Scan and surfaced the disposition to Adam before Phase 1.
+
+**Models:** dev claude-opus-4-8; review claude-sonnet-5 (reviewer ≠ dev — MANDATORY-CR held).
+
+**Review rounds / applied-rate:** 1 round. 2 findings surfaced (1 LOW + 1 INFO), 0 blocking. Applied: 1/1 actionable (LOW File-List wording fix = 100%); INFO accepted-no-change (append-only sprint-status history convention). Adversarial disposition-test PASSED all 4 points (precondition-unmet TRUE + faithfully cited; 4 siblings done; clause 3 not claimed/foreclosed; fallback carve-out preserved).
+
+**Deferred items:** none.
+
+**Gate verdicts:**
+- 2.3.5 pre-review self-audit: PASS (5 sections + 12 posture sub-sections; §5.12 MANDATORY-CR)
+- 2.4.4 Dev Agent Record completeness: PASS
+- 2.4.5 UI-scope: N/A — no graphical frontend
+- 2.4.6 File-List-vs-git untracked: PASS (story .md + pre-review .md untracked-pending-add, expected)
+- 2.4.7 Middleware-Real-Bootstrap: N/A — no mailbot_api/ source, no verbs/routes/writes
+- 2.4.8 verbose-row truncation: PASS (row headline + pointer to story Completion Notes)
+
+**Step 2.5 dev-env verification:** N/A — documentation-only File List, no source to boot.
+
+**Baseline sanity gates (no .py changed):** ruff `All checks passed!`; pytest `1972 passed, 3 skipped, 3 deselected` — unchanged vs 10-7-3 baseline (1972), zero regression.
+
+**Epic impact:** services Epic 10.7 done-flip clause 2 ("all spike-selected fix stories status=done" — the spike *deselected* the swap, so closing it as superseded accounts for clause 2 fully). Does NOT claim/foreclose clause 3 (live Discord qwen→find_emails turn, load-bearing = Epic 10.6 clause 3b), owed at the epic live walk. Fallback stays reversible: re-fires only if a real-Hermes-path regression re-surfaces a ceiling 10-7-5+10-7-3 can't fix.
+
+**Permission prompts:** no permission log configured on this project — mid-run prompt count unknown; no envelope gaps surfaced during the run.
+
+**Nothing committed.** Staged: 10-7-4-swap-local-tool-calling-model.md, 10-7-4.pre-review.md, sprint-status.yaml, story-run-flags.md (this block).
+
+### Story 10-7-4 Manual Verification
+
+**Verdict: PASS** (orchestrator-run at Adam's request 2026-07-17 — "can you [do] those verification yourself?"). All 5 AC checkpoints verified against actual file contents (not story prose): AC-1 spike §4.4 line 111 "CLOSE. Nothing licenses a swap." under the "FINAL fire-list (supersedes §4+§4.2+§4.3)" header ✅; AC-2 siblings 10-7-5/10-7-1/10-7-2/10-7-3 done (sprint-status:373-376) ✅; AC-3 4 staged files all under _bmad-output/, zero mailbot_api/ delta ✅; AC-4 fallback carve-out preserved verbatim from spike line 111, cost thesis untouched ✅; AC-5 sprint-status:377 done-row carries supersession chain + carve-out + clause-3 disclaimer ✅. Only unverifiable item = Epic 10.7 clause 3 (live Discord qwen→find_emails turn) — needs a real running-stack round-trip, remains owed at the epic live walk (correctly NOT claimed by this disposition). `#yolo` OFF; run complete.
+
+---
+
+## F-10-7-CLAUSE3-W1 — Epic 10.7 clause-3 live walk FAILED (find_emails never invoked); memory-toolset is the surviving dominant attractor (2026-07-17)
+
+**Severity:** CRITICAL (blocks Epic 10.7 done-flip clause 3 = the load-bearing gate = Epic 10.6 clause 3b = the cost thesis's final question). NOT in 10-7-4's scope (10-7-4 is a done disposition); filed as owed epic-level work, surfaced during the post-10-7-4 clause-3 live walk Adam ran at 11:20 AM.
+
+**What happened:** Adam sent "find my unread emails" on real Discord (11:20 AM, 2026-07-17). The turn produced 11 `router_calls` rows (id 15095–15106), ALL `model_chosen=qwen2.5:3b-instruct-q4_K_M`, and NONE invoked `find_emails`:
+- **15095** — `tool_calls_count=1`, tool = **`turn`** with `{"action":"find_unread_emails"}`. **qwen derived the correct INTENT** ("find_unread_emails") but bound it to the wrong tool namespace (`turn`, a Hermes control primitive), not the mailbot-api `find_emails` MCP verb.
+- **15096–15104** (×9) — `tool_calls_count=1`, tool = **`memory`**, cascading into the `{name:memory, action:remove, old_text:"unmute category"}` shape. This is WALK-10-7-5-F1 / `project_qwen_toolcall_format_defect_reproduced` reproduced a **3rd** time.
+- **15105** — `tool_calls_count=0`, no tool (text-emitted / empty — the FORMAT defect).
+- **15106** — escalated OFF qwen to `claude-haiku-4-5` on `hermes_aux` (paid fallback).
+
+**Root-cause reframe (overturns the 10-7-0 spike prediction on the LIVE path):** the spike's headline — "HARNESS-FIXABLE, no 3B ceiling; the `find_emails` description rewrite lifts leaf 0/20→20/20" — held for DIRECT-OLLAMA drive against a curated menu, but does NOT hold on the real Hermes Discord surface. The shipped fixes (10-7-5 desc rewrite, 10-7-3 messaging-drop, 10-7-1 rescue parser, 10-7-2 system prompt) are all `done` and did NOT close clause 3.
+
+**Newly-identified live attractor (the actionable lever):** `hermes tools list --platform discord` (run 2026-07-17) shows the enabled surface is: built-ins **`memory` + `clarify` + `cronjob`** PLUS **`mailbot-api` (all 26 verbs incl. `find_emails`) via MCP**. So `find_emails` IS on the menu — this is a SELECTION-fidelity failure, not a missing-tool failure. Story 10.7.3 dropped `messaging` and `skills` but LEFT `memory` enabled (config.yaml:205), and **`memory` is now the dominant mis-pick** (9/11 rows). The `memory`-fixation is the same `unmute category` shape seen at the 10-7-5 walk — it did not go away because the toolset feeding it was never removed.
+
+**Candidate fixes (for the qwen-management / clause-3 follow-up, NOT dev-auto-resolved here):**
+1. **Drop `memory` (and possibly `clarify`) from `platform_toolsets.discord`** for MailBot email turns — the cheapest lever, directly analogous to 10.7.3's `messaging` drop. Removes the dominant attractor. Weigh against whether the defender persona needs `memory` on a chat turn (10.7.3's note says persona memory rides a separate `.skills_prompt_snapshot.json` mechanism, not the `memory` toolset — so dropping it may be free, mirroring the `skills` drop).
+2. **Investigate the `turn`/`find_unread_emails` binding (row 15095)** — qwen got the intent RIGHT but emitted it as a `turn` action. This suggests a Hermes-side tool-name/namespace resolution issue distinct from pure mis-selection; may be a template/registration gap where `find_emails` isn't presented under a name qwen associates with the intent.
+3. **Only if 1+2 fail on re-walk:** re-open 10.7.4's model-swap fallback per its own carve-out (a bigger $0-local model) — but 15095 shows qwen CAN derive the intent, so a ceiling is NOT yet demonstrated; exhaust the surface-trim lever first.
+
+**Reproduce:**
+```
+MSYS_NO_PATHCONV=1 docker exec mailbot-api sh -c "python3 -c \"import sqlite3; c=sqlite3.connect('/data/mailbot.db'); [print(row) for row in c.execute('SELECT id, model_chosen, tool_calls_count, tool_calls_summary FROM router_calls WHERE id>15094 ORDER BY id')]\""
+docker exec mailbot-hermes hermes tools list --platform discord
+```
+
+**Disposition:** clause 3 NOT discharged; Epic 10.7 stays open; Epic 10.6 clause 3b stays open. This is exactly the condition 10-7-4's fallback carve-out named ("a real-Hermes-path regression re-surfaces a ceiling that 10-7-5+10-7-3 cannot fix") — though 15095 indicates surface-trim (drop `memory`), not a model swap, is the likely fix. Owed to the qwen-management epic / clause-3 follow-up. Adam-hands-on live re-walk required after the fix.
