@@ -176,11 +176,21 @@ _NOISE_TOOLSETS_FORBIDDEN_ON_DISCORD = frozenset(
 # skill (Story 6-3 / 6-10), not the messaging toolset. So messaging is a
 # mis-pick attractor with no load-bearing use on the email surface; trimming it
 # shrinks the per-turn menu toward the email verbs.
+#
+# Story 10.7.6: `memory` REMOVED from the required set. It was the dominant
+# mis-pick attractor on the FAILED clause-3 live walk (F-10-7-CLAUSE3-W1,
+# 2026-07-17: 9/11 router_calls rows [15096-15104] picked `memory`, cascading
+# into `{name:memory, action:remove}`, never reaching `find_emails`). The
+# `messaging` drop (10.7.3) left `memory` standing as the new dominant
+# attractor. Its stated function — defender-persona session hygiene — is NOT
+# lost by the drop: the persona reference rides the `.skills_prompt_snapshot.json`
+# mechanism (config.yaml:184-186 precedent, mirroring the `skills` drop), NOT
+# the `memory` toolset. Confirmed on the live resolver (Task 1, AC-2) before
+# shipping the edit — not inferred (the CR-10-7-3 discipline).
 _REQUIRED_DISCORD_TOOLSETS = frozenset(
     {
         "mailbot-api",  # the 26 email verbs — the whole point (MCP server name)
         "cronjob",  # Story 6-10 digest / notification-pull jobs
-        "memory",  # defender-persona session hygiene
         "clarify",  # AGENTS.md "ask for clarification" tiebreaker
     }
 )
@@ -193,6 +203,19 @@ _REQUIRED_DISCORD_TOOLSETS = frozenset(
 # multi-platform deploy that needs Rule R cross-platform push must re-evaluate
 # this trade-off deliberately, not inherit the cut silently.
 _TRIMMED_TOOLSETS_10_7_3 = frozenset({"messaging"})
+
+# Story 10.7.6: `memory` trimmed off the Discord surface as the dominant
+# mis-pick attractor left standing after 10.7.3 dropped `messaging`. On the
+# FAILED clause-3 live walk (F-10-7-CLAUSE3-W1, 2026-07-17) qwen picked `memory`
+# on 9 of 11 router_calls rows (15096-15104) and never reached `find_emails`.
+# The persona-hygiene function rides `.skills_prompt_snapshot.json`, not this
+# toolset, so the drop costs nothing on the email surface. A regression that
+# re-adds it red-gates here.
+_TRIMMED_TOOLSETS_10_7_6 = frozenset({"memory"})
+
+# The union of every toolset deliberately trimmed off the Discord surface as a
+# mis-pick attractor across stories. New trims extend this union.
+_TRIMMED_TOOLSETS = _TRIMMED_TOOLSETS_10_7_3 | _TRIMMED_TOOLSETS_10_7_6
 
 
 def _discord_allowlist(config: dict[str, Any]) -> list[str]:
@@ -281,6 +304,97 @@ def test_hermes_config_discord_allowlist_excludes_messaging_send_peer(
     )
 
 
+def test_hermes_config_discord_allowlist_excludes_memory_attractor(
+    config: dict[str, Any],
+) -> None:
+    """Story 10.7.6: the `memory` toolset MUST NOT be on the Discord surface.
+    It was the dominant mis-pick attractor on the FAILED clause-3 live walk
+    (F-10-7-CLAUSE3-W1, 2026-07-17): 9 of 11 router_calls rows (15096-15104)
+    picked `memory` — cascading into `{name:memory, action:remove}` — and qwen
+    never reached `find_emails`. 10.7.3 dropped `messaging`, which left `memory`
+    standing as the new dominant attractor. Its defender-persona session-hygiene
+    function is NOT lost: the persona reference rides `.skills_prompt_snapshot.json`
+    (config.yaml:184-186 precedent), not the `memory` toolset — confirmed on the
+    live resolver (AC-2) before shipping the edit. Red-gates a regression that
+    re-adds it."""
+    discord_list = set(_discord_allowlist(config))
+    leaked = _TRIMMED_TOOLSETS_10_7_6 & discord_list
+    assert not leaked, (
+        f"Story 10.7.6-trimmed toolsets leaked back onto the Discord surface: "
+        f"{sorted(leaked)}; `memory` was the dominant mis-pick attractor on the "
+        f"failed clause-3 live walk (F-10-7-CLAUSE3-W1, 9/11 rows). Its "
+        f"persona-hygiene function rides `.skills_prompt_snapshot.json`, not this "
+        f"toolset. A regression that re-adds it must be a reviewed decision."
+    )
+
+
+def test_hermes_config_discord_allowlist_excludes_all_trimmed_attractors(
+    config: dict[str, Any],
+) -> None:
+    """CR-10-7-6-3: consolidated exclusion gate over the `_TRIMMED_TOOLSETS`
+    union. The union was previously decorative (defined, never asserted against),
+    so a future story that extends it but forgets to add a dedicated per-story
+    exclusion test would get zero coverage despite the union's name implying it
+    is load-bearing. This test wires it: EVERY toolset ever trimmed as a
+    mis-pick attractor (messaging 10.7.3 + memory 10.7.6 + any future addition)
+    must stay off the Discord surface. Extending `_TRIMMED_TOOLSETS` now grants
+    the new trim free regression coverage."""
+    discord_list = set(_discord_allowlist(config))
+    leaked = _TRIMMED_TOOLSETS & discord_list
+    assert not leaked, (
+        f"trimmed mis-pick attractors leaked back onto the Discord surface: "
+        f"{sorted(leaked)}. Every toolset in `_TRIMMED_TOOLSETS` (messaging, "
+        f"memory, …) was deliberately scoped off the email surface; re-adding "
+        f"one must be a reviewed decision, not a regression."
+    )
+
+
+def test_hermes_config_required_and_trimmed_sets_are_disjoint() -> None:
+    """CR-10-7-6-4: the required keep-set and the trimmed attractor sets must
+    never overlap. Both `keeps_mailbot_verbs` and the `excludes_*` tests
+    evaluate only against the live YAML list, so a future edit that added a
+    toolset to BOTH `_REQUIRED_DISCORD_TOOLSETS` and a `_TRIMMED_TOOLSETS_*`
+    constant would create a silent self-contradiction between the two Python
+    constants that neither live-list test would surface. This asserts the
+    constants themselves are internally consistent."""
+    overlap = _REQUIRED_DISCORD_TOOLSETS & _TRIMMED_TOOLSETS
+    assert not overlap, (
+        f"toolset(s) {sorted(overlap)} appear in BOTH _REQUIRED_DISCORD_TOOLSETS "
+        f"and _TRIMMED_TOOLSETS — a required toolset cannot also be a trimmed "
+        f"attractor. Resolve the contradiction in the Python constants."
+    )
+
+
+def test_hermes_config_10_7_6_clarify_kept_rationale_documented() -> None:
+    """Story 10.7.6 AC-3 (CR-10-7-6-5): the KEEP-SET comment must durably
+    record WHY `clarify` was explicitly kept (not an attractor on the failed
+    walk; legitimate tiebreaker). `clarify`'s mere presence in the YAML list is
+    caught by `keeps_mailbot_verbs`, but the AC-3 explicit-rationale requirement
+    is documentation, not membership — a future edit could delete the rationale
+    prose while `clarify` stays listed and no other gate would notice. This
+    mirrors the doc-gate pattern used for the TRIMMED / BOUNDARY blocks."""
+    raw_text = _HERMES_CONFIG.read_text(encoding="utf-8")
+    keep_start = raw_text.find("# KEEP-SET rationale:")
+    assert keep_start != -1, (
+        "config.yaml must contain the `# KEEP-SET rationale:` comment block"
+    )
+    # The KEEP-SET block ends where the first TRIMMED note begins.
+    keep_end = raw_text.find("# TRIMMED (Story", keep_start)
+    assert keep_end != -1, (
+        "the `# KEEP-SET rationale:` block must precede the TRIMMED notes"
+    )
+    keep_block = raw_text[keep_start:keep_end]
+    assert "clarify" in keep_block, (
+        "the KEEP-SET block must name `clarify` (AC-3)"
+    )
+    assert "KEPT by Story 10.7.6" in keep_block, (
+        "the KEEP-SET block must record the AC-3 explicit `clarify`-kept "
+        "rationale (`KEPT by Story 10.7.6` — not an attractor on the failed "
+        "walk, legitimate tiebreaker) so the decision is durably documented, "
+        "not just true today (CR-10-7-6-5)"
+    )
+
+
 def test_hermes_config_10_7_3_boundary_documented() -> None:
     """Story 10.7.3 AC-5: the config file must honestly record what this
     toolset-level allow-list CANNOT do — remove the intra-`mailbot-api`
@@ -319,6 +433,61 @@ def test_hermes_config_10_7_3_boundary_documented() -> None:
         "the Story 10.7.3 `# BOUNDARY` note must reference the F-10-7-3-R1 "
         "residual (per-verb mailbot-api surface scoping) so the boundary is "
         "not silently claimed as delivered"
+    )
+
+
+def test_hermes_config_10_7_6_memory_trim_documented() -> None:
+    """Story 10.7.6 AC-7: the config file must honestly record that `memory`
+    was trimmed as the dominant clause-3 mis-pick attractor, and cite the
+    failed-walk finding (F-10-7-CLAUSE3-W1) that licensed the removal. This
+    boundary-honesty gate red-gates a future edit that drops the toolset without
+    leaving the rationale on the surface (or that re-adds `memory` while the
+    prose still claims it was trimmed).
+
+    Scoped to the `# TRIMMED (Story 10.7.6)` comment block, delimited by its
+    start marker and a DEDICATED `# END TRIMMED (Story 10.7.6)` end-marker
+    (CR-10-7-6-2). The end-marker replaces the earlier bare `platform_toolsets:`
+    substring anchor, which was vulnerable to a false-fail: prose inside the
+    block (or a future edit between the marker and the real YAML key) could
+    contain the literal `platform_toolsets:` and truncate the scoped block early
+    while the required content survived later in the file. Matching CR-10-7-3-P
+    discipline — an unscoped match would pass on a stray reference elsewhere."""
+    raw_text = _HERMES_CONFIG.read_text(encoding="utf-8")
+    trim_start = raw_text.find("# TRIMMED (Story 10.7.6)")
+    assert trim_start != -1, (
+        "config.yaml must contain the Story 10.7.6 `# TRIMMED (Story 10.7.6)` "
+        "comment block documenting the `memory` attractor removal (AC-7)"
+    )
+    trim_end = raw_text.find("# END TRIMMED (Story 10.7.6)", trim_start)
+    assert trim_end != -1, (
+        "the Story 10.7.6 `# TRIMMED` block must be closed by a dedicated "
+        "`# END TRIMMED (Story 10.7.6)` end-marker (CR-10-7-6-2 block-scoping "
+        "fix) so the doc-gate anchors on it, not the bare `platform_toolsets:` "
+        "substring"
+    )
+    trim_block = raw_text[trim_start:trim_end]
+    assert "memory" in trim_block, (
+        "the Story 10.7.6 `# TRIMMED` note must name the `memory` toolset it "
+        "removed (AC-7)"
+    )
+    assert "F-10-7-CLAUSE3-W1" in trim_block, (
+        "the Story 10.7.6 `# TRIMMED` note must cite F-10-7-CLAUSE3-W1 — the "
+        "failed clause-3 walk finding that licensed the `memory` drop (AC-7)"
+    )
+    assert ".skills_prompt_snapshot.json" in trim_block, (
+        "the Story 10.7.6 `# TRIMMED` note must record the persona-survives "
+        "rationale (`.skills_prompt_snapshot.json`, not the `memory` toolset) so "
+        "the drop is not silently claimed free of persona cost (AC-7)"
+    )
+    # CR-10-7-6-1: the block must NOT overstate the confirmation level — the
+    # persona-survives claim is carried by analogy, not independently verified.
+    # Gate the honesty-bound so a future edit can't quietly re-inflate it to
+    # "CONFIRMED... not inferred" for the persona-behavior claim.
+    assert "HONESTY BOUND" in trim_block, (
+        "the Story 10.7.6 `# TRIMMED` note must keep the CR-10-7-6-1 `HONESTY "
+        "BOUND` disclaimer distinguishing the live-confirmed toolset-disabled "
+        "state from the analogy-carried persona-survives claim (not "
+        "independently verified for `memory`; exercised at the AC-8 walk)"
     )
 
 

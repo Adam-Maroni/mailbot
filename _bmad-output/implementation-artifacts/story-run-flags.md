@@ -2,6 +2,69 @@
 
 This file collects flags raised by `autonomous-story-run` runs. One block per invocation.
 
+## Story 10-7-6 Manual Verification — 2026-07-18 (Adam) — ❌ FAIL (runaway loop, no reply, paid escalation, 502)
+
+**Verdict: FAIL.** Adam sent "find my unread emails" on real Discord (11:49→12:15 UTC). SELECTION fix WORKED (memory 0 picks vs 9/11 on the failed 2026-07-17 walk; turn mis-binding gone; qwen reaches `find_emails`) — but the turn RAN AWAY. Router evidence (66 rows, 15230–15295): `find_emails` ×59 + `find_unread_emails` ×1, all on empty `input:{}`, over 26 min; Discord showed `mcp_mailbot_api_find_emails ×60` + `Working — 24 min — iteration 55/90`; NO unread-emails reply rendered; the loop then ESCALATED to `claude-haiku-4-5` (paid, rows 15293–15295, outcome=failed) and died on `HTTP 502: rate limit breached: lane:interactive`. **AC-8 FAILS** — no usable outcome, paid escalation occurred, not $0. **Clause 3 = REACHED but NOT USABLE.** Story stays `review`, re-opens on a NEW defect layer (runaway loop / empty-arg non-termination / result-consumption / turn-termination) that is DOWNSTREAM of and distinct from the toolset-selection lever 10.7.6 owned. **F-10-7-6-R2 promoted to BLOCKING** — the next load-bearing lever. The memory-drop config fix is CORRECT and kept (a real advance past 2026-07-17), just not sufficient alone. Full record: `10-7-6-walk-evidence.md`. Nothing committed.
+
+## Story 10-7-6 (drop the `memory` toolset attractor + diagnose the `turn`/find_unread mis-binding — the clause-3 fidelity fix) — 2026-07-18
+
+**Headline:** Dropped the `memory` toolset (the dominant clause-3 mis-pick attractor F-10-7-CLAUSE3-W1 left standing after 10.7.3 dropped `messaging`; 9/11 rows of the failed 2026-07-17 walk) from `hermes-config/config.yaml` `platform_toolsets.discord`. Verified `memory ✗ disabled` + `mailbot-api all tools enabled` on the live Hermes resolver pre- AND post-trim (hermes restarted between). Kept `clarify` (AC-3, explicit). Diagnosed the `turn`/find_unread_emails mis-binding as an out-of-repo Hermes control primitive → residual **F-10-7-6-R1** (NOT claimed fixed). Config + offline drift tests only; $0; no `mailbot_api/` source.
+
+**Run mode:** autonomous-story-run. Dev = claude-opus-4-8[1m]; Review = claude-sonnet-5 (reviewer ≠ dev).
+
+**Tasks:** 1–8 complete (config + offline tests + live recon). **Task 9 (AC-8) HALTED — Adam-hands-on clause-3 live re-walk** (the story's declared done-gate; NOT autonomous-compatible).
+
+**Review:** 1 round, 6 findings — **5/5 Patches applied (100%)**, 1 Defer accepted.
+- CR-10-7-6-1 (Patch): softened the AC-2 "confirmed... not inferred" overstatement → an explicit `HONESTY BOUND` distinguishing the live-confirmed toolset-disabled state from the analogy-carried (NOT independently verified) persona-survives claim. Gated by a new assertion.
+- CR-10-7-6-2 (Patch): added a dedicated `# END TRIMMED (Story 10.7.6)` marker + re-anchored the doc-gate on it (fixes the bare-`platform_toolsets:`-substring false-fail risk).
+- CR-10-7-6-3 (Patch): wired the previously-dead `_TRIMMED_TOOLSETS` union into a consolidated exclusion test (future trims get free coverage).
+- CR-10-7-6-4 (Patch): added a required/trimmed set-disjointness assertion.
+- CR-10-7-6-5 (Patch): added a doc-gate for the AC-3 `clarify`-kept rationale.
+- CR-10-7-6-D1 (Defer, accepted): `turn`-registration grep-claim not codified as a `mailbot_api` regression gate — out-of-repo diagnosis scope (F-10-7-6-R1), correct to leave for whichever future story touches the Hermes seam.
+
+Applied-rate 100% (5/5 actionable) — no <70% warning.
+
+**Gate verdicts:**
+- 2.3.5 Pre-Review Self-Audit: PASS (5 sections + 12 posture checks; §3 4 issues; §5.12 = MANDATORY-CR).
+- 2.4.4 Dev Agent Record completeness: PASS (model named, per-AC completion notes, full File List).
+- 2.4.5 UI-scope: N/A — no graphical frontend.
+- 2.4.6 File-List-vs-git: PASS — all File List paths exist on disk + staged.
+- 2.4.7 Middleware-real-bootstrap: N/A — zero `mailbot_api/` source (config + tests + docs only).
+- 2.4.8 Verbose-row truncation: N/A — story NOT flipped to `done` (done-gate = Task 9 Adam walk).
+- 2.5 dev-env verification: N/A — no `<dev-env-skill>` configured; config change already live-verified on the running hermes resolver.
+
+**Gates (offline):** ruff clean, mypy clean (134 files), pytest **1977 passed** / 3 skipped / 3 deselected (+5 net vs 1972 baseline: 2 initial drift tests + 3 CR test additions).
+
+**Deferred items:** CR-10-7-6-D1 (above).
+
+**Permission prompts:** zero during the run (no permission log configured for exact count; no denials observed).
+
+**HALT (expected, not a failure):** Task 9 clause-3 live re-walk is Adam-hands-on. Story stays `review`. Nothing committed.
+
+## Residual F-10-7-6-R2 (filed by Story 10.7.6 clause-3 walk 2026-07-18) — **BLOCKING**: runaway `find_emails` loop on empty `input:{}` → no reply → paid escalation → 502
+
+**Severity: BLOCKING (clause-3 dominant defect).** Promoted from INFO after the live walk FAILED: this loop, not selection, is now what stops clause 3. Selection (10.7.6's job) is fixed; this is the next load-bearing lever.
+
+The clause-3 walk (rows 15230–15295, 66 rows over 26 min) showed qwen invoking `find_emails` **~60 times, all with `input_redacted="{}"` (empty args)**, `outcome=ok` on each individual call — but the TURN never terminated: no unread-emails reply rendered in Discord (`Working — 24 min — iteration 55/90`), the agent loop then escalated OFF qwen to `claude-haiku-4-5` (rows 15293–15295, `outcome=failed`), which hit `HTTP 502: rate limit breached: lane:interactive`. Net: not $0, no answer, hard failure.
+
+**Root-cause candidates (to characterize in the re-opened work — NOT decided here):**
+- **Empty-arg non-termination:** `find_emails` called with `input:{}`; if the empty-arg call returns a result the model doesn't treat as terminal (or returns nothing renderable), qwen re-issues it. Candidate fix surface: default/require args (`unread=true`, `limit`) so the first call yields a consumable, turn-ending result.
+- **Result-not-consumed / no terminal "final answer":** the 3B model may never emit a terminal message, so Hermes' agent loop (the `iteration N/90` cap) keeps re-prompting until it exhausts iterations / escalates.
+- **Hermes-side agent-loop / iteration-cap / escalation policy:** the escalation-to-paid on loop-exhaustion is itself a cost-thesis hazard worth a guard (a runaway local loop should fail closed at $0, not spill to the paid lane).
+
+**Scope:** DOWNSTREAM of and distinct from 10.7.6's toolset-allow-list selection lever. Owns the NEXT clause-3 story. Relates to [[project_qwen_cpu_toolcall_latency]] (repeated CPU calls compound the 26-min wall-clock), [[project_local_model_is_safety_net]] (a runaway local loop must not escalate to paid), the arg-fidelity caveat in the 10-7-0 spike §4.3, and [[project_reached_not_equal_usable]] (REACHED selection ≠ USABLE turn). Candidate next-story name: "qwen find_emails turn-termination / empty-arg loop guard."
+
+## Residual F-10-7-6-R1 (filed by Story 10.7.6) — the `turn`/`find_unread_emails` mis-binding is a Hermes-side (out-of-repo) primitive, NOT a toolset-trim target
+
+**Severity:** WARNING (blocks nothing in 10.7.6's config scope; a live-walk lever toward clause 3 if `find_emails` still loses to `turn` after `memory` is gone).
+
+On the FAILED clause-3 walk (F-10-7-CLAUSE3-W1, 2026-07-17) **row 15095** had qwen derive the CORRECT intent (`{"action":"find_unread_emails"}`) but bind it to the Hermes **`turn`** control primitive instead of the `mailbot-api` **`find_emails`** MCP verb. Story 10.7.6 Task 6 / AC-6 diagnosed this:
+
+- **`turn` is NOT a configurable toolset.** The live resolver (`docker exec mailbot-hermes hermes tools list --platform discord`, run pre- and post-trim in Task 1) lists the 27 built-in toolsets + the `mailbot-api` MCP server — **`turn` is not among them.** It is presented to the model by the Hermes agent harness itself, not via `platform_toolsets.discord`. → `platform_toolsets` (toolset granularity) **CANNOT** drop or rebind it. Classification: **Hermes-side registration/harness concern, out-of-repo.**
+- **grep-verified:** no `"turn"` TOOL registration and no `find_unread_emails` handler exists anywhere in `mailbot_api/`. (The sole `turn` textual hit — mcp_server.py:148 — is a prose comment defining the per-session hydration-reset window, not a tool.) So this is NOT a mailbot_api source fix and Story 10.7.6 does NOT claim one (over-claiming a `turn` fix would repeat the 10.7 unverified-surface mistake).
+
+**Actionable lever (owed toward clause 3, out-of-repo Hermes work):** a Hermes-side change to stop offering `turn` as an action-bearing tool on the Discord email surface, OR to bind `find_unread`-style intents to the `find_emails` MCP verb (a name/namespace-resolution fix so the intent qwen already derives lands on the real verb). This is filed, NOT silently absorbed and NOT falsely claimed fixed. Whether `turn` re-surfaces as the dominant attractor once `memory` is gone is a question the AC-8 live re-walk answers — if it does, this residual becomes the next load-bearing lever; if `find_emails` wins, it stays a latent WARNING.
+
 ## Residual F-10-7-3-R1 (filed by Story 10.7.3) — per-verb mailbot-api surface scoping NOT achievable via platform_toolsets
 
 **Severity:** WARNING (blocks nothing in 10.7.3; owed before clause-3 selection can be reliable on the flat surface).

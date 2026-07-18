@@ -136,11 +136,15 @@ mcp_servers:
 # KEEP-SET rationale:
 #   - mailbot-api : the 26 email verbs (the whole point; MCP server name)
 #   - cronjob     : Story 6-10 digest + notification-pull jobs run attached skills
-#   - memory      : defender-persona session hygiene
 #   - clarify     : AGENTS.md "when in doubt, ask for clarification" tiebreaker
+#                   (KEPT by Story 10.7.6: it did NOT appear as an attractor on
+#                   the failed clause-3 walk — all 11 rows were turn/memory/empty
+#                   — and it is a legitimate tiebreaker; dropping it would remove
+#                   a benign capability for no measured gain.)
 # Everything else is dropped — the built-in noise (tts/image_gen/vision/video/
 # file/browser/terminal/code_execution/web/todo/delegation/computer_use) that
-# WALK-10-6-4-F1 observed, PLUS the `skills` toolset.
+# WALK-10-6-4-F1 observed, PLUS the `skills` toolset, PLUS `messaging` (10.7.3)
+# and `memory` (10.7.6) — see the TRIMMED notes below.
 #
 # TRIMMED (Story 10.7.3): `messaging` was REMOVED from the keep-set. Its
 # `send_message` verb is the F-10-6-5-W1 defect-#1 mis-pick — qwen picks
@@ -155,6 +159,50 @@ mcp_servers:
 # verbs. A FUTURE multi-platform deploy that needs Rule R cross-platform push
 # must re-add `messaging` deliberately (and accept the send_message mis-pick
 # risk or pair it with per-verb scoping), NOT inherit this cut silently.
+#
+# TRIMMED (Story 10.7.6): `memory` was REMOVED from the keep-set. It was the
+# DOMINANT mis-pick attractor on the FAILED clause-3 live walk
+# (F-10-7-CLAUSE3-W1, 2026-07-17): on "find my unread emails" qwen produced 11
+# router_calls rows (id 15095-15106), none invoking `find_emails`. Row 15095
+# derived the correct INTENT (`{action:find_unread_emails}`) but bound it to the
+# Hermes `turn` control primitive; rows 15096-15104 (×9) then picked `memory`,
+# cascading into `{name:memory, action:remove, old_text:"unmute category"}`;
+# 15105 emitted an empty tool_calls; 15106 escalated OFF qwen to
+# claude-haiku-4-5 (the paid fallback the cost thesis exists to avoid). Once
+# 10.7.3 removed `messaging`, `memory` became the new dominant attractor. Its
+# stated function — defender-persona session hygiene (former KEEP-SET comment) —
+# is expected to survive the drop: the persona reference rides the
+# `.skills_prompt_snapshot.json` mechanism (see the "WHY `skills` IS DROPPED"
+# note above, config lines re: :184-186), NOT the `memory` toolset.
+# HONESTY BOUND (CR-10-7-6-1): two DIFFERENT confirmation levels — do not
+# conflate them. (a) The `memory ✗ disabled` / `mailbot-api all tools enabled`
+# toolset state IS confirmed live on the resolver (`hermes tools list
+# --platform discord`, Task 1 / AC-2) before shipping this edit. (b) The
+# persona-hygiene-SURVIVES claim is carried by ANALOGY to the `skills`/10.6.5
+# precedent — it is NOT independently persona-behavior-verified for `memory`
+# specifically here (no persona-behavior transcript was captured). The AC-8
+# live re-walk is where (b) is actually exercised: if the defender persona
+# degrades once `memory` is gone, restore `memory` and pivot to a per-verb /
+# prompt lever (AC-2 alternative branch). A future need for cross-session
+# memory hygiene on the email surface must re-add `memory` deliberately (and pair
+# it with per-verb scoping or a tree menu to avoid re-introducing the mis-pick),
+# NOT inherit this cut silently.
+#
+# `turn`/`find_unread_emails` DIAGNOSIS (Story 10.7.6 Task 6 / AC-6): row 15095
+# bound the correct intent to `turn`, a Hermes CONTROL PRIMITIVE. The live
+# resolver (`hermes tools list --platform discord`) does NOT list `turn` as a
+# configurable toolset — it is not one of the 27 built-in toolsets and not an
+# MCP server, so `platform_toolsets.discord` CANNOT drop it (toolset-granularity
+# lever does not reach it). `turn` is presented to the model by the Hermes agent
+# harness itself, out-of-repo. Classification: NOT a surface-trim target; it is a
+# Hermes-side registration/harness concern. Actionable lever filed as residual
+# F-10-7-6-R1 (story-run-flags.md) — a Hermes-side change to stop offering `turn`
+# as an action-bearing tool on the Discord email surface, or to bind
+# find_unread-style intents to the `find_emails` MCP verb. Out-of-repo; NOT a
+# mailbot_api source fix, NOT claimed fixed by this story.
+# END TRIMMED (Story 10.7.6)  ← dedicated end-marker; the 10.7.6 doc-gate anchors
+#   on this (CR-10-7-6-2), not the bare `platform_toolsets:` substring which could
+#   appear in future prose and truncate the scoped block early.
 #
 # BOUNDARY — what this toolset-level allow-list CANNOT do (Story 10.7.3 AC-5):
 # the 10-7-0 spike's DOMINANT real-surface mis-pick is
@@ -202,7 +250,6 @@ platform_toolsets:
   discord:
     - mailbot-api
     - cronjob
-    - memory
     - clarify
 
 # --- Discord gateway behavior ---
