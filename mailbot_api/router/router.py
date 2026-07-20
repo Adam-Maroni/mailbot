@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Literal, cast
+from typing import Any, Final, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -149,6 +149,16 @@ _TOOL_CAPABLE_LOCAL_MODEL_RE = re.compile(r"^qwen2\.5:")
 # and (b) prefer the concrete MailBot inbox verbs over generic/notification
 # tools for an email request. Injected ONLY on the local qwen tool-call path
 # (`_TOOL_CAPABLE_LOCAL_MODEL_RE`); the API-bound (`claude-*`) path is untouched.
+# Story 10.7.7 walk (F-10-7-7-W1) — a "for unread email, call find_emails with
+# unread_only=true" directive was ADDED here and then REVERTED: a live clause-3
+# walk measured it did NOT move qwen — every walk it still emitted find_emails
+# with args `{}` (guard log `repeated_args_redacted="{}"`). The prompt lever that
+# moved SELECTION in 10.7.5 does NOT move ARGUMENT-population for Qwen-3B here, so
+# the directive was removed rather than kept as dead prompt-bloat crowding a
+# 3B/Q4 context. F-10-7-7-W1 is recorded as a Qwen-3B argument-population ceiling
+# and escalated to the qwen-management epic; the unread_only FILTER capability
+# (migration 029 + schema field + query) is correct and KEPT for a
+# bigger-local-model / Hermes-side find_unread_emails-alias fix.
 _QWEN_TOOLCALL_SYSTEM_INSTRUCTION = (
     "You have tools available. When the user asks you to do something a tool "
     "can do, CALL THE TOOL by emitting a structured function call — do not "
@@ -156,7 +166,8 @@ _QWEN_TOOLCALL_SYSTEM_INSTRUCTION = (
     "block in your reply). For a request about the user's email or inbox "
     "(finding, reading, listing, searching, counting mail), prefer the "
     "email-reading tools (such as find_emails) over generic messaging or "
-    "notification tools. Pass the tool arguments exactly as given; do not "
+    "notification tools. "
+    "Pass the tool arguments exactly as given; do not "
     "alter ids or other values."
 )
 
@@ -428,6 +439,39 @@ async def _emit_tool_calls_unavailable_audit_row(
     `TOOL_CALLS_UNAVAILABLE_DEGRADED` error code lives on the returned
     RouterError, making the fault reconstructable.
     """
+    await _record(
+        db_path=db_path,
+        task_type=_TOOL_CALL_TASK_TYPE,
+        prompt_version=_TOOL_CALL_PROMPT_VERSION,
+        model_chosen=model,
+        model_chosen_reason=model_chosen_reason,
+        tokens_in=0,
+        tokens_out=0,
+        cached_tokens_in=0,
+        cost_usd_estimated=0.0,
+        latency_ms=0,
+        outcome="failed",
+        caller_verb=caller_verb,
+        caller_origin=caller_origin,
+        email_id=email_id,
+    )
+
+
+async def _emit_no_progress_audit_row(
+    *,
+    db_path: str,
+    model: str,
+    model_chosen_reason: str,
+    caller_verb: str | None,
+    caller_origin: str,
+    email_id: str | None,
+) -> None:
+    """Story 10.7.7 (AC-2/AC-3) — emit an auditable row when the router
+    short-circuits a same-verb-same-args storm (NO_PROGRESS). No adapter call
+    happened, so zero tokens / zero cost — the row's `outcome="failed"` +
+    `cost_usd_estimated=0.0` is the forensic proof the turn failed CLOSED at $0
+    (never reached a paid model). Without this row the terminal return would
+    leave no `router_calls` trace of why a runaway turn stopped."""
     await _record(
         db_path=db_path,
         task_type=_TOOL_CALL_TASK_TYPE,
@@ -1816,6 +1860,128 @@ def _build_tool_calls_summary(tool_calls: list[Any]) -> str:
     return json.dumps(summary, separators=(",", ":"))
 
 
+# ---------------------------------------------------------------------------
+# Story 10.7.7 (AC-2/AC-3, F-10-7-6-R2) — turn-termination / repeat-invocation
+# guard. The 10.7.6 clause-3 walk fixed SELECTION (qwen reaches find_emails)
+# but then ran away: ~60 identical `find_emails({})` calls in 26 minutes, no
+# reply, then Hermes's agent loop escalated the turn to the PAID lane (haiku)
+# → 502. The turn-level `iteration N/90` counter is Hermes-side (out-of-repo);
+# nothing on the MailBot side detected the same-verb-same-args storm and gave
+# the model a terminal signal. This guard does exactly that, at the
+# dispatch_tool_call seam, BEFORE any adapter call — so a runaway LOCAL turn
+# fails closed at $0 (no adapter dispatch = no spend, and dispatch_tool_call
+# has no escalation chain, so it can never reach a paid model itself).
+# ---------------------------------------------------------------------------
+
+# Threshold: how many identical (tool-name, normalized-args) invocations must
+# appear IN A TRAILING CONSECUTIVE RUN (the model's current choice, repeated
+# with no intervening distinct call) before we short-circuit. Hermes replays the
+# whole growing transcript on each call, so a trailing run of N identical
+# assistant tool_calls means the model is stuck on its (N+1)th attempt at the
+# same no-op RIGHT NOW. 4 is small enough to stop a 60× storm fast (kills it on
+# the 5th identical trailing call, ~1/12th of the observed runaway) yet large
+# enough that a legitimate repeat is never tripped.
+#
+# CR-2026-07-20 (auditor): counting TRAILING-CONSECUTIVE — not transcript-wide
+# lifetime — is the load-bearing correctness choice. A lifetime count would
+# false-positive AC-2's "must NOT break a legitimate second user turn": a user
+# who asks "show my unread emails" (→ find_emails({})) across 4 SEPARATE
+# successful turns would accumulate 4 identical calls and get a spurious
+# NO_PROGRESS, even though each turn succeeded. A trailing-run count resets the
+# instant ANY distinct call (or a different tool) appears, so only a genuine
+# unbroken storm within the current stuck sequence trips it — no reliance on the
+# out-of-repo assumption that Hermes opens a fresh transcript per user turn.
+_REPEAT_INVOCATION_THRESHOLD: Final[int] = 4
+
+
+def _normalize_tool_args(arguments_json: str) -> str:
+    """Return a canonical form of a tool-call arguments JSON string for
+    equivalence comparison. Parses then re-dumps with sorted keys so
+    `{"a":1,"b":2}` and `{"b":2,"a":1}` (and whitespace variants) compare
+    equal. Falls back to a stripped raw string when the args aren't valid
+    JSON (still gives a stable key for the storm detector)."""
+    try:
+        parsed = json.loads(arguments_json)
+    except (json.JSONDecodeError, ValueError):
+        return arguments_json.strip()
+    return json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+
+
+def _iter_assistant_tool_calls(
+    messages: list[dict[str, Any]],
+) -> list[tuple[str, str]]:
+    """Return the ordered list of (tool_name, normalized-args) for every
+    assistant tool_call in the transcript, in transcript order.
+
+    Pure helper. Mirrors `_resolve_email_ids_from_messages`'s message-walking
+    (dict OR Pydantic tool-call shapes) so it survives both the production path
+    (model_dump dicts) and direct-caller Pydantic models. Unparseable tool_calls
+    are skipped (they can't be part of an identical-run key anyway)."""
+    seq: list[tuple[str, str]] = []
+    for m in messages:
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        tool_calls = m.get("tool_calls") or []
+        if not isinstance(tool_calls, list):
+            continue
+        for tc in tool_calls:
+            if isinstance(tc, dict):
+                fn = tc.get("function")
+                name = fn.get("name") if isinstance(fn, dict) else None
+                args_str = fn.get("arguments") if isinstance(fn, dict) else None
+            else:
+                fn = getattr(tc, "function", None)
+                name = getattr(fn, "name", None) if fn is not None else None
+                args_str = getattr(fn, "arguments", None) if fn is not None else None
+            if not isinstance(name, str) or not isinstance(args_str, str):
+                continue
+            seq.append((name, _normalize_tool_args(args_str)))
+    return seq
+
+
+def _max_repeated_tool_invocation(
+    messages: list[dict[str, Any]],
+) -> tuple[str, int, str]:
+    """Return (tool_name, count, normalized_args) for the TRAILING CONSECUTIVE
+    RUN of identical (name, normalized-args) assistant tool_calls at the end of
+    the transcript — i.e. how many times in a row the model's LATEST choice has
+    been repeated with no intervening distinct call. Returns ("", 0, "") when
+    there are no assistant tool_calls.
+
+    The `normalized_args` of the repeated call is returned so the guard-fire log
+    can surface WHAT the model kept calling (e.g. whether "find my unread
+    emails" produced `find_emails({})` with no unread_only, or already set it) —
+    this is the only forensic window into the storming args, since the guard
+    short-circuits BEFORE the audit row records a tool_calls_summary.
+
+    Trailing-consecutive (not transcript-wide lifetime) is deliberate: it is the
+    only counting that captures a genuine within-turn storm without
+    false-positiving a legitimate call that recurs across separate successful
+    turns (CR-2026-07-20). Any distinct call breaks the run.
+
+    Pure function (no DB / no I/O).
+    """
+    seq = _iter_assistant_tool_calls(messages)
+    if not seq:
+        return "", 0, ""
+    last_name, last_args = seq[-1]
+    run = 0
+    for name, args in reversed(seq):
+        if (name, args) == (last_name, last_args):
+            run += 1
+        else:
+            break
+    return last_name, run, last_args
+
+
+def _model_is_local(model: str) -> bool:
+    """True when `model` is a local (Ollama, $0) model rather than an
+    API-bound paid model. Used by the AC-3 fail-closed assertion — the storm
+    guard fires for any model, but on a LOCAL turn we additionally confirm no
+    paid spend was possible. Complement of `_API_BOUND_MODEL_RE`."""
+    return _API_BOUND_MODEL_RE.match(model) is None
+
+
 async def dispatch_tool_call(
     *,
     messages: list[dict[str, Any]],
@@ -2004,6 +2170,63 @@ async def dispatch_tool_call(
         # default are correct. `hermes_aux` stays the LANE proxy (policy_entry
         # above), not the model source.
         model_chosen_reason = policy_default(_TOOL_CALL_TASK_TYPE)
+
+    # ---- Story 10.7.7 (AC-2/AC-3) — turn-termination / repeat-invocation guard ----
+    # Detect a same-verb-same-args storm within THIS turn's transcript and fail
+    # closed BEFORE any adapter dispatch. Placed here — after model + reason
+    # resolution, before the degraded/capability/sensitivity gates and every
+    # adapter call — so (a) the audit row names the model the turn would have
+    # used, and (b) short-circuiting guarantees $0: no `call_with_tools`
+    # happens, and dispatch_tool_call has no escalation chain, so the turn can
+    # never reach a paid model. This is the mailbot-side terminator for the
+    # 10.7.6 runaway (F-10-7-6-R2): the model gets a terminal NO_PROGRESS result
+    # instead of an (N+1)th identical no-op, so Hermes's agent loop stops
+    # replaying the storm rather than exhausting its iteration budget and
+    # escalating the whole turn to the paid lane.
+    _storm_tool, _storm_count, _storm_args = _max_repeated_tool_invocation(messages)
+    if _storm_count >= _REPEAT_INVOCATION_THRESHOLD:
+        _logger.warning(
+            "tool-call turn short-circuited — repeat-invocation storm detected",
+            extra={
+                "event": "router.tool_call.no_progress",
+                "tool": _storm_tool,
+                "repeat_count": _storm_count,
+                "threshold": _REPEAT_INVOCATION_THRESHOLD,
+                # Story 10.7.7 walk diagnosis: surface the REPEATED ARGS (redacted)
+                # so a walk can tell whether the model set unread_only or kept
+                # calling with an empty filter — the guard fires before the audit
+                # row records a tool_calls_summary, so this is the only window.
+                "repeated_args_redacted": _redact_tool_args_for_audit(_storm_args),
+                "model": model,
+                "model_is_local": _model_is_local(model),
+                "caller_verb": caller_verb,
+            },
+        )
+        await _emit_no_progress_audit_row(
+            db_path=db_path,
+            model=model,
+            model_chosen_reason=model_chosen_reason,
+            caller_verb=caller_verb,
+            caller_origin=caller_origin,
+            email_id=email_id,
+        )
+        return ToolCallResult(
+            ok=False,
+            error=RouterError(
+                code=ErrorCode.NO_PROGRESS,
+                message=(
+                    f"I keep calling `{_storm_tool}` with the same input and "
+                    "getting the same result, so I'm stopping instead of looping. "
+                    "If you were asking for unread emails, try rephrasing, or "
+                    "narrow the request (e.g. a sender or a date range) so I have "
+                    "something new to search on."
+                ),
+                retryable=False,
+                model_attempted=[model],
+            ),
+            model_used=model,
+            finish_reason="stop",
+        )
 
     # ---- Story 2-8 Layer 3 — degraded mode gate ----
     # Story 10.5.1 (AC-2, the CLASS): authoritative cross-process degraded read

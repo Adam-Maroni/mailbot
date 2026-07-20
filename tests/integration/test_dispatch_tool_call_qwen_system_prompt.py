@@ -338,6 +338,18 @@ async def test_whitespace_only_client_system_message_no_leading_junk(
 # (case-sensitive, colon-required) directly on the pure function.
 
 
+def test_qwen_instruction_has_no_unread_directive_reverted() -> None:
+    """Story 10.7.7 walk (F-10-7-7-W1): an "unread → find_emails(unread_only=
+    true)" directive was added to this instruction and then REVERTED — the live
+    walk proved Qwen-3B ignores the arg directive (still sends find_emails({})),
+    so it was removed rather than kept as dead prompt-bloat crowding a 3B
+    context. Pin the REVERTED state so it isn't silently re-added under the
+    (disproven) belief that prompting fixes argument-population here."""
+    instr = _QWEN_TOOLCALL_SYSTEM_INSTRUCTION.lower()
+    assert "unread_only" not in instr
+    assert "find_unread_emails" not in instr
+
+
 def test_compose_helper_injects_for_canonical_qwen() -> None:
     out = _compose_qwen_toolcall_system_text(_QWEN, "PERSONA")
     assert out == "PERSONA" + "\n\n" + _QWEN_TOOLCALL_SYSTEM_INSTRUCTION

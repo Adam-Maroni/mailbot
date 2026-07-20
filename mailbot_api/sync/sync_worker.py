@@ -220,6 +220,13 @@ async def _upsert_message(db_path: str, message: dict[str, Any]) -> bool:
     has_attachments = 1 if message.get("hasAttachments") else 0
     from_address = sender_id or None
     from_display_name = sender_display or None
+    # Story 10.7.7 (AC-1): capture Graph's `isRead` (present on every message
+    # resource by default) as a 0/1 read flag. When Graph omits it (defensive —
+    # it should always be present), persist NULL rather than guessing a value,
+    # so `unread_only` never surfaces a row whose read-state we don't actually
+    # know. This is the truthful backing signal for "find my unread emails".
+    _is_read_raw = message.get("isRead")
+    is_read = (1 if _is_read_raw else 0) if _is_read_raw is not None else None
 
     # Upsert sender first (FK target for emails).
     if sender_id:
@@ -251,6 +258,7 @@ async def _upsert_message(db_path: str, message: dict[str, Any]) -> bool:
             subject,
             body_preview,
             has_attachments,
+            is_read,
         ),
     )
     return bool(rowcount)

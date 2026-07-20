@@ -40,10 +40,14 @@ _EXPECTED_ERROR_CODES = {
     # Story 10.5.5 (AC-2, F-10-3-2): clean typed refusal when a tool-call
     # resolves/demotes to a tools-incapable model under degraded mode.
     "TOOL_CALLS_UNAVAILABLE_DEGRADED": "tool_calls_unavailable_degraded",
+    # Story 10.7.7 (AC-2/AC-3, F-10-7-6-R2): terminal signal when a tool-call
+    # turn re-invokes the same verb+args past the repeat-invocation threshold —
+    # the router fails the turn closed at $0 instead of looping to the paid lane.
+    "NO_PROGRESS": "no_progress",
 }
 
 
-def test_error_code_has_exactly_16_members() -> None:
+def test_error_code_has_exactly_17_members() -> None:
     members = {m.name for m in ErrorCode}
     assert members == set(_EXPECTED_ERROR_CODES.keys()), (
         f"ErrorCode membership drift detected. "

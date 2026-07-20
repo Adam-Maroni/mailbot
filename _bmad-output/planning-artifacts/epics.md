@@ -13,7 +13,7 @@ completedAt: '2026-05-31'
 requirementsConfirmed: true
 epicsApproved: true
 epicCount: 12  # +Epic 10.7 (Qwen Tool-Call Fidelity), appended 2026-07-15 at Epic 10.6 retro (Adam D2)
-storyCount: 93  # Epic 10.6 grew 4→6 (+10.6.4 latency, +10.6.5 tool-surface); +5 for Epic 10.7 (10.7.0 spike [firm] + 10.7.1-10.7.4 provisional/contingent, spike-gated). Prev comment "+4" was pre-10.6 walk-spawns.
+storyCount: 94  # Epic 10.6 grew 4→6 (+10.6.4 latency, +10.6.5 tool-surface); +5 for Epic 10.7 (10.7.0 spike [firm] + 10.7.1-10.7.4 provisional/contingent, spike-gated); +10.7.8 (2026-07-20, clause-3 sequel to 10.7.7: small menu + unread arg-population fidelity, consolidates F-10-7-7-W1/F-10-7-3-R1/F-10-7-6-R1). Prev comment "+4" was pre-10.6 walk-spawns.
 frCoverage: '62/62'
 nfrCoverage: '24/24'
 ---

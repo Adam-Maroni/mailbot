@@ -980,6 +980,10 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
         "(sender, unread-only, date range, keyword) and it returns matching "
         "emails, newest first, up to 100 at a time. Use this whenever the "
         "user asks to see, check, or look through their email or inbox. "
+        # Story 10.7.7 walk (F-10-7-7-W1): a "for unread, set unread_only=true"
+        # directive was added here and reverted — the live walk proved qwen
+        # ignores it (still calls find_emails with args `{}`). Kept minimal;
+        # `unread-only` stays in the filter list above as a plain capability.
         "Returns a summary per email; call hydrate_email for a full body."
     ),
     "hydrate_email": (

@@ -2,6 +2,50 @@
 
 This file collects flags raised by `autonomous-story-run` runs. One block per invocation.
 
+## Story 10-7-7 Manual Verification (walks #2 + #3) — 2026-07-20 (Adam) — ❌ FAIL → F-10-7-7-W1 = Qwen-3B argument-population CEILING
+
+**Verdict: FAIL ×2 more (Adam-signed).** After walk #1's FAIL (below), a walk-fix landed: three model-facing edits (qwen system instruction + `unread_only` field desc + `find_emails` tool desc) all directing "unread → find_emails(unread_only=true); no separate find_unread_emails tool" (the proven 10.7.5 SELECTION lever). It was CR-clean (opus-4-7 ≠ fable-5, 1 LOW + 1 NIT applied).
+
+**Walks #2 (11:13) + #3 (11:16, on a freshly-restarted Hermes) FAILED identically** — same guard stop-message. Router: one `chat_completions_tool_call` row each (id 15442, 15443), qwen, outcome=failed, $0; guard fired at `repeat_count=4` on the FIRST mailbot dispatch. Restarting Hermes did NOT change it.
+
+**DECISIVE evidence (added a guard-fire arg-diagnostic `repeated_args_redacted` to see it):** qwen calls `find_emails` with args **`{}`** — completely empty, no `filter`, no `unread_only`. The prompt/description edits moved it ZERO. Also proven: `find_emails` NEVER executed at the MCP verb level across any walk (only the `pull_pending_notifications` cron runs) — the guard intercepts the repeated tool-call INTENTION at the `/v1/chat/completions` dispatch seam before the verb.
+
+**F-10-7-7-W1 = Qwen-3B ARGUMENT-POPULATION CEILING (Adam-decided).** Prompting fixes tool SELECTION (10.7.5) but does NOT move ARGUMENT-population — qwen picks the right tool but won't fill in `unread_only` regardless of wording. In-repo structural fix is blocked: chat tools are Hermes-supplied (`request.tools`, main.py:856), so a `find_unread_emails` alias needs `hermes-config` (out of this repo).
+
+**Disposition:** the 3 prompt/description edits were **REVERTED** (dead bloat degrades a 3B/Q4 context per the 10.7.0 spike). **KEPT:** the runaway guard (the real, proven win), the `unread_only` FILTER capability (migration 029 + schema + query, tested + correct), and the guard arg-diagnostic. **ESCALATED** to the qwen-management epic: the $0-local-unread-reply gap (bigger local model vs Hermes-side find_unread_emails alias vs haiku-floor). Story STAYS `review`; Epic 10.6 clause 3b STAYS OPEN. Suite green after revert. Full record: `10-7-7-walk-evidence.md`. Nothing committed.
+
+**Durable lesson:** a passing guard/bounded turn ≠ a usable turn, AND a CR-clean prompt edit ≠ a working prompt edit — only the live walk (reading the reply + the guard-arg diagnostic) exposed that a 3B model silently ignores an otherwise-well-formed directive. Live-walk the load-bearing clause EARLY, and instrument the seam that masks the model's actual output.
+
+## Story 10-7-7 Manual Verification (walk #1) — 2026-07-20 (Adam) — ❌ FAIL (runaway FIXED, but usable-unread reply NOT rendered)
+
+**Verdict: FAIL (Adam-signed 2026-07-20).** Adam sent "find my unread emails" on real Discord 10:02→10:05 AM (mailbot-api restarted with the new code, migration 029 applied, `is_read` seeded via forced full re-sync → 86 live `is_read=0` rows).
+
+**What PASSED — this story's OWNED fix (F-10-7-6-R2 runaway → paid → 502):** the runaway is DEAD. `router_calls` 15399–15406: qwen called `find_emails` 5× on empty filters then the **guard fired at the 5th identical call (id 15405, outcome=failed, $0)** and the `NO_PROGRESS` message RENDERED in Discord ("I keep calling …find_emails with the same input… so I'm stopping instead of looping…"). **6 calls / iteration 6/90 / ~2 min** (vs 10.7.6's ~60 / 55-of-90 / 26 min). NO tool-loop escalation to paid, NO 502, NO rate-limit breach.
+
+**Why FAIL:** the usable UNREAD reply never rendered. qwen's 1st call (id 15399) was `find_unread_emails` — the wrong-namespace mis-binding (**F-10-7-6-R1**, out-of-repo Hermes/tool primitive, NOT this story's fix) — then it fell to `find_emails({})` with an EMPTY filter, **never setting `unread_only:true`**. So AC-1's new capability was never exercised (86 live `is_read=0` rows sat unqueried) and the Discord reply was the guard's stop-message, not an unread list. Also NOT strictly $0: one downstream `hermes_aux` TEXT call on haiku (id 15406, $0.000249, 179 tok in / 14 out) fired 1.2s AFTER the guard to compose the final message — distinct from the 10.7.6 paid-LOOP breach, but not $0.
+
+**New dominant defect — F-10-7-7-W1 (BLOCKING for clause 3):** qwen does not SELECT `unread_only` for an "unread emails" request (compounded by the F-10-7-6-R1 `find_unread_emails` mis-binding). This is the SELECTION layer — downstream of and distinct from the runaway 10-7-7 fixed. Clause 3 / Epic 10.6 clause 3b STAYS OPEN. Candidate fixes for the sequel story: a tool-description nudge pushing "unread" → `find_emails(unread_only=true)`, and/or a `find_unread_emails` alias resolving to that filter (tackling F-10-7-6-R1). Also decide AC-3's disposition on the $0.0002 post-guard haiku text row (loop failed closed at $0; a separate text-compose step used the paid lane).
+
+**Story 10-7-7 STAYS `review`, re-opened.** The runaway-fix code (migration 029 + unread_only + NO_PROGRESS guard) is CORRECT and kept — proven live — just not sufficient for a usable unread turn alone. Full record: `10-7-7-walk-evidence.md`. Nothing committed.
+
+## Story 10-7-7 — 2026-07-20
+
+**Headline:** Clause-3 sequel to 10.7.6 implemented offline: (AC-1) truthful unread signal — migration 029 `emails.is_read` from Graph `isRead` + `FindEmailsFilter.unread_only`; (AC-2/AC-3) repeat-invocation / turn-termination guard at the `dispatch_tool_call` seam returning a terminal `NO_PROGRESS` that fails closed at $0 (no adapter, no escalation chain). Tasks 1–7 done, gates green. **Task 8 (AC-7 clause-3 live re-walk) is the Adam-hands-on done-gate — the autonomous run HALTS here; story stays `review`.**
+
+- **Dev model:** claude-fable-5. **Review model:** claude-opus-4-7 (reviewer ≠ dev, per feedback_reviewer_model_substitution).
+- **Review rounds:** 1. Findings: 4 Patch (**4/4 applied = 100%**), 0 decision, 0 defer, 7 dismissed. >70% applied ✓.
+- **Deferred items:** none.
+- **Gate verdicts:** 2.3.5 pre-review PASS (5 sections + 12 posture checks) · 2.4.4 Dev Agent Record PASS · 2.4.5 UI-scope N/A (no frontend) · 2.4.6 File-List-vs-git PASS (15 paths staged) · 2.4.7 middleware-real-bootstrap PASS (real SQLite + real dispatch + real `/v1/chat/completions`) · 2.4.8 truncation PASS.
+- **Step 2.5 dev-env verification:** N/A — no `<dev-env-skill>` on this project; live boot folded into Task 8's Adam walk.
+- **Permission prompts during run:** zero. No permission log configured; no command fell outside settings.json.
+- **Gates:** ruff + mypy clean; pytest **2002 passed** (+25 vs 1977 baseline).
+
+### INFO — AC-7 clause-3 live re-walk OUTSTANDING (by design)
+The done-gate (AC-7 = Epic 10.6 clause 3b) is an Adam-hands-on live Discord walk, NOT autonomous-compatible (Task 8 HALTs). Story is complete through Task 7 + staged but stays `review` — does NOT flip `done` until Adam runs the walk and signs. Mirrors the 10.7.6 precedent.
+
+### WATCH — is_read NULL posture (self-flagged, pre-review §4)
+Emails synced BEFORE migration 029 carry `is_read=NULL` and are invisible to `unread_only` until re-synced. On the first walk the unread list may show FEWER items than Outlook until a full delta re-sync repopulates `is_read`. If the walk shows an empty/short unread list, trigger `sync-now` (or wait for the pull loop) BEFORE concluding the filter is broken. Read the DISCORD REPLY, not just router rows.
+
 ## Story 10-7-6 Manual Verification — 2026-07-18 (Adam) — ❌ FAIL (runaway loop, no reply, paid escalation, 502)
 
 **Verdict: FAIL.** Adam sent "find my unread emails" on real Discord (11:49→12:15 UTC). SELECTION fix WORKED (memory 0 picks vs 9/11 on the failed 2026-07-17 walk; turn mis-binding gone; qwen reaches `find_emails`) — but the turn RAN AWAY. Router evidence (66 rows, 15230–15295): `find_emails` ×59 + `find_unread_emails` ×1, all on empty `input:{}`, over 26 min; Discord showed `mcp_mailbot_api_find_emails ×60` + `Working — 24 min — iteration 55/90`; NO unread-emails reply rendered; the loop then ESCALATED to `claude-haiku-4-5` (paid, rows 15293–15295, outcome=failed) and died on `HTTP 502: rate limit breached: lane:interactive`. **AC-8 FAILS** — no usable outcome, paid escalation occurred, not $0. **Clause 3 = REACHED but NOT USABLE.** Story stays `review`, re-opens on a NEW defect layer (runaway loop / empty-arg non-termination / result-consumption / turn-termination) that is DOWNSTREAM of and distinct from the toolset-selection lever 10.7.6 owned. **F-10-7-6-R2 promoted to BLOCKING** — the next load-bearing lever. The memory-drop config fix is CORRECT and kept (a real advance past 2026-07-17), just not sufficient alone. Full record: `10-7-6-walk-evidence.md`. Nothing committed.

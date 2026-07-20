@@ -640,6 +640,23 @@ async def chat_completions(
                 )
             return _tool_unavail
 
+        # Story 10.7.7 (AC-2/AC-3): a NO_PROGRESS terminal (repeat-invocation
+        # storm short-circuited at $0) is likewise permanent + user-actionable
+        # — render the router's calm message as a graceful 200 so Hermes ends
+        # the turn instead of 502-retrying the runaway. Mirrors the two refusals
+        # above; the router already failed closed with no adapter call.
+        _no_progress = _no_progress_completion(result, raw_request)
+        if _no_progress is not None:
+            if request.stream:
+                return StreamingResponse(
+                    _plain_text_completion_sse_chunks(
+                        completion=_no_progress,
+                        raw_request=raw_request,
+                    ),
+                    media_type="text/event-stream",
+                )
+            return _no_progress
+
         _raise_router_error_if_failed(result)
 
         # F-10-5-5-W1: DB-authoritative month-to-date for the footer (matches
@@ -916,6 +933,51 @@ def _tool_calls_unavailable_completion(
     if result.error.code is not _ErrorCode.TOOL_CALLS_UNAVAILABLE_DEGRADED:
         return None
     # The router already composed a cause-accurate, id-free message (W2b).
+    return {
+        "id": f"chatcmpl-mailbot-{id(raw_request):x}",
+        "object": "chat.completion",
+        "created": 0,
+        "model": getattr(result, "model_used", "") or "",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": result.error.message,
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cached_input_tokens": 0,
+        },
+    }
+
+
+def _no_progress_completion(
+    result: Any, raw_request: Request,
+) -> dict[str, Any] | None:
+    """Story 10.7.7 (AC-2/AC-3): render a `NO_PROGRESS` terminal (a
+    repeat-invocation storm the router short-circuited at $0) as a graceful
+    200-shape chat.completion instead of a raw HTTP-502.
+
+    Mirrors `_tool_calls_unavailable_completion` / `_sensitivity_refusal_completion`:
+    the runaway `find_emails({})` loop that the 10.7.6 walk hit is a permanent,
+    user-actionable condition — not a transient upstream failure — so it must
+    render as a calm assistant message the user can act on (rephrase / narrow),
+    NOT a 502 that Hermes retries into another loop. The router already failed
+    closed with zero adapter calls (no spend), so this is a pure render. Returns
+    None for any other failure so the caller falls through to the 502 path.
+    """
+    if result.ok or result.error is None:
+        return None
+    from mailbot_api.router.errors import ErrorCode as _ErrorCode  # noqa: PLC0415
+
+    if result.error.code is not _ErrorCode.NO_PROGRESS:
+        return None
     return {
         "id": f"chatcmpl-mailbot-{id(raw_request):x}",
         "object": "chat.completion",

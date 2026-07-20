@@ -96,8 +96,11 @@ class EmailProjection(BaseModel):
 class FindEmailsFilter(BaseModel):
     """Filter spec for find_emails / count_emails. Frozen, all fields optional.
 
-    NOTE: `unread_only` is intentionally absent — emails.is_read is not captured
-    today. Filed as a deferred follow-up; see story 5-1 §schema-reality reframe.
+    Story 10.7.7 (AC-1): `unread_only` is now supported — `emails.is_read` is
+    captured from Graph `isRead` at sync time (migration 029). Setting it True
+    filters to genuinely-unread mail (`is_read = 0`); rows synced before the
+    column existed carry NULL and are excluded (we only claim unread when Graph
+    told us so). This is the truthful backing signal for "find my unread emails".
     """
 
     model_config = ConfigDict(frozen=True)
@@ -114,6 +117,18 @@ class FindEmailsFilter(BaseModel):
     query: str | None = Field(
         default=None,
         description="Substring match on subject + summary_short (parameterized LIKE).",
+    )
+    # Story 10.7.7: the unread FILTER capability is real + tested (migration 029
+    # is_read from Graph). An imperative "you MUST set this for unread" phrasing
+    # was tried + reverted (F-10-7-7-W1 walk: Qwen-3B ignores the arg directive
+    # and still sends find_emails({})); kept as a plain capability description.
+    unread_only: bool | None = Field(
+        default=None,
+        description=(
+            "When true, return only unread emails (the ones not yet opened). "
+            "This is the filter for 'find/show my unread emails'; without it, "
+            "find_emails returns all recent mail, not just unread."
+        ),
     )
 
 

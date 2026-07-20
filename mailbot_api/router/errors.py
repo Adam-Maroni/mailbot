@@ -77,6 +77,14 @@ class ErrorCode(str, Enum):
     # tool-INcapable model reaching a tools request (e.g. an embedding model
     # like `nomic-embed-text`). The enum name is retained for stability.
     TOOL_CALLS_UNAVAILABLE_DEGRADED = "tool_calls_unavailable_degraded"
+    # Story 10.7.7 (AC-2/AC-3, F-10-7-6-R2): a single turn re-invoked the same
+    # tool with equivalent args past the repeat-invocation threshold without
+    # making progress (the runaway `find_emails({})` storm the 10.7.6 walk hit —
+    # ~60 identical calls in 26 min, no reply). The router returns this terminal
+    # code INSTEAD of dispatching the (N+1)th identical call, so the turn ends
+    # at $0 rather than looping and spilling to the paid lane. Renders as a
+    # graceful 200 assistant message (mirrors TOOL_CALLS_UNAVAILABLE_DEGRADED).
+    NO_PROGRESS = "no_progress"
 
 
 class RouterError(BaseModel):

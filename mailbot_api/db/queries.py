@@ -134,10 +134,14 @@ THREAD_UPSERT = (
 # `changeKey`; the fallback emits a structured warning when it fires).
 
 EMAIL_UPSERT = (
+    # Story 10.7.7 (AC-1): `is_read` appended LAST to the column + VALUES list
+    # so the sync worker's positional param order stays stable for the existing
+    # columns. Populated from Graph `isRead` (0/1) or NULL when Graph omits it.
     "INSERT INTO emails ("
     "  graph_id, change_marker, thread_id, sender_id, received_at, "
-    "  from_address, from_display_name, subject, body_preview, has_attachments"
-    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+    "  from_address, from_display_name, subject, body_preview, has_attachments, "
+    "  is_read"
+    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
     "ON CONFLICT(graph_id) DO UPDATE SET "
     "  change_marker = excluded.change_marker, "
     "  thread_id = excluded.thread_id, "
@@ -147,7 +151,10 @@ EMAIL_UPSERT = (
     "  from_display_name = excluded.from_display_name, "
     "  subject = excluded.subject, "
     "  body_preview = excluded.body_preview, "
-    "  has_attachments = excluded.has_attachments "
+    "  has_attachments = excluded.has_attachments, "
+    # Story 10.7.7 (AC-1): keep is_read fresh on every re-sync so a
+    # mark-read/mark-unread in Outlook propagates to the local unread filter.
+    "  is_read = excluded.is_read "
     "WHERE emails.change_marker IS NULL OR emails.change_marker != excluded.change_marker"
 )
 

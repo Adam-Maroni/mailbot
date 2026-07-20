@@ -79,6 +79,12 @@ def _build_where_and_params(
         pattern = f"%{_escape_like(f.query)}%"
         params.append(pattern)
         params.append(pattern)
+    if f.unread_only:
+        # Story 10.7.7 (AC-1): unread == is_read = 0. NULL rows (synced before
+        # migration 029) are excluded by SQLite's three-valued logic — an
+        # honest posture (only claim unread when Graph actually said so). No
+        # parameter needed: the literal 0 is a fixed constant, not user input.
+        clauses.append("is_read = 0")
 
     if not clauses:
         return "", params
