@@ -19,6 +19,25 @@ _log = logging.getLogger(__name__)
 
 
 class PauseState:
+    """A global, system-wide flag (not per-request) that stops the bot from
+    calling any model.
+
+    When set, ``ask_router`` short-circuits *before adapter dispatch*, so no
+    ``ModelAdapter`` is ever invoked. It's a guardrail that prevents two things
+    at once: (1) spending money on LLM token consumption, and (2) triggering
+    write actions against the mailbox (e.g. Microsoft Graph writes — sending or
+    moving mail).
+
+    Pause **fails closed**: if it can't read its own state (e.g. a DB error), it
+    treats the system as *paused*, because a guardrail whose job is to stop
+    writes must err toward stopping them rather than silently re-opening the
+    write path.
+
+    Cross-process note: ``get_pause_state()`` (not the per-process in-memory
+    mirror) is the source of truth at decision time — see its docstring for the
+    F4 staleness bug this closes. See also ``docs/CONCEPTS.md``.
+    """
+
     def __init__(self) -> None:
         self._paused: bool = False
         self._reason: str | None = None

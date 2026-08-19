@@ -1,5 +1,15 @@
 """GraphWriteAdapter Protocol + test doubles — Story 4-4 (+ Story 10-2).
 
+Concept — "Graph" = **Microsoft Graph**, Microsoft's REST API that lets external
+applications communicate with Microsoft 365 services; in Mailbot it's how the bot
+reaches the user's Outlook mailbox. Graph calls split into two kinds: a *Graph
+read* fetches data (list emails, read a thread) with no lasting effect, while a
+*Graph write* mutates the mailbox (send, move, delete, mark-read) — a real,
+destructive, user-visible side effect. This read/write split is load-bearing for
+the whole safety design: it's the *writes* that pause, budget refusals, and
+sensitivity gating exist to stop, because a wrongly-sent or wrongly-deleted email
+can't be undone. This module is the **write** side. See ``docs/CONCEPTS.md``.
+
 The drainer dispatches via this Protocol. Story 4-5 implements the real
 OutlookGraphWriteAdapter that hits Microsoft Graph. For Story 4-4, the
 FakeGraphWriteAdapter is the default — happy-path tests run against it.

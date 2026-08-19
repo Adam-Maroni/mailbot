@@ -287,7 +287,17 @@ class AdapterProviderError(AdapterError):
 
 
 class ModelAdapter(Protocol):
-    """Structural interface every adapter implements.
+    """The uniform interface ``ask_router`` uses to call any supported LLM the
+    same way, regardless of provider.
+
+    Each concrete adapter (``OllamaAdapter`` for local Qwen, ``AnthropicAdapter``
+    for Claude Haiku/Opus) hides its provider's specific API behind this shared
+    protocol and returns the same normalized ``AdapterResponse``. This keeps
+    ``ask_router`` provider-agnostic: it never has to know how any individual
+    model's API works. (Note: "OpenAI" names elsewhere in this module — e.g.
+    ``OpenAIToolCall`` — refer to the OpenAI-compatible *wire format* that Ollama
+    emits, not an OpenAI provider; there is no OpenAI adapter. See
+    ``docs/CONCEPTS.md``.)
 
     Story 2-4's ``ask_router`` dispatches against this protocol — no runtime
     inheritance required, so Pydantic-bearing adapter classes don't need to
