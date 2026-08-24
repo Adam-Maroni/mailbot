@@ -56,6 +56,29 @@ def _clean_guard() -> Any:
     _reset_guard_for_test()
 
 
+def _pin_rederive_now(monkeypatch: Any, *, year: int, month: int, day: int = 15) -> None:
+    """Freeze the clock `rederive_cost` reads so `is_current_month` is
+    deterministic regardless of the real date.
+
+    The re-derive's re-seed + clear-degraded steps only fire when the target
+    month IS the current UTC month (`_month_window`'s `is_current_month`). Tests
+    that re-derive July 2026 and expect degraded to clear must therefore run with
+    "now" pinned inside July — otherwise they silently break the moment real time
+    leaves that month (mirrors the `_FixedDatetime` idiom already used by the
+    retrospective test below).
+    """
+    import datetime as _dt
+
+    from mailbot_api.observability import rederive_cost as _rc
+
+    class _FixedDatetime(_dt.datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> Any:  # type: ignore[override]
+            return _dt.datetime(year, month, day, 12, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr(_rc, "datetime", _FixedDatetime)
+
+
 async def _seed_row(
     db_path: str,
     *,
@@ -110,8 +133,12 @@ async def _set_degraded(db_path: str) -> None:
 
 
 async def test_july_rederive_corrects_ledger_and_clears_degraded(
-    tmp_path: Path, _clean_guard: Any
+    tmp_path: Path, _clean_guard: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Pin "now" inside July 2026 so re-deriving month="2026-07" is treated as the
+    # current month (is_current_month=True) → the re-seed + clear-degraded steps
+    # fire. Without this the test breaks once real time leaves July.
+    _pin_rederive_now(monkeypatch, year=2026, month=7)
     db_path = str(tmp_path / "rederive.db")
     apply_pending_migrations(db_path)
 
@@ -192,10 +219,13 @@ async def test_july_rederive_corrects_ledger_and_clears_degraded(
 
 
 async def test_small_add_spend_after_rederive_does_not_retrip(
-    tmp_path: Path, _clean_guard: Any
+    tmp_path: Path, _clean_guard: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Proves the trip cannot recur from stale July history: after the re-derive
     re-seeds the honest counter, a small add_spend stays under the cap."""
+    # Pin "now" inside July 2026 so the re-derive re-seeds the guard (current-month
+    # path); otherwise the clear/re-seed is skipped once real time leaves July.
+    _pin_rederive_now(monkeypatch, year=2026, month=7)
     db_path = str(tmp_path / "rederive2.db")
     apply_pending_migrations(db_path)
 
