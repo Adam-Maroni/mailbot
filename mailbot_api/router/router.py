@@ -1027,6 +1027,20 @@ async def _dispatch_with_failure_chain(
             model, estimated_tokens_in, policy_entry.max_tokens_out, strict=False
         )
         if estimated_cost > PER_CALL_REFUSAL_THRESHOLD_USD and not force:
+            # Story 11.5.4 (GitHub #4): the per-call refusal was the one budget
+            # guard that refused SILENTLY. Emit a structured line matching the
+            # budget.* convention so on-call has something to grep.
+            _logger.warning(
+                "per-call cost threshold exceeded — refusing dispatch",
+                extra={
+                    "event": "budget.per_call.refused",
+                    "model": model,
+                    "estimated_cost_usd": estimated_cost,
+                    "threshold_usd": PER_CALL_REFUSAL_THRESHOLD_USD,
+                    "estimated_tokens_in": estimated_tokens_in,
+                    "email_id": email_id,
+                },
+            )
             result = RouterResult(
                 ok=False,
                 error=RouterError(
@@ -2162,13 +2176,19 @@ async def dispatch_tool_call(
         model_chosen_reason = ModelChosenReason.OVERRIDE_SLASH_PERSISTENT.value
     else:
         # Story AI-1 Phase 2 (10-6-1, AC-5): the policy-default for a tool-call
-        # dispatch is now sourced from the `chat_completions_tool_call` entry
-        # (local qwen) — the caller (main.py) resolves the "hermes_aux" alias to
-        # that model before dispatch. Attribute the audit reason to the same
-        # task key so `model_chosen_reason` names the entry that actually chose
-        # the model, and cost-attribution queries filtering on the tool-call
-        # default are correct. `hermes_aux` stays the LANE proxy (policy_entry
-        # above), not the model source.
+        # dispatch is sourced from the `chat_completions_tool_call` entry — the
+        # caller (main.py) resolves the "hermes_aux" alias to that entry's model
+        # before dispatch. Attribute the audit reason to the same task key so
+        # `model_chosen_reason` names the entry that actually chose the model,
+        # and cost-attribution queries filtering on the tool-call default are
+        # correct. `hermes_aux` stays the LANE proxy (policy_entry above), not
+        # the model source.
+        # Story 10.8.1 (Epic 10.8, 2026-07-21): the model that entry resolves to
+        # is now `claude-haiku-4-5` (was local qwen2.5). The AI-1 routing lever
+        # is unchanged — only the target model flipped, per the ratified
+        # Qwen-3B argument-population ceiling (F-10-7-7-W1). This is still just
+        # the PROPOSING model; the downstream tier/grant/sensitivity pipeline is
+        # model-independent (project_local_model_is_safety_net).
         model_chosen_reason = policy_default(_TOOL_CALL_TASK_TYPE)
 
     # ---- Story 10.7.7 (AC-2/AC-3) — turn-termination / repeat-invocation guard ----
@@ -2712,6 +2732,20 @@ async def dispatch_tool_call(
             model, estimated_tokens_in, max_tokens_out, strict=False
         )
         if estimated_cost > PER_CALL_REFUSAL_THRESHOLD_USD:
+            # Story 11.5.4 (GitHub #4): mirror ask_router's refusal-log so the
+            # tool-call refusal is not silent either. Same event key + fields
+            # (email_id is a dispatch_tool_call parameter; may be None).
+            _logger.warning(
+                "per-call cost threshold exceeded — refusing dispatch",
+                extra={
+                    "event": "budget.per_call.refused",
+                    "model": model,
+                    "estimated_cost_usd": estimated_cost,
+                    "threshold_usd": PER_CALL_REFUSAL_THRESHOLD_USD,
+                    "estimated_tokens_in": estimated_tokens_in,
+                    "email_id": email_id,
+                },
+            )
             result = ToolCallResult(
                 ok=False,
                 error=RouterError(
