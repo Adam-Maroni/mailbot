@@ -33,7 +33,6 @@ from mailbot_api.router.audit_vocab import (
     policy_escalation,
 )
 from mailbot_api.router.budget import (
-    PER_CALL_REFUSAL_THRESHOLD_USD,
     demote_model,
     get_guard,
 )
@@ -44,6 +43,7 @@ from mailbot_api.router.errors import (
     sanitize_error,
 )
 from mailbot_api.router.escalation import next_tier
+from mailbot_api.router.gate import price_and_gate
 from mailbot_api.router.lanes import acquire_provider_slot
 from mailbot_api.router.limits import enforce_rate_limit, get_loop_detector
 from mailbot_api.router.models import (
@@ -1019,43 +1019,19 @@ async def _dispatch_with_failure_chain(
         # rogue caller can't trigger the cache-write path with an
         # ultra-expensive call.
         estimated_tokens_in = (len(prompt.system) + len(user_msg)) // 4
-        # strict=False: Router paths price models that policy/registry already
-        # vetted; test fixtures also register fake model names here. The
-        # strict raise (F-UNKNOWN-MODEL-COST-GATE) is for pre-flight spend
-        # gates, not the per-call refusal net.
-        estimated_cost = estimate_cost_usd(
-            model, estimated_tokens_in, policy_entry.max_tokens_out, strict=False
+        # Story 11.6.1: per-call cost gate consolidated in gate.price_and_gate
+        # (single source of truth for threshold + #4 log). ask_router is
+        # force-capable; token math stays here (caller-specific).
+        _gate = price_and_gate(
+            model=model,
+            estimated_tokens_in=estimated_tokens_in,
+            max_tokens_out=policy_entry.max_tokens_out,
+            email_id=email_id,
+            force=force,
+            force_capable=True,
         )
-        if estimated_cost > PER_CALL_REFUSAL_THRESHOLD_USD and not force:
-            # Story 11.5.4 (GitHub #4): the per-call refusal was the one budget
-            # guard that refused SILENTLY. Emit a structured line matching the
-            # budget.* convention so on-call has something to grep.
-            _logger.warning(
-                "per-call cost threshold exceeded — refusing dispatch",
-                extra={
-                    "event": "budget.per_call.refused",
-                    "model": model,
-                    "estimated_cost_usd": estimated_cost,
-                    "threshold_usd": PER_CALL_REFUSAL_THRESHOLD_USD,
-                    "estimated_tokens_in": estimated_tokens_in,
-                    "email_id": email_id,
-                },
-            )
-            result = RouterResult(
-                ok=False,
-                error=RouterError(
-                    code=ErrorCode.PER_CALL_THRESHOLD_EXCEEDED,
-                    message=(
-                        f"estimated cost ${estimated_cost:.4f} exceeds "
-                        f"per-call threshold ${PER_CALL_REFUSAL_THRESHOLD_USD:.2f}; "
-                        f"pass force=True to override"
-                    ),
-                    retryable=False,
-                    model_attempted=[model],
-                ),
-                model_used=model,
-            )
-            return result
+        if _gate.refused:
+            return RouterResult(ok=False, error=_gate.error, model_used=model)
 
         # Story 9-3 — consume the one-shot override now that ALL gates
         # (sensitivity in ask_router, budget here) have passed. From this
@@ -2727,39 +2703,18 @@ async def dispatch_tool_call(
             for t in tools
         )
         estimated_tokens_in = (msg_text_total + tool_text_total) // 4
-        # strict=False: same rationale as ask_router's Layer-4 gate above.
-        estimated_cost = estimate_cost_usd(
-            model, estimated_tokens_in, max_tokens_out, strict=False
+        # Story 11.6.1: same consolidated cost gate as ask_router. Tool-call
+        # dispatch is NOT force-capable (no `force` param) → force_capable=False,
+        # so it refuses unconditionally exactly as before + gets the bare message.
+        _gate = price_and_gate(
+            model=model,
+            estimated_tokens_in=estimated_tokens_in,
+            max_tokens_out=max_tokens_out,
+            email_id=email_id,
+            force_capable=False,
         )
-        if estimated_cost > PER_CALL_REFUSAL_THRESHOLD_USD:
-            # Story 11.5.4 (GitHub #4): mirror ask_router's refusal-log so the
-            # tool-call refusal is not silent either. Same event key + fields
-            # (email_id is a dispatch_tool_call parameter; may be None).
-            _logger.warning(
-                "per-call cost threshold exceeded — refusing dispatch",
-                extra={
-                    "event": "budget.per_call.refused",
-                    "model": model,
-                    "estimated_cost_usd": estimated_cost,
-                    "threshold_usd": PER_CALL_REFUSAL_THRESHOLD_USD,
-                    "estimated_tokens_in": estimated_tokens_in,
-                    "email_id": email_id,
-                },
-            )
-            result = ToolCallResult(
-                ok=False,
-                error=RouterError(
-                    code=ErrorCode.PER_CALL_THRESHOLD_EXCEEDED,
-                    message=(
-                        f"estimated cost ${estimated_cost:.4f} exceeds "
-                        f"per-call threshold ${PER_CALL_REFUSAL_THRESHOLD_USD:.2f}"
-                    ),
-                    retryable=False,
-                    model_attempted=[model],
-                ),
-                model_used=model,
-            )
-            return result
+        if _gate.refused:
+            return ToolCallResult(ok=False, error=_gate.error, model_used=model)
 
         # System prompt: concatenate ALL system messages with "\n\n"
         # (CR-6 Story 6-9 review 2026-06-04: Hermes's main inference path
