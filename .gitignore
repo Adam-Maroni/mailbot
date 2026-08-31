@@ -134,3 +134,19 @@ hermes-docs/
 # excluded from ruff (pyproject [tool.ruff] extend-exclude) so repo-wide
 # `ruff check .` stays green regardless of scratch/ print() usage.
 scratch/
+
+# issue-scribe drafts are local scratch — the issue text lives on GitHub once
+# created. The label taxonomy (scripts/issues/labels.json) IS tracked; drafts are not.
+scripts/issues/drafts/
+
+# Open-source prep (public repo): docs/external/ is vendored third-party
+# documentation (Microsoft Graph / Azure Learn pages archived via docs-archiver).
+# Not MailBot's own work + a redistribution/licensing concern — kept locally,
+# never tracked in the public repo. Files remain on disk for local reference.
+docs/external/
+
+# Open-source prep (public repo): _bmad-output/ holds BMAD planning artifacts,
+# retros, and implementation findings — internal process record, not product
+# code. Stripped from the public repo for signal (a visitor sees the tool + the
+# benchmark, not 283 planning files). Files remain on disk.
+_bmad-output/
