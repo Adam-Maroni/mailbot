@@ -150,3 +150,6 @@ docs/external/
 # code. Stripped from the public repo for signal (a visitor sees the tool + the
 # benchmark, not 283 planning files). Files remain on disk.
 _bmad-output/
+
+# Per-machine Claude Code config (local tooling, contains machine-specific paths) — not product code.
+.claude/settings.json
